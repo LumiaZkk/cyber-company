@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Verify Connect</title>
+  </head>
+  <body>
+    <script type="module">
+      const params = new URLSearchParams(window.location.search);
+      const target = params.get("route") || "/lobby";
+      const url = params.get("url") || "ws://127.0.0.1:18789";
+      const token = params.get("token") || "";
+
+      localStorage.setItem("cyber_company_gateway_url", url);
+      localStorage.setItem("cyber_company_gateway_token", token);
+      localStorage.setItem("cyber_company_gateway_connected_once", "1");
+
+      const frame = document.createElement("iframe");
+      frame.src = target;
+      frame.style.width = "1440px";
+      frame.style.height = "1600px";
+      frame.style.border = "0";
+      frame.style.position = "absolute";
+      frame.style.left = "-99999px";
+      document.body.appendChild(frame);
+
+      const startedAt = Date.now();
+      const finish = (status, snapshot) => {
+        try {
+          frame.remove();
+        } catch {}
+        document.body.innerHTML = "";
+        const main = document.createElement("main");
+        main.setAttribute("data-status", status);
+        main.setAttribute("data-route", target);
+        main.innerHTML = `
+          <h1>VERIFY_RESULT</h1>
+          <div id="route">${target}</div>
+          <div id="status">${status}</div>
+          <div id="elapsed">${Date.now() - startedAt}</div>
+          <pre id="snapshot"></pre>
+        `;
+        main.querySelector("#snapshot").textContent = snapshot || "";
+        document.body.appendChild(main);
+        window.stop();
+      };
+
+      const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+      let snapshot = "";
+      let status = "timeout";
+      while (Date.now() - startedAt <= 12000) {
+        try {
+          const doc = frame.contentDocument;
+          const text = doc && doc.body ? doc.body.innerText || "" : "";
+          if (text.trim().length > 0 && !/Preparing verification/i.test(text)) {
+            snapshot = text;
+            status = "ok";
+            break;
+          }
+        } catch (error) {}
+        await sleep(500);
+      }
+
+      if (!snapshot) {
+        try {
+          const doc = frame.contentDocument;
+          snapshot = doc && doc.body ? doc.body.innerText || "" : "";
+        } catch (error) {}
+      }
+
+      finish(status, snapshot.slice(0, 8000));
+    </script>
+    <div>Preparing verification...</div>
+  </body>
+</html>
