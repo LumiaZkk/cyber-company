@@ -15,7 +15,9 @@ import { ApprovalModalHost } from "./components/system/approval-modal-host";
 import { GatewayNotificationHost } from "./components/system/gateway-notification-host";
 import { GatewayStatusBanner } from "./components/system/gateway-status-banner";
 import { ToastHost } from "./components/ui/toast-host";
+import { peekCachedCompanyConfig } from "./features/company/persistence";
 import { useCompanyStore } from "./features/company/store";
+import type { Company } from "./features/company/types";
 import { getCompanyWorkspaceApps } from "./features/company/workspace-apps";
 import { useGatewayStore } from "./features/gateway/store";
 import { OrgAutopilot } from "./features/org/org-autopilot";
@@ -87,8 +89,20 @@ export default function App() {
     bootstrapAutoConnect,
   } = useGatewayStore();
   const { loading, loadConfig, activeCompany, bootstrapPhase } = useCompanyStore();
+  const cachedBootstrapConfig = peekCachedCompanyConfig();
+  const cachedBootstrapCompany =
+    cachedBootstrapConfig
+      ? (
+          cachedBootstrapConfig.companies.find(
+            (company) => company.id === cachedBootstrapConfig.activeCompanyId,
+          ) ??
+          cachedBootstrapConfig.companies[0] ??
+          null
+        )
+      : null;
   const previousConnectedRef = useRef(connected);
   const hasSeenStableConnectionRef = useRef(connected);
+  const lastStableCompanyRef = useRef<Company | null>(activeCompany ?? cachedBootstrapCompany);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -104,6 +118,12 @@ export default function App() {
       void loadConfig();
     }
   }, [connected, loadConfig]);
+
+  useEffect(() => {
+    if (activeCompany) {
+      lastStableCompanyRef.current = activeCompany;
+    }
+  }, [activeCompany]);
 
   useEffect(() => {
     // Avoid racing cached-config fallback against the initial auto-reconnect boot.
@@ -181,12 +201,15 @@ export default function App() {
         phase === "connecting" ||
         phase === "reconnecting"
       );
+    const currentCompany = activeCompany ?? lastStableCompanyRef.current;
+    const shouldUseSilentRestoreShell = companyBootstrapPending && Boolean(currentCompany);
 
-    if (companyBootstrapPending) {
+    if (companyBootstrapPending && !shouldUseSilentRestoreShell) {
       content = <CompanyBootstrapScreen />;
-    } else if (!activeCompany) {
+    } else if (!activeCompany && !shouldUseSilentRestoreShell) {
       content = <Navigate to="/select" replace />;
     } else {
+      const resolvedCompany = currentCompany!;
       const sidebarBg = "bg-muted/30";
       const textIconColor = "text-primary";
       const linkHover = "hover:bg-secondary/50 hover:text-foreground";
@@ -203,9 +226,9 @@ export default function App() {
             : `text-muted-foreground ${linkHover}`
         }`;
       };
-      const workspaceApps = getCompanyWorkspaceApps(activeCompany);
+      const workspaceApps = getCompanyWorkspaceApps(resolvedCompany);
       const ceoEmployee =
-        activeCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
+        resolvedCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
 
       const connectionIndicatorClass = connected
         ? "bg-green-500"
@@ -327,10 +350,10 @@ export default function App() {
                   <span className="sr-only">Toggle Sidebar</span>
                 </button>
                 <h1 className="text-base md:text-lg font-semibold truncate max-w-[150px] md:max-w-none">
-                  {activeCompany?.icon || "🏢"} {activeCompany?.name || "加载中..."}
+                  {resolvedCompany.icon || "🏢"} {resolvedCompany.name || "加载中..."}
                 </h1>
                 <span className="text-sm hidden md:inline-block text-muted-foreground truncate">
-                  {activeCompany?.description || ""}
+                  {resolvedCompany.description || ""}
                 </span>
               </div>
               <div className="flex items-center gap-4">
@@ -343,6 +366,11 @@ export default function App() {
             </header>
 
             <div className="flex-1 overflow-auto relative z-10">
+              {shouldUseSilentRestoreShell ? (
+                <div className="border-b bg-background/90 px-4 py-2 text-xs text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-background/70">
+                  正在后台恢复最新状态，你可以继续停留在当前页面。
+                </div>
+              ) : null}
               <Routes>
                 <Route path="/" element={<CEOHomePage />} />
                 <Route path="/ops" element={<CompanyLobby />} />

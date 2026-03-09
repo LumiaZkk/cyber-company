@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ActionFormDialog } from "../components/ui/action-form-dialog";
 import { useCompanyStore } from "../features/company/store";
 import { useGatewayStore } from "../features/gateway/store";
-import { Plus, ArrowRight, Loader } from "lucide-react";
+import { toast } from "../features/ui/toast-store";
+import { Plus, ArrowRight, Loader, Trash2 } from "lucide-react";
+import type { Company } from "../features/company/types";
 
 export function CompanySelect() {
   const navigate = useNavigate();
-  const { config, loading: storeLoading, switchCompany, loadConfig } = useCompanyStore();
+  const { config, loading: storeLoading, switchCompany, deleteCompany, loadConfig } = useCompanyStore();
   const { connected } = useGatewayStore();
   const [initLoading, setInitLoading] = useState(true);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Company | null>(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
 
   // 强制确保配置被加载
   useEffect(() => {
@@ -27,6 +33,33 @@ export function CompanySelect() {
   const handleSelect = (id: string) => {
     switchCompany(id);
     navigate("/");
+  };
+
+  const handleDeleteRequest = (company: Company) => {
+    setDeleteTarget(company);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteSubmit = async () => {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setDeleteSubmitting(true);
+    try {
+      await deleteCompany(deleteTarget.id);
+      toast.success(
+        "公司已删除",
+        `已移除「${deleteTarget.name}」并清理其独占 agent 的会话、归档、自动化和文件内容。`,
+      );
+      setDeleteDialogOpen(false);
+      setDeleteTarget(null);
+      navigate("/select", { replace: true });
+    } catch (error) {
+      toast.error("删除失败", error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeleteSubmitting(false);
+    }
   };
 
   if (isLoading) {
@@ -48,24 +81,46 @@ export function CompanySelect() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {companies.map((c) => (
-            <button
+            <div
               key={c.id}
-              onClick={() => handleSelect(c.id)}
               className="group bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:border-indigo-600 hover:ring-4 hover:ring-indigo-50 transition-all text-left flex flex-col items-start"
             >
-              <div className="text-4xl mb-4">{c.icon || "🏢"}</div>
-              <h3 className="text-xl font-bold text-slate-900 mb-2 truncate w-full">{c.name}</h3>
-              <p className="text-sm text-slate-500 mb-4 flex-1 line-clamp-2">{c.description || "暂无组织描述"}</p>
-              
+              <button
+                type="button"
+                onClick={() => handleSelect(c.id)}
+                className="w-full text-left flex flex-1 flex-col items-start"
+              >
+                <div className="text-4xl mb-4">{c.icon || "🏢"}</div>
+                <h3 className="text-xl font-bold text-slate-900 mb-2 truncate w-full">{c.name}</h3>
+                <p className="text-sm text-slate-500 mb-4 flex-1 line-clamp-2">
+                  {c.description || "暂无组织描述"}
+                </p>
+              </button>
+
               <div className="w-full flex items-center justify-between mt-auto pt-4 border-t border-slate-100">
                 <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded font-medium">
                   {c.employees?.length || 0} 名成员
                 </span>
-                <span className="text-indigo-600 group-hover:translate-x-1 transition-transform">
-                  <ArrowRight size={18} />
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRequest(c)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-medium text-rose-600 transition hover:bg-rose-50"
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelect(c.id)}
+                    className="inline-flex items-center gap-1 text-indigo-600 group-hover:translate-x-1 transition-transform"
+                  >
+                    进入
+                    <ArrowRight size={18} />
+                  </button>
+                </div>
               </div>
-            </button>
+            </div>
           ))}
 
           <button
@@ -80,6 +135,34 @@ export function CompanySelect() {
           </button>
         </div>
       </div>
+
+      <ActionFormDialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open);
+          if (!open) {
+            setDeleteTarget(null);
+          }
+        }}
+        title="删除公司"
+        description={
+          deleteTarget
+            ? `删除后会移除「${deleteTarget.name}」的公司配置，并清理该公司独占员工的会话、归档、自动化和 agent 文件内容。请输入公司名确认。`
+            : "请输入公司名确认删除。"
+        }
+        confirmLabel="删除公司"
+        busy={deleteSubmitting}
+        fields={[
+          {
+            name: "companyName",
+            label: "输入公司名确认",
+            placeholder: deleteTarget?.name ?? "",
+            required: true,
+            confirmationText: deleteTarget?.name ?? "",
+          },
+        ]}
+        onSubmit={handleDeleteSubmit}
+      />
     </div>
   );
 }

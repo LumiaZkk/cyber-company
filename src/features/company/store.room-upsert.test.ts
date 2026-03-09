@@ -152,4 +152,39 @@ describe("useCompanyStore upsertRoomRecord", () => {
     expect(updates).toBe(0);
     expect(useCompanyStore.getState().activeRoomRecords[0]?.updatedAt).toBe(1000);
   });
+
+  it("merges semantically identical strategic rooms with different runtime ids into one canonical room", () => {
+    useCompanyStore.getState().upsertRoomRecord(
+      createRoom({
+        id: "room:legacy-consistency-1",
+        sessionKey: "room:legacy-consistency-1",
+        workItemId: "topic:mission:consistency-foundation",
+      }),
+    );
+
+    useCompanyStore.getState().upsertRoomRecord(
+      createRoom({
+        id: "room:legacy-consistency-2",
+        sessionKey: "room:legacy-consistency-2",
+        workItemId: "topic:mission:consistency-foundation",
+        transcript: [
+          {
+            id: "room:assistant:2",
+            role: "assistant",
+            text: "CTO：一致性底座方案已提交。",
+            timestamp: 2000,
+            senderAgentId: "co-cto",
+            visibility: "public",
+            source: "member_reply",
+          },
+        ],
+        updatedAt: 2000,
+      }),
+    );
+
+    const rooms = useCompanyStore.getState().activeRoomRecords;
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0]?.id).toBe("workitem:topic:mission:consistency-foundation");
+    expect(rooms[0]?.transcript).toHaveLength(2);
+  });
 });

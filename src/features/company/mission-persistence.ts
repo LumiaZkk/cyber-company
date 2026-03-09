@@ -85,3 +85,10 @@ export function persistConversationMissionRecords(
     .slice(0, MISSION_LIMIT);
   localStorage.setItem(getMissionCacheKey(companyId), JSON.stringify(trimmed));
 }
+
+export function clearConversationMissionRecords(companyId: string | null | undefined) {
+  if (!companyId) {
+    return;
+  }
+  localStorage.removeItem(getMissionCacheKey(companyId));
+}

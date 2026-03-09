@@ -4,10 +4,15 @@ import { Building2, Plus, Sparkles, ChevronRight, CheckCircle2 } from "lucide-re
 import { parseCompanyBlueprint } from "../features/company/blueprint";
 import { useCompanyStore } from "../features/company/store";
 import { COMPANY_TEMPLATES } from "../features/company/templates";
+import {
+  allocateCompanyAgentNamespace,
+  buildCompanyRoleAgentName,
+  collectExistingAgentHandles,
+} from "../features/company/agent-naming";
 import { gateway } from "../features/backend";
 import { generateCeoSoul, generateHrSoul, generateCtoSoul, generateCooSoul } from "../features/employee/meta-agents";
 import type { CyberCompanyConfig, Company, Department, EmployeeRef } from "../features/company/types";
-import { getConfigOwnerAgentId, saveCompanyConfig, setConfigOwnerAgentId } from "../features/company/persistence";
+import { saveCompanyConfig } from "../features/company/persistence";
 import { toast } from "../features/ui/toast-store";
 
 const BLUEPRINT_TEMPLATE_ID = "__blueprint__";
@@ -45,23 +50,6 @@ export function CompanyCreate() {
   const importedBlueprint = parseCompanyBlueprint(blueprintText);
   const isBlueprintTemplate = selectedTemplate === BLUEPRINT_TEMPLATE_ID;
 
-  const resolveConfigOwnerAgentId = (currentConfig: CyberCompanyConfig | null, fallbackAgentId: string) => {
-    const ownerFromStorage = getConfigOwnerAgentId();
-    if (ownerFromStorage) {
-      return ownerFromStorage;
-    }
-
-    if (currentConfig) {
-      const activeCompany = currentConfig.companies.find((company) => company.id === currentConfig.activeCompanyId);
-      const activeCompanyCeo = activeCompany?.employees.find((employee) => employee.metaRole === 'ceo')?.agentId;
-      if (activeCompanyCeo) {
-        return activeCompanyCeo;
-      }
-    }
-
-    return fallbackAgentId;
-  };
-
   const handleCreate = async () => {
     const blueprint = isBlueprintTemplate ? importedBlueprint : null;
     const finalCompanyName = (companyName || blueprint?.sourceCompanyName || "").trim();
@@ -78,8 +66,11 @@ export function CompanyCreate() {
     try {
       const templateId = blueprint?.template || selectedTemplate;
       const template = COMPANY_TEMPLATES.find((t) => t.id === templateId);
-      const safeNameId = finalCompanyName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-      const baseAgentName = `${safeNameId}-co`;
+      const { agents: existingAgents } = await gateway.listAgents();
+      const baseAgentName = allocateCompanyAgentNamespace(
+        finalCompanyName,
+        collectExistingAgentHandles(existingAgents),
+      );
       const blueprintAgentIdMap = new Map<string, string>();
       const blueprintBindings: Array<{
         blueprintId: string;
@@ -88,23 +79,28 @@ export function CompanyCreate() {
         departmentName?: string;
       }> = [];
 
-      updateProgress(2, `正在创建 CEO 角色：${baseAgentName}-ceo`);
-      const ceoMeta = await gateway.createAgent(`${baseAgentName}-ceo`);
+      const ceoAgentName = buildCompanyRoleAgentName(baseAgentName, "ceo");
+      const hrAgentName = buildCompanyRoleAgentName(baseAgentName, "hr");
+      const ctoAgentName = buildCompanyRoleAgentName(baseAgentName, "cto");
+      const cooAgentName = buildCompanyRoleAgentName(baseAgentName, "coo");
+
+      updateProgress(2, `正在创建 CEO 角色：${ceoAgentName}`);
+      const ceoMeta = await gateway.createAgent(ceoAgentName);
       await new Promise((resolve) => setTimeout(resolve, 600));
       
       updateProgress(3, "正在为 CEO 注入 SOUL 记忆...");
       await gateway.setAgentFile(ceoMeta.agentId, "SOUL.md", generateCeoSoul(finalCompanyName));
 
       updateProgress(4, "正在创建管理层角色（HR / CTO / COO）...");
-      const hrMeta = await gateway.createAgent(`${baseAgentName}-hr`);
+      const hrMeta = await gateway.createAgent(hrAgentName);
       await new Promise((resolve) => setTimeout(resolve, 600));
       await gateway.setAgentFile(hrMeta.agentId, "SOUL.md", generateHrSoul(finalCompanyName));
       
-      const ctoMeta = await gateway.createAgent(`${baseAgentName}-cto`);
+      const ctoMeta = await gateway.createAgent(ctoAgentName);
       await new Promise((resolve) => setTimeout(resolve, 600));
       await gateway.setAgentFile(ctoMeta.agentId, "SOUL.md", generateCtoSoul(finalCompanyName));
 
-      const cooMeta = await gateway.createAgent(`${baseAgentName}-coo`);
+      const cooMeta = await gateway.createAgent(cooAgentName);
       await new Promise((resolve) => setTimeout(resolve, 600));
       await gateway.setAgentFile(cooMeta.agentId, "SOUL.md", generateCooSoul(finalCompanyName));
 
@@ -339,9 +335,6 @@ export function CompanyCreate() {
         activeCompanyId: newCompany.id,
         preferences: { theme: 'classic', locale: 'zh-CN' }
       };
-
-      const ownerAgentId = resolveConfigOwnerAgentId(config, ceoMeta.agentId);
-      setConfigOwnerAgentId(ownerAgentId);
 
       const saved = await saveCompanyConfig(newConfig);
       if (!saved) {

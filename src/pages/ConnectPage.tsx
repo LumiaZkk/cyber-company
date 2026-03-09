@@ -67,6 +67,10 @@ export function ConnectPage() {
           <p className="text-slate-500">
             通过统一协议接入 Agent 后端。当前使用 {currentProvider?.label || "工作引擎"}。
           </p>
+          <p className="text-xs text-slate-400">
+            当前真实可连接的运行时 provider 仍以 OpenClaw 为主。设置页中的 Codex 授权只会把 Codex
+            模型导入 OpenClaw 模型目录，不代表已经接入独立的 Codex 后端。
+          </p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100 p-6 md:p-7">

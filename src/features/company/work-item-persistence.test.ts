@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { WorkItemRecord } from "./types";
 import { sanitizeWorkItemRecords } from "./work-item-persistence";
+import { applyWorkItemDisplayFields } from "../execution/work-item";
 
 function createWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
-  return {
+  return applyWorkItemDisplayFields({
     id: "workitem:mission:consistency",
+    workKey: "topic:mission:consistency-platform",
+    kind: "strategic",
+    roundId: "topic:mission:consistency-platform@1000",
     companyId: "novel-studio-001",
     topicKey: "mission:consistency-platform",
     title: "一致性底座与内部审阅系统执行方案",
@@ -24,7 +28,7 @@ function createWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord
     nextAction: "让 CEO 输出最终执行方案和优先级。",
     steps: [],
     ...overrides,
-  };
+  });
 }
 
 describe("sanitizeWorkItemRecords", () => {
@@ -43,7 +47,25 @@ describe("sanitizeWorkItemRecords", () => {
     ]);
 
     expect(records).toHaveLength(1);
-    expect(records[0]?.id).toBe("workitem:mission:consistency");
+    expect(records[0]?.id).toBe("topic:mission:consistency-platform");
+  });
+
+  it("drops artifact-backed work items so artifact mirrors do not become task truth", () => {
+    const records = sanitizeWorkItemRecords([
+      createWorkItem({
+        id: "artifact-task",
+        topicKey: "artifact:14-验收标准 v1.md",
+        title: "验收标准 v1 文档",
+        stageLabel: "文档检查",
+        goal: "查看验收标准文档。",
+        summary: "检查验收标准文档内容。",
+        nextAction: "继续查看文档。",
+      }),
+      createWorkItem(),
+    ]);
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.id).toBe("topic:mission:consistency-platform");
   });
 
   it("dedupes by id and keeps the newest reliable record", () => {
@@ -64,5 +86,91 @@ describe("sanitizeWorkItemRecords", () => {
     ]);
 
     expect(record?.sourceActorId).toBe("co-cto");
+  });
+
+  it("dedupes strategic active records by topic and prefers canonical topic-backed entries", () => {
+    const records = sanitizeWorkItemRecords([
+      createWorkItem({
+        id: "session:agent:co-ceo:main@1",
+        topicKey: "mission:consistency-platform",
+        sourceActorId: "co-ceo",
+        updatedAt: 4_000,
+        status: "active",
+      }),
+      createWorkItem({
+        id: "topic:mission:consistency-platform@2",
+        workKey: "topic:mission:consistency-platform",
+        kind: "strategic",
+        roundId: "topic:mission:consistency-platform@2",
+        topicKey: "mission:consistency-platform",
+        sourceActorId: "co-coo",
+        updatedAt: 3_900,
+        status: "waiting_owner",
+      }),
+    ]);
+
+    expect(records.map((record) => record.id)).toContain("topic:mission:consistency-platform");
+    expect(records.map((record) => record.id)).not.toContain("session:agent:co-ceo:main@1");
+  });
+
+  it("collapses drifted strategic records from the same source conversation into one stable title-backed record", () => {
+    const records = sanitizeWorkItemRecords([
+      createWorkItem({
+        id: "topic:mission:4p27it",
+        workKey: "topic:mission:4p27it",
+        roundId: "topic:mission:4p27it@2000",
+        topicKey: "mission:4p27it",
+        sourceConversationId: "agent:co-ceo:main",
+        sourceSessionKey: "agent:co-ceo:main",
+        updatedAt: 4_000,
+      }),
+      createWorkItem({
+        id: "topic:mission:1ip8yl0",
+        workKey: "topic:mission:1ip8yl0",
+        roundId: "topic:mission:1ip8yl0@1500",
+        topicKey: "mission:1ip8yl0",
+        title: "CEO",
+        sourceConversationId: "agent:co-ceo:main",
+        sourceSessionKey: "agent:co-ceo:main",
+        updatedAt: 3_000,
+      }),
+    ]);
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.id).toMatch(/^topic:mission:/);
+    expect(records[0]?.title).toBe("一致性底座与内部审阅系统执行方案");
+    expect(records[0]?.sourceConversationId).toBe("agent:co-ceo:main");
+  });
+
+  it("preserves distinct strategic tasks from the same source conversation", () => {
+    const records = sanitizeWorkItemRecords([
+      createWorkItem({
+        id: "topic:mission:consistency-platform",
+        workKey: "topic:mission:consistency-platform",
+        roundId: "topic:mission:consistency-platform@1000",
+        topicKey: "mission:consistency-platform",
+        sourceConversationId: "agent:co-ceo:main",
+        sourceSessionKey: "agent:co-ceo:main",
+        updatedAt: 4_000,
+      }),
+      createWorkItem({
+        id: "topic:mission:novel-team-bootstrap",
+        workKey: "topic:mission:novel-team-bootstrap",
+        roundId: "topic:mission:novel-team-bootstrap@5000",
+        topicKey: "mission:novel-team-bootstrap",
+        title: "从头开始搭建 AI 小说创作团队",
+        goal: "先把小说公司的组织、规范、工具和流程从头搭起来。",
+        summary: "围绕招聘、流程、工具和质量标准从头搭建小说创作团队。",
+        nextAction: "让 CEO 启动团队搭建主线并派发第一批任务。",
+        stageLabel: "CEO 发起团队搭建主线",
+        sourceConversationId: "agent:co-ceo:main",
+        sourceSessionKey: "agent:co-ceo:main",
+        updatedAt: 5_000,
+      }),
+    ]);
+
+    expect(records).toHaveLength(2);
+    expect(records.map((record) => record.title)).toContain("一致性底座与内部审阅系统执行方案");
+    expect(records.map((record) => record.title)).toContain("从头开始搭建 AI 小说创作团队");
   });
 });

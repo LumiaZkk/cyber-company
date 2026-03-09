@@ -1,4 +1,20 @@
 import { gateway } from '../backend';
+import {
+  buildCeoOperationsGuide,
+  buildCompanyContextSnapshot,
+  CEO_OPERATIONS_FILE_NAME,
+  COMPANY_CONTEXT_FILE_NAME,
+} from './agent-context';
+import { clearConversationMissionRecords } from './mission-persistence';
+import { clearConversationStateRecords } from './conversation-state-persistence';
+import { clearRoundRecords } from './round-persistence';
+import { clearArtifactRecords } from './artifact-persistence';
+import { clearDispatchRecords } from './dispatch-persistence';
+import { clearRequirementRoomRecords } from './room-persistence';
+import { clearRoomConversationBindings } from './room-binding-persistence';
+import { clearWorkItemRecords } from './work-item-persistence';
+import { clearCompanyRuntimeSnapshot } from '../runtime/company-runtime';
+import { generateCeoSoul } from '../employee/meta-agents';
 import type { CyberCompanyConfig, Company } from './types';
 
 const CONFIG_FILE_NAME = 'company-config.json';
@@ -22,6 +38,10 @@ function readCachedConfig(): CyberCompanyConfig | null {
   }
 }
 
+export function peekCachedCompanyConfig(): CyberCompanyConfig | null {
+  return readCachedConfig();
+}
+
 function cacheConfig(config: CyberCompanyConfig) {
   localStorage.setItem(CACHE_KEY, JSON.stringify(config));
 }
@@ -40,7 +60,12 @@ export function getPersistedActiveCompanyId(): string | null {
 }
 
 export function setPersistedActiveCompanyId(companyId: string) {
-  localStorage.setItem(ACTIVE_COMPANY_KEY, companyId.trim());
+  const normalized = companyId.trim();
+  if (!normalized) {
+    clearPersistedActiveCompanyId();
+    return;
+  }
+  localStorage.setItem(ACTIVE_COMPANY_KEY, normalized);
 }
 
 export function clearPersistedActiveCompanyId() {
@@ -56,6 +81,10 @@ export function setConfigOwnerAgentId(agentId: string) {
   localStorage.setItem(CONFIG_OWNER_KEY, agentId.trim());
 }
 
+export function clearConfigOwnerAgentId() {
+  localStorage.removeItem(CONFIG_OWNER_KEY);
+}
+
 function findCompanyById(config: CyberCompanyConfig, companyId: string): Company | null {
   return config.companies.find((company) => company.id === companyId) ?? null;
 }
@@ -63,6 +92,24 @@ function findCompanyById(config: CyberCompanyConfig, companyId: string): Company
 function resolveCompanyCeoAgentId(company: Company): string | null {
   const ceo = company.employees.find((employee) => employee.metaRole === 'ceo');
   return ceo?.agentId ?? null;
+}
+
+function collectCompanyAgentIds(company: Company): Set<string> {
+  return new Set(
+    company.employees
+      .map((employee) => employee.agentId?.trim() ?? '')
+      .filter((agentId) => agentId.length > 0),
+  );
+}
+
+function collectConfigAgentIds(config: CyberCompanyConfig): Set<string> {
+  const agentIds = new Set<string>();
+  config.companies.forEach((company) => {
+    collectCompanyAgentIds(company).forEach((agentId) => {
+      agentIds.add(agentId);
+    });
+  });
+  return agentIds;
 }
 
 function isCyberCompanyConfig(value: unknown): value is CyberCompanyConfig {
@@ -107,6 +154,14 @@ function resolveOwnerFromConfig(config: CyberCompanyConfig): string | null {
   }
 
   return null;
+}
+
+function collectAvailableAgentIds(agents: Array<{ id?: string }>): Set<string> {
+  return new Set(
+    agents
+      .map((agent) => (typeof agent.id === 'string' ? agent.id.trim() : ''))
+      .filter((id) => id.length > 0),
+  );
 }
 
 function isCeoAgentCandidate(agent: { id?: string; name?: string }) {
@@ -182,6 +237,11 @@ export async function loadCompanyConfig(): Promise<CyberCompanyConfig | null> {
         }
 
         const normalizedConfig = normalizeActiveCompanySelection(config);
+        try {
+          await syncCompanyCeoContextFiles(normalizedConfig, collectAvailableAgentIds(agents));
+        } catch (syncError) {
+          console.warn('Failed to sync CEO context files during config load', syncError);
+        }
         cacheConfig(normalizedConfig);
         setConfigOwnerAgentId(candidateOwnerId);
         return normalizedConfig;
@@ -199,32 +259,153 @@ export async function loadCompanyConfig(): Promise<CyberCompanyConfig | null> {
 
 async function resolveConfigOwner(config: CyberCompanyConfig): Promise<string | null> {
   const ownerFromStorage = getConfigOwnerAgentId();
-  if (ownerFromStorage) {
-    return ownerFromStorage;
-  }
-
   const ownerFromConfig = resolveOwnerFromConfig(config);
-  if (ownerFromConfig) {
-    return ownerFromConfig;
-  }
 
   try {
     const { agents } = await gateway.listAgents();
-    const firstCeo = agents.find((agent) => isCeoAgentCandidate(agent));
+    const availableAgentIds = collectAvailableAgentIds(agents);
+    const agentIdsInConfig = collectConfigAgentIds(config);
+
+    if (
+      ownerFromStorage &&
+      availableAgentIds.has(ownerFromStorage) &&
+      (config.companies.length === 0 || agentIdsInConfig.has(ownerFromStorage))
+    ) {
+      return ownerFromStorage;
+    }
+
+    if (ownerFromConfig && availableAgentIds.has(ownerFromConfig)) {
+      return ownerFromConfig;
+    }
+
+    const firstCeo = agents.find((agent) => {
+      const id = typeof agent.id === "string" ? agent.id.trim() : "";
+      return id.length > 0 && isCeoAgentCandidate(agent);
+    });
     return firstCeo?.id ?? null;
   } catch {
-    return null;
+    return ownerFromStorage ?? ownerFromConfig;
   }
 }
 
+function clearLocalCompanyState(companyId: string) {
+  clearConversationMissionRecords(companyId);
+  clearConversationStateRecords(companyId);
+  clearRoundRecords(companyId);
+  clearArtifactRecords(companyId);
+  clearDispatchRecords(companyId);
+  clearRequirementRoomRecords(companyId);
+  clearRoomConversationBindings(companyId);
+  clearWorkItemRecords(companyId);
+  clearCompanyRuntimeSnapshot(companyId);
+}
+
+function buildConfigAfterCompanyDeletion(
+  currentConfig: CyberCompanyConfig,
+  companyId: string,
+): { company: Company; nextConfig: CyberCompanyConfig; uniqueAgentIds: string[] } | null {
+  const company = findCompanyById(currentConfig, companyId);
+  if (!company) {
+    return null;
+  }
+
+  const remainingCompanies = currentConfig.companies.filter((entry) => entry.id !== companyId);
+  const nextActiveCompanyId =
+    remainingCompanies.length === 0
+      ? ''
+      : currentConfig.activeCompanyId !== companyId &&
+          remainingCompanies.some((entry) => entry.id === currentConfig.activeCompanyId)
+        ? currentConfig.activeCompanyId
+        : remainingCompanies[0]?.id ?? '';
+  const nextConfig: CyberCompanyConfig = {
+    ...currentConfig,
+    companies: remainingCompanies,
+    activeCompanyId: nextActiveCompanyId,
+  };
+  const remainingAgentIds = collectConfigAgentIds(nextConfig);
+  const uniqueAgentIds = [...collectCompanyAgentIds(company)].filter(
+    (agentId) => !remainingAgentIds.has(agentId),
+  );
+
+  return { company, nextConfig, uniqueAgentIds };
+}
+
+async function cleanupRemoteCompanyAgentResources(
+  agentIds: string[],
+) {
+  if (!gateway.isConnected || agentIds.length === 0) {
+    return;
+  }
+  const failures: string[] = [];
+  await Promise.all(
+    agentIds.map(async (agentId) => {
+      try {
+        await gateway.deleteAgent(agentId, { deleteFiles: true, purgeState: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${agentId}: ${message}`);
+      }
+    }),
+  );
+  if (failures.length > 0) {
+    throw new Error(`Failed to delete company agents: ${failures.join("; ")}`);
+  }
+}
+
+async function syncCompanyCeoContextFiles(
+  config: CyberCompanyConfig,
+  availableAgentIds?: Set<string>,
+): Promise<void> {
+  const knownAgentIds =
+    availableAgentIds ??
+    collectAvailableAgentIds((await gateway.listAgents()).agents);
+
+  await Promise.all(
+    config.companies.map(async (company) => {
+      const ceoAgentId = resolveCompanyCeoAgentId(company);
+      if (!ceoAgentId || !knownAgentIds.has(ceoAgentId)) {
+        return;
+      }
+
+      const results = await Promise.allSettled([
+        gateway.setAgentFile(ceoAgentId, 'SOUL.md', generateCeoSoul(company.name)),
+        gateway.setAgentFile(
+          ceoAgentId,
+          COMPANY_CONTEXT_FILE_NAME,
+          JSON.stringify(buildCompanyContextSnapshot(company), null, 2),
+        ),
+        gateway.setAgentFile(ceoAgentId, CEO_OPERATIONS_FILE_NAME, buildCeoOperationsGuide(company)),
+      ]);
+
+      results.forEach((result) => {
+        if (result.status === 'rejected') {
+          console.warn(`Failed to sync CEO context files for ${company.name}`, result.reason);
+        }
+      });
+    }),
+  );
+}
+
 export async function saveCompanyConfig(config: CyberCompanyConfig): Promise<boolean> {
-  if (!gateway.isConnected || !config.activeCompanyId) {
+  if (!gateway.isConnected) {
+    return false;
+  }
+
+  if (config.companies.length > 0 && !config.activeCompanyId) {
     return false;
   }
 
   let ownerAgentId: string | null = null;
+  let availableAgentIds: Set<string> | null = null;
 
   try {
+    try {
+      const { agents } = await gateway.listAgents();
+      availableAgentIds = collectAvailableAgentIds(agents);
+    } catch {
+      availableAgentIds = null;
+    }
+
     ownerAgentId = await resolveConfigOwner(config);
     if (!ownerAgentId) {
       console.error('Cannot save config: no owner CEO agent found');
@@ -237,6 +418,7 @@ export async function saveCompanyConfig(config: CyberCompanyConfig): Promise<boo
     }
 
     await gateway.setAgentFile(ownerAgentId, CONFIG_FILE_NAME, JSON.stringify(config, null, 2));
+    await syncCompanyCeoContextFiles(config, availableAgentIds ?? undefined);
     persistConfigLocally(config, ownerAgentId);
     return true;
   } catch (error) {
@@ -256,8 +438,41 @@ export async function saveCompanyConfig(config: CyberCompanyConfig): Promise<boo
   }
 }
 
+export async function deleteCompanyCascade(
+  currentConfig: CyberCompanyConfig,
+  companyId: string,
+): Promise<CyberCompanyConfig | null> {
+  const deletionPlan = buildConfigAfterCompanyDeletion(currentConfig, companyId);
+  if (!deletionPlan) {
+    return null;
+  }
+
+  const { company, nextConfig, uniqueAgentIds } = deletionPlan;
+  const fallbackOwnerAgentId =
+    resolveOwnerFromConfig(nextConfig) ?? getConfigOwnerAgentId() ?? resolveCompanyCeoAgentId(company);
+
+  if (gateway.isConnected) {
+    const saved = await saveCompanyConfig(nextConfig);
+    if (!saved) {
+      throw new Error('Failed to persist company configuration after deletion');
+    }
+  } else {
+    persistConfigLocally(nextConfig, fallbackOwnerAgentId);
+  }
+
+  clearLocalCompanyState(company.id);
+
+  await cleanupRemoteCompanyAgentResources(uniqueAgentIds);
+
+  if (nextConfig.companies.length === 0) {
+    clearConfigOwnerAgentId();
+  }
+
+  return nextConfig;
+}
+
 export function clearConfigCache() {
   localStorage.removeItem(CACHE_KEY);
-  localStorage.removeItem(CONFIG_OWNER_KEY);
+  clearConfigOwnerAgentId();
   clearPersistedActiveCompanyId();
 }

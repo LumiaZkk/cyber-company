@@ -22,11 +22,17 @@ import {
   summarizeConsistencyAnchors,
   type WorkspaceResourceKind,
 } from "../features/company/workspace-apps";
+import { isStrategicRequirementTopic } from "../features/execution/requirement-kind";
 import { isReliableWorkItemRecord } from "../features/execution/work-item-signal";
+import { pickConversationScopedWorkItem } from "../features/execution/work-item";
 import {
   gateway,
   type AgentListEntry,
 } from "../features/backend";
+import {
+  readCompanyRuntimeSnapshot,
+  writeCompanyRuntimeSnapshot,
+} from "../features/runtime/company-runtime";
 import { useGatewayStore } from "../features/gateway/store";
 import { toast } from "../features/ui/toast-store";
 import { usePageVisibility } from "../lib/use-page-visibility";
@@ -159,7 +165,7 @@ function buildArtifactMirrorRows(input: {
         agentId: artifact.sourceActorId ?? artifact.ownerActorId ?? "",
         agentLabel: owner?.nickname ?? artifact.sourceActorId ?? "公司产物",
         role: owner?.role ?? artifact.kind,
-        workspace: artifact.providerId ? `产品产物库（同步自 ${artifact.providerId}）` : "产品产物库",
+        workspace: "产品产物库",
         name: artifact.sourceName ?? artifact.title,
         path: artifact.sourcePath ?? artifact.sourceUrl ?? artifact.title,
         previewText: artifact.summary,
@@ -192,6 +198,7 @@ function pickDefaultFile(files: WorkspaceFileRow[]): WorkspaceFileRow | null {
 export function WorkspacePage() {
   const navigate = useNavigate();
   const activeCompany = useCompanyStore((state) => state.activeCompany);
+  const activeConversationStates = useCompanyStore((state) => state.activeConversationStates);
   const activeWorkItems = useCompanyStore((state) => state.activeWorkItems);
   const activeArtifacts = useCompanyStore((state) => state.activeArtifacts);
   const syncArtifactMirrorRecords = useCompanyStore((state) => state.syncArtifactMirrorRecords);
@@ -200,12 +207,13 @@ export function WorkspacePage() {
   const supportsAgentFiles = useGatewayStore((state) => state.capabilities.agentFiles);
   const providerManifest = useGatewayStore((state) => state.manifest);
   const isPageVisible = usePageVisibility();
+  const runtimeSnapshot = readCompanyRuntimeSnapshot(activeCompany?.id);
 
-  const [agentsCache, setAgentsCache] = useState<AgentListEntry[]>([]);
+  const [agentsCache, setAgentsCache] = useState<AgentListEntry[]>(() => runtimeSnapshot?.agents ?? []);
   const [filesByAgent, setFilesByAgent] = useState<
     Record<string, { workspace: string; files: Array<Record<string, unknown>> }>
-  >({});
-  const [loadingIndex, setLoadingIndex] = useState(false);
+  >(() => runtimeSnapshot?.workspaceFilesByAgent ?? {});
+  const [loadingIndex, setLoadingIndex] = useState(() => !runtimeSnapshot);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
   const [selectedFileKey, setSelectedFileKey] = useState<string | null>(null);
@@ -219,12 +227,33 @@ export function WorkspacePage() {
   const shouldSyncProviderWorkspace = supportsAgentFiles && providerManifest.storageStrategy === "provider-files";
   const ctoEmployee =
     activeCompany?.employees.find((employee) => employee.metaRole === "cto") ?? null;
+  const ceoEmployee =
+    activeCompany?.employees.find((employee) => employee.metaRole === "ceo") ?? null;
+  const ceoConversationWorkItem = useMemo<WorkItemRecord | null>(
+    () =>
+      pickConversationScopedWorkItem({
+        items: activeWorkItems.filter((item) => item.status !== "archived" && isReliableWorkItemRecord(item)),
+        conversationStates: activeConversationStates,
+        actorId: ceoEmployee?.agentId ?? null,
+      }),
+    [activeConversationStates, activeWorkItems, ceoEmployee?.agentId],
+  );
   const activeWorkspaceWorkItem = useMemo<WorkItemRecord | null>(() => {
+    if (ceoConversationWorkItem) {
+      return ceoConversationWorkItem;
+    }
     const candidates = activeWorkItems
       .filter((item) => item.status !== "archived" && isReliableWorkItemRecord(item))
-      .sort((left, right) => right.updatedAt - left.updatedAt);
+      .sort((left, right) => {
+        const leftStrategic = Number(isStrategicRequirementTopic(left.topicKey));
+        const rightStrategic = Number(isStrategicRequirementTopic(right.topicKey));
+        if (leftStrategic !== rightStrategic) {
+          return rightStrategic - leftStrategic;
+        }
+        return right.updatedAt - left.updatedAt;
+      });
     return candidates[0] ?? null;
-  }, [activeWorkItems]);
+  }, [activeWorkItems, ceoConversationWorkItem]);
   const artifactBackedWorkspaceCount = useMemo(
     () =>
       activeArtifacts.filter(
@@ -232,6 +261,29 @@ export function WorkspacePage() {
       ).length,
     [activeArtifacts],
   );
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    const snapshot = readCompanyRuntimeSnapshot(activeCompany.id);
+    if (!snapshot) {
+      return;
+    }
+    setAgentsCache(snapshot.agents ?? []);
+    setFilesByAgent(snapshot.workspaceFilesByAgent ?? {});
+    setLoadingIndex(false);
+  }, [activeCompany?.id]);
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    writeCompanyRuntimeSnapshot(activeCompany.id, {
+      agents: agentsCache,
+      workspaceFilesByAgent: filesByAgent,
+    });
+  }, [activeCompany, agentsCache, filesByAgent]);
 
   useEffect(() => {
     if (!workspaceApps.length) {
@@ -531,9 +583,15 @@ export function WorkspacePage() {
               {activeWorkspaceWorkItem.title}
             </CardTitle>
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              <Badge variant="secondary">负责人 {activeWorkspaceWorkItem.ownerLabel}</Badge>
-              <Badge variant="secondary">当前阶段 {activeWorkspaceWorkItem.stageLabel}</Badge>
-              <Badge variant="secondary">下一步 {activeWorkspaceWorkItem.nextAction}</Badge>
+              <Badge variant="secondary">
+                负责人 {activeWorkspaceWorkItem.displayOwnerLabel || activeWorkspaceWorkItem.ownerLabel}
+              </Badge>
+              <Badge variant="secondary">
+                当前阶段 {activeWorkspaceWorkItem.displayStage || activeWorkspaceWorkItem.stageLabel}
+              </Badge>
+              <Badge variant="secondary">
+                下一步 {activeWorkspaceWorkItem.displayNextAction || activeWorkspaceWorkItem.nextAction}
+              </Badge>
             </div>
           </CardHeader>
         </Card>
@@ -612,7 +670,7 @@ export function WorkspacePage() {
               </CardTitle>
               <CardDescription className="mt-1">
                 {selectedFile
-                  ? `${selectedFile.agentLabel} · ${selectedFile.role} · ${selectedFile.artifactId ? "产品产物" : "镜像补充"}`
+                  ? `${selectedFile.agentLabel} · ${selectedFile.role} · ${selectedFile.artifactId ? "产品产物" : "补充来源"}`
                   : "从左侧挑一份正文、设定或审校报告，直接在页面里阅读。"}
               </CardDescription>
             </div>

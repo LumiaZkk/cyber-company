@@ -644,6 +644,9 @@ export function SettingsPage() {
                         ? `已发现 ${codexModels.length} 个可用 Codex 模型，可直接供员工编排使用。`
                         : "尚未发现可用 Codex 模型；完成直接授权或本地同步后会自动刷新模型目录。"}
                     </div>
+                    <div className="text-[11px] text-amber-700 mt-1">
+                      这里导入的是 OpenClaw 内部可调用的 Codex 模型，不是独立的 Codex Agent 后端。
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
                     <Button

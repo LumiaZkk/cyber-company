@@ -31,6 +31,10 @@ import {
   type ChatMessage,
   type GatewaySessionRow,
 } from "../features/backend";
+import {
+  readCompanyRuntimeSnapshot,
+  writeCompanyRuntimeSnapshot,
+} from "../features/runtime/company-runtime";
 import { useGatewayStore } from "../features/gateway/store";
 import {
   buildEmployeeOperationalInsights,
@@ -98,12 +102,20 @@ export function CEOHomePage() {
   const connected = useGatewayStore((state) => state.connected);
   const manifest = useGatewayStore((state) => state.manifest);
   const isPageVisible = usePageVisibility();
+  const runtimeSnapshot = readCompanyRuntimeSnapshot(activeCompany?.id);
 
   const [inputValue, setInputValue] = useState("");
   const [sending, setSending] = useState(false);
   const [applyingRecommendationId, setApplyingRecommendationId] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<GatewaySessionRow[]>([]);
-  const [ceoHistory, setCeoHistory] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<GatewaySessionRow[]>(() => runtimeSnapshot?.sessions ?? []);
+  const [ceoHistory, setCeoHistory] = useState<ChatMessage[]>(() => {
+    const ceoAgentId =
+      activeCompany?.employees.find((employee) => employee.metaRole === "ceo")?.agentId ?? null;
+    if (!ceoAgentId) {
+      return [];
+    }
+    return runtimeSnapshot?.ceoHistoryByActor?.[ceoAgentId] ?? [];
+  });
   const [currentTime, setCurrentTime] = useState(() => Date.now());
 
   const ceo = activeCompany?.employees.find((employee) => employee.metaRole === "ceo") ?? null;
@@ -117,6 +129,36 @@ export function CEOHomePage() {
     () => (activeCompany ? buildOrgAdvisorSnapshot(activeCompany) : null),
     [activeCompany],
   );
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    const snapshot = readCompanyRuntimeSnapshot(activeCompany.id);
+    if (!snapshot) {
+      return;
+    }
+    setSessions(snapshot.sessions ?? []);
+    if (ceo?.agentId) {
+      setCeoHistory(snapshot.ceoHistoryByActor?.[ceo.agentId] ?? []);
+    }
+  }, [activeCompany?.id, ceo?.agentId]);
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    writeCompanyRuntimeSnapshot(activeCompany.id, {
+      sessions,
+      ceoHistoryByActor:
+        ceo?.agentId
+          ? {
+              ...(readCompanyRuntimeSnapshot(activeCompany.id)?.ceoHistoryByActor ?? {}),
+              [ceo.agentId]: ceoHistory,
+            }
+          : readCompanyRuntimeSnapshot(activeCompany.id)?.ceoHistoryByActor,
+    });
+  }, [activeCompany, ceo?.agentId, ceoHistory, sessions]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -305,11 +347,8 @@ export function CEOHomePage() {
           sessionKey: handoff.sessionKey,
           actorId:
             activeWorkItems.find((item) => item.id === handoff.taskId)?.ownerActorId ??
-            activeWorkItems.find(
-              (item) =>
-                item.sourceConversationId === handoff.sessionKey ||
-                item.sourceSessionKey === handoff.sessionKey,
-            )?.ownerActorId ??
+            handoff.fromAgentId ??
+            handoff.toAgentIds[0] ??
             null,
           rooms: activeRoomRecords,
           bindings: activeRoomBindings,

@@ -1,9 +1,19 @@
 import { parseAgentIdFromSessionKey } from "../../lib/sessions";
+import {
+  buildRoomRecordIdFromWorkItem,
+  normalizeProductWorkItemIdentity,
+} from "../execution/work-item";
+import {
+  buildTruthComparableText,
+  isInternalAssistantMonologueText,
+  isSyntheticWorkflowPromptText,
+  isTruthMirrorNoiseText,
+  normalizeTruthText,
+} from "../execution/message-truth";
 import type { RoundMessageSnapshot, RoundRecord } from "./types";
 
 const ROUND_CACHE_PREFIX = "cyber_company_round_records:";
 const ROUND_LIMIT = 80;
-
 function isRoundRecord(value: unknown): value is RoundRecord {
   if (!value || typeof value !== "object") {
     return false;
@@ -46,8 +56,73 @@ function getRoundCacheKey(companyId: string) {
   return `${ROUND_CACHE_PREFIX}${companyId.trim()}`;
 }
 
+function normalizeRoundField(value: string | null | undefined): string {
+  return value?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+}
+
+function buildRoundMessageFingerprint(messages: RoundMessageSnapshot[]): string {
+  if (messages.length === 0) {
+    return "";
+  }
+  const first = buildTruthComparableText(messages[0]?.text ?? "");
+  const last = buildTruthComparableText(messages[messages.length - 1]?.text ?? "");
+  return [messages.length, first, last].join("::");
+}
+
+function buildRoundSemanticKey(round: RoundRecord): string {
+  const scope =
+    round.workItemId?.trim() ||
+    round.roomId?.trim() ||
+    round.sourceActorId?.trim() ||
+    round.sourceConversationId?.trim() ||
+    round.sourceSessionKey?.trim() ||
+    "global";
+  const title = normalizeRoundField(round.title);
+  const preview = normalizeRoundField(round.preview);
+  const reason = round.reason ?? "product";
+  const messages = buildRoundMessageFingerprint(round.messages);
+  return [scope, title, preview, reason, messages].join("::");
+}
+
+function sanitizeRoundMessageSnapshots(messages: RoundMessageSnapshot[]): RoundMessageSnapshot[] {
+  const cleaned = messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      ...message,
+      text: normalizeTruthText(message.text),
+    }))
+    .filter((message) => {
+      if (!message.text) {
+        return false;
+      }
+      if (isTruthMirrorNoiseText(message.text) || isSyntheticWorkflowPromptText(message.text)) {
+        return false;
+      }
+      if (message.role === "assistant" && isInternalAssistantMonologueText(message.text)) {
+        return false;
+      }
+      return true;
+    });
+
+  const deduped: RoundMessageSnapshot[] = [];
+  for (const message of cleaned) {
+    const previous = deduped[deduped.length - 1];
+    if (
+      previous &&
+      previous.role === message.role &&
+      previous.text === message.text &&
+      Math.abs(previous.timestamp - message.timestamp) <= 120_000
+    ) {
+      deduped[deduped.length - 1] = message.timestamp >= previous.timestamp ? message : previous;
+      continue;
+    }
+    deduped.push(message);
+  }
+  return deduped;
+}
+
 export function sanitizeRoundRecords(rounds: RoundRecord[]): RoundRecord[] {
-  const deduped = new Map<string, RoundRecord>();
+  const dedupedById = new Map<string, RoundRecord>();
   for (const round of rounds) {
     if (!isRoundRecord(round)) {
       continue;
@@ -60,18 +135,38 @@ export function sanitizeRoundRecords(rounds: RoundRecord[]): RoundRecord[] {
       ?? parseAgentIdFromSessionKey(round.sourceConversationId ?? "")
       ?? parseAgentIdFromSessionKey(round.sourceSessionKey ?? "")
       ?? null;
+    const normalizedIdentity = normalizeProductWorkItemIdentity({
+      workItemId: round.workItemId,
+      title: round.title,
+    });
     const normalizedRound: RoundRecord = {
       ...round,
       sourceActorId,
       sourceActorLabel: round.sourceActorLabel ?? sourceActorId ?? null,
       sourceConversationId: round.sourceConversationId ?? round.sourceSessionKey ?? null,
+      workItemId: normalizedIdentity.workItemId ?? round.workItemId ?? null,
+      roomId:
+        (normalizedIdentity.workItemId
+          ? buildRoomRecordIdFromWorkItem(
+              normalizedIdentity.workItemId,
+            )
+          : round.roomId) ?? null,
+      messages: sanitizeRoundMessageSnapshots(round.messages),
     };
-    const previous = deduped.get(round.id);
+    const previous = dedupedById.get(round.id);
     if (!previous || normalizedRound.archivedAt >= previous.archivedAt) {
-      deduped.set(round.id, normalizedRound);
+      dedupedById.set(round.id, normalizedRound);
     }
   }
-  return [...deduped.values()].sort((left, right) => right.archivedAt - left.archivedAt);
+  const dedupedByMeaning = new Map<string, RoundRecord>();
+  for (const round of dedupedById.values()) {
+    const semanticKey = buildRoundSemanticKey(round);
+    const previous = dedupedByMeaning.get(semanticKey);
+    if (!previous || round.archivedAt >= previous.archivedAt) {
+      dedupedByMeaning.set(semanticKey, round);
+    }
+  }
+  return [...dedupedByMeaning.values()].sort((left, right) => right.archivedAt - left.archivedAt);
 }
 
 export function loadRoundRecords(companyId: string | null | undefined): RoundRecord[] {
