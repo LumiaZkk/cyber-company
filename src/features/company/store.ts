@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import {
+  deleteCompanyCascade,
   loadCompanyConfig,
+  peekCachedCompanyConfig,
   saveCompanyConfig,
   setPersistedActiveCompanyId,
 } from "./persistence";
@@ -9,8 +11,13 @@ import {
   persistConversationMissionRecords,
 } from "./mission-persistence";
 import {
+  loadConversationStateRecords,
+  persistConversationStateRecords,
+} from "./conversation-state-persistence";
+import {
   loadRoundRecords,
   persistRoundRecords,
+  sanitizeRoundRecords,
 } from "./round-persistence";
 import {
   loadArtifactRecords,
@@ -23,6 +30,7 @@ import {
 import {
   loadRequirementRoomRecords,
   persistRequirementRoomRecords,
+  sanitizeRequirementRoomRecords,
 } from "./room-persistence";
 import {
   loadRoomConversationBindings,
@@ -35,6 +43,7 @@ import {
 } from "./work-item-persistence";
 import type {
   ConversationMissionRecord,
+  ConversationStateRecord,
   CyberCompanyConfig,
   Company,
   DispatchRecord,
@@ -52,6 +61,7 @@ import type {
 import {
   buildRoomRecordIdFromWorkItem,
   buildWorkItemRecordFromMission,
+  normalizeProductWorkItemIdentity,
   touchWorkItemArtifacts,
   touchWorkItemDispatches,
 } from "../execution/work-item";
@@ -59,6 +69,7 @@ import {
   areRequirementRoomRecordsEquivalent,
   sortRequirementRoomMemberIds,
 } from "../execution/requirement-room";
+import { isArtifactRequirementTopic } from "../execution/requirement-kind";
 import { reconcileWorkItemRecord } from "../execution/work-item-reconciler";
 
 type CompanyBootstrapPhase = "idle" | "restoring" | "ready" | "missing" | "error";
@@ -68,6 +79,7 @@ interface CompanyState {
   activeCompany: Company | null;
   activeRoomRecords: RequirementRoomRecord[];
   activeMissionRecords: ConversationMissionRecord[];
+  activeConversationStates: ConversationStateRecord[];
   activeWorkItems: WorkItemRecord[];
   activeRoundRecords: RoundRecord[];
   activeArtifacts: ArtifactRecord[];
@@ -82,6 +94,7 @@ interface CompanyState {
 
   // Basic operations
   switchCompany: (id: string) => void;
+  deleteCompany: (id: string) => Promise<void>;
   updateCompany: (company: Partial<Company>) => Promise<void>;
   upsertTask: (task: TrackedTask) => Promise<void>;
   upsertHandoff: (handoff: HandoffRecord) => Promise<void>;
@@ -97,6 +110,13 @@ interface CompanyState {
   deleteRoomRecord: (roomId: string) => void;
   upsertMissionRecord: (mission: ConversationMissionRecord) => void;
   deleteMissionRecord: (missionId: string) => void;
+  setConversationCurrentWorkKey: (
+    conversationId: string,
+    workKey: string | null,
+    workItemId?: string | null,
+    roundId?: string | null,
+  ) => void;
+  clearConversationState: (conversationId: string) => void;
   upsertWorkItemRecord: (workItem: WorkItemRecord) => void;
   deleteWorkItemRecord: (workItemId: string) => void;
   upsertRoundRecord: (round: RoundRecord) => void;
@@ -105,6 +125,7 @@ interface CompanyState {
   syncArtifactMirrorRecords: (artifacts: ArtifactRecord[], mirrorPrefix?: string) => void;
   deleteArtifactRecord: (artifactId: string) => void;
   upsertDispatchRecord: (dispatch: DispatchRecord) => void;
+  replaceDispatchRecords: (dispatches: DispatchRecord[]) => void;
   deleteDispatchRecord: (dispatchId: string) => void;
 }
 
@@ -135,6 +156,37 @@ function persistActiveRooms(companyId: string | null | undefined, rooms: Require
   persistRequirementRoomRecords(companyId, rooms);
 }
 
+function normalizeRoomRecordForState(
+  room: RequirementRoomRecord,
+  companyId: string,
+): RequirementRoomRecord {
+  const normalizedIdentity = normalizeProductWorkItemIdentity({
+    workItemId: room.workItemId,
+    topicKey: room.topicKey,
+    title: room.title,
+  });
+  const normalizedWorkItemId = normalizedIdentity.workItemId ?? room.workItemId;
+  const normalizedRoomId = normalizedWorkItemId
+    ? buildRoomRecordIdFromWorkItem(normalizedWorkItemId)
+    : room.id;
+  return {
+    ...room,
+    id: normalizedRoomId,
+    companyId: room.companyId ?? companyId,
+    workItemId: normalizedWorkItemId,
+    sessionKey:
+      normalizedWorkItemId && room.sessionKey.startsWith("room:")
+        ? `room:${normalizedRoomId}`
+        : room.sessionKey,
+    topicKey: normalizedIdentity.topicKey ?? room.topicKey,
+    ownerActorId: room.ownerActorId ?? room.ownerAgentId ?? null,
+    batonActorId: room.batonActorId ?? null,
+    memberIds: mergeRoomMemberIds(room.memberIds, []),
+    memberActorIds: mergeRoomMemberIds(room.memberActorIds ?? room.memberIds, room.memberIds),
+    headline: room.headline ?? room.title,
+  };
+}
+
 function persistActiveRoomBindings(
   companyId: string | null | undefined,
   bindings: RoomConversationBindingRecord[],
@@ -147,6 +199,13 @@ function persistActiveMissions(
   missions: ConversationMissionRecord[],
 ) {
   persistConversationMissionRecords(companyId, missions);
+}
+
+function persistActiveConversationStates(
+  companyId: string | null | undefined,
+  states: ConversationStateRecord[],
+) {
+  persistConversationStateRecords(companyId, states);
 }
 
 function persistActiveWorkItems(
@@ -198,6 +257,9 @@ function areWorkStepRecordsEquivalent(
 function areWorkItemRecordsEquivalent(left: WorkItemRecord, right: WorkItemRecord): boolean {
   if (
     left.id !== right.id ||
+    left.workKey !== right.workKey ||
+    left.kind !== right.kind ||
+    left.roundId !== right.roundId ||
     left.companyId !== right.companyId ||
     (left.sessionKey ?? null) !== (right.sessionKey ?? null) ||
     (left.topicKey ?? null) !== (right.topicKey ?? null) ||
@@ -218,7 +280,12 @@ function areWorkItemRecordsEquivalent(left: WorkItemRecord, right: WorkItemRecor
     left.startedAt !== right.startedAt ||
     (left.completedAt ?? null) !== (right.completedAt ?? null) ||
     left.summary !== right.summary ||
-    left.nextAction !== right.nextAction
+    left.nextAction !== right.nextAction ||
+    left.headline !== right.headline ||
+    left.displayStage !== right.displayStage ||
+    left.displaySummary !== right.displaySummary ||
+    left.displayOwnerLabel !== right.displayOwnerLabel ||
+    left.displayNextAction !== right.displayNextAction
   ) {
     return false;
   }
@@ -233,6 +300,86 @@ function areWorkItemRecordsEquivalent(left: WorkItemRecord, right: WorkItemRecor
     return false;
   }
   return left.steps.every((step, index) => areWorkStepRecordsEquivalent(step, right.steps[index]!));
+}
+
+function areRoundRecordsEquivalent(left: RoundRecord, right: RoundRecord): boolean {
+  return (
+    left.id === right.id &&
+    left.companyId === right.companyId &&
+    left.title === right.title &&
+    (left.preview ?? null) === (right.preview ?? null) &&
+    (left.workItemId ?? null) === (right.workItemId ?? null) &&
+    (left.roomId ?? null) === (right.roomId ?? null) &&
+    (left.reason ?? null) === (right.reason ?? null) &&
+    (left.sourceActorId ?? null) === (right.sourceActorId ?? null) &&
+    (left.sourceActorLabel ?? null) === (right.sourceActorLabel ?? null) &&
+    (left.sourceSessionKey ?? null) === (right.sourceSessionKey ?? null) &&
+    (left.sourceConversationId ?? null) === (right.sourceConversationId ?? null) &&
+    (left.providerArchiveId ?? null) === (right.providerArchiveId ?? null) &&
+    left.archivedAt === right.archivedAt &&
+    left.restorable === right.restorable &&
+    left.messages.length === right.messages.length &&
+    left.messages.every((message, index) => {
+      const other = right.messages[index];
+      if (!other) {
+        return false;
+      }
+      return (
+        message.role === other.role &&
+        message.text === other.text &&
+        message.timestamp === other.timestamp
+      );
+    })
+  );
+}
+
+function areRoundRecordCollectionsEquivalent(left: RoundRecord[], right: RoundRecord[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((round, index) => {
+    const other = right[index];
+    return Boolean(other) && areRoundRecordsEquivalent(round, other);
+  });
+}
+
+function areRequirementRoomRecordCollectionsEquivalent(
+  left: RequirementRoomRecord[],
+  right: RequirementRoomRecord[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((room, index) => {
+    const other = right[index];
+    return Boolean(other) && areRequirementRoomRecordsEquivalent(room, other);
+  });
+}
+
+function areWorkItemRecordCollectionsEquivalent(
+  left: WorkItemRecord[],
+  right: WorkItemRecord[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((workItem, index) => {
+    const other = right[index];
+    return Boolean(other) && areWorkItemRecordsEquivalent(workItem, other);
+  });
+}
+
+function areConversationStateRecordsEquivalent(
+  left: ConversationStateRecord,
+  right: ConversationStateRecord,
+): boolean {
+  return (
+    left.companyId === right.companyId &&
+    left.conversationId === right.conversationId &&
+    (left.currentWorkKey ?? null) === (right.currentWorkKey ?? null) &&
+    (left.currentWorkItemId ?? null) === (right.currentWorkItemId ?? null) &&
+    (left.currentRoundId ?? null) === (right.currentRoundId ?? null)
+  );
 }
 
 function syncArtifactLinks(
@@ -331,6 +478,7 @@ function reconcileStoredWorkItems(input: {
 function loadProductState(companyId: string) {
   const loadedRooms = loadRequirementRoomRecords(companyId);
   const loadedMissions = loadConversationMissionRecords(companyId);
+  const loadedConversationStates = loadConversationStateRecords(companyId);
   const loadedArtifacts = loadArtifactRecords(companyId);
   const loadedDispatches = loadDispatchRecords(companyId);
   const loadedRoomBindings = loadRoomConversationBindings(companyId);
@@ -346,6 +494,7 @@ function loadProductState(companyId: string) {
   return {
     loadedRooms,
     loadedMissions,
+    loadedConversationStates,
     loadedWorkItems: syncArtifactLinks(syncDispatchLinks(loadedWorkItems, loadedDispatches), loadedArtifacts),
     loadedRounds,
     loadedArtifacts,
@@ -353,6 +502,57 @@ function loadProductState(companyId: string) {
     loadedRoomBindings,
   };
 }
+
+function createEmptyProductState() {
+  return {
+    loadedRooms: [] as RequirementRoomRecord[],
+    loadedMissions: [] as ConversationMissionRecord[],
+    loadedConversationStates: [] as ConversationStateRecord[],
+    loadedWorkItems: [] as WorkItemRecord[],
+    loadedRounds: [] as RoundRecord[],
+    loadedArtifacts: [] as ArtifactRecord[],
+    loadedDispatches: [] as DispatchRecord[],
+    loadedRoomBindings: [] as RoomConversationBindingRecord[],
+  };
+}
+
+function loadInitialCompanyState() {
+  try {
+    const config = peekCachedCompanyConfig();
+    const activeCompany = config?.companies.find((company) => company.id === config.activeCompanyId) ?? null;
+    const state = activeCompany ? loadProductState(activeCompany.id) : createEmptyProductState();
+
+    return {
+      config: config ?? null,
+      activeCompany,
+      activeRoomRecords: state.loadedRooms,
+      activeMissionRecords: state.loadedMissions,
+      activeConversationStates: state.loadedConversationStates,
+      activeWorkItems: state.loadedWorkItems,
+      activeRoundRecords: state.loadedRounds,
+      activeArtifacts: state.loadedArtifacts,
+      activeDispatches: state.loadedDispatches,
+      activeRoomBindings: state.loadedRoomBindings,
+      bootstrapPhase: activeCompany ? ("ready" as const) : config ? ("missing" as const) : ("idle" as const),
+    };
+  } catch {
+    return {
+      config: null,
+      activeCompany: null,
+      activeRoomRecords: [] as RequirementRoomRecord[],
+      activeMissionRecords: [] as ConversationMissionRecord[],
+      activeConversationStates: [] as ConversationStateRecord[],
+      activeWorkItems: [] as WorkItemRecord[],
+      activeRoundRecords: [] as RoundRecord[],
+      activeArtifacts: [] as ArtifactRecord[],
+      activeDispatches: [] as DispatchRecord[],
+      activeRoomBindings: [] as RoomConversationBindingRecord[],
+      bootstrapPhase: "idle" as const,
+    };
+  }
+}
+
+const initialCompanyState = loadInitialCompanyState();
 
 function areMissionStepsEqual(
   left: ConversationMissionRecord["planSteps"],
@@ -403,18 +603,19 @@ function isSameMissionRecord(
 }
 
 export const useCompanyStore = create<CompanyState>((set, get) => ({
-  config: null,
-  activeCompany: null,
-  activeRoomRecords: [],
-  activeMissionRecords: [],
-  activeWorkItems: [],
-  activeRoundRecords: [],
-  activeArtifacts: [],
-  activeDispatches: [],
-  activeRoomBindings: [],
+  config: initialCompanyState.config,
+  activeCompany: initialCompanyState.activeCompany,
+  activeRoomRecords: initialCompanyState.activeRoomRecords,
+  activeMissionRecords: initialCompanyState.activeMissionRecords,
+  activeConversationStates: initialCompanyState.activeConversationStates,
+  activeWorkItems: initialCompanyState.activeWorkItems,
+  activeRoundRecords: initialCompanyState.activeRoundRecords,
+  activeArtifacts: initialCompanyState.activeArtifacts,
+  activeDispatches: initialCompanyState.activeDispatches,
+  activeRoomBindings: initialCompanyState.activeRoomBindings,
   loading: false,
   error: null,
-  bootstrapPhase: "idle",
+  bootstrapPhase: initialCompanyState.bootstrapPhase,
 
   loadConfig: async () => {
     set({ loading: true, error: null, bootstrapPhase: "restoring" });
@@ -422,22 +623,13 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       const config = await loadCompanyConfig();
       if (config) {
         const active = config.companies.find((c) => c.id === config.activeCompanyId) || null;
-        const state = active
-          ? loadProductState(active.id)
-          : {
-              loadedRooms: [],
-              loadedMissions: [],
-              loadedWorkItems: [],
-              loadedRounds: [],
-              loadedArtifacts: [],
-              loadedDispatches: [],
-              loadedRoomBindings: [],
-            };
+        const state = active ? loadProductState(active.id) : createEmptyProductState();
         set({
           config,
           activeCompany: active,
           activeRoomRecords: state.loadedRooms,
           activeMissionRecords: state.loadedMissions,
+          activeConversationStates: state.loadedConversationStates,
           activeWorkItems: state.loadedWorkItems,
           activeRoundRecords: state.loadedRounds,
           activeArtifacts: state.loadedArtifacts,
@@ -455,6 +647,7 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
           activeCompany: null,
           activeRoomRecords: [],
           activeMissionRecords: [],
+          activeConversationStates: [],
           activeWorkItems: [],
           activeRoundRecords: [],
           activeArtifacts: [],
@@ -470,6 +663,7 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
         error: message,
         activeRoomRecords: [],
         activeMissionRecords: [],
+        activeConversationStates: [],
         activeWorkItems: [],
         activeRoundRecords: [],
         activeArtifacts: [],
@@ -519,6 +713,7 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       activeCompany: company,
       activeRoomRecords: state.loadedRooms,
       activeMissionRecords: state.loadedMissions,
+      activeConversationStates: state.loadedConversationStates,
       activeWorkItems: state.loadedWorkItems,
       activeRoundRecords: state.loadedRounds,
       activeArtifacts: state.loadedArtifacts,
@@ -527,9 +722,49 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       bootstrapPhase: "ready",
     });
     persistActiveWorkItems(company.id, state.loadedWorkItems);
+    persistActiveConversationStates(company.id, state.loadedConversationStates);
 
     // Auto save on switch
     get().saveConfig();
+  },
+
+  deleteCompany: async (id: string) => {
+    const { config } = get();
+    if (!config) {
+      return;
+    }
+
+    set({ loading: true, error: null });
+    try {
+      const nextConfig = await deleteCompanyCascade(config, id);
+      const nextActiveCompany =
+        nextConfig?.companies.find((company) => company.id === nextConfig.activeCompanyId) ?? null;
+      const nextState = nextActiveCompany ? loadProductState(nextActiveCompany.id) : createEmptyProductState();
+
+      set({
+        config: nextConfig,
+        activeCompany: nextActiveCompany,
+        activeRoomRecords: nextState.loadedRooms,
+        activeMissionRecords: nextState.loadedMissions,
+        activeConversationStates: nextState.loadedConversationStates,
+        activeWorkItems: nextState.loadedWorkItems,
+        activeRoundRecords: nextState.loadedRounds,
+        activeArtifacts: nextState.loadedArtifacts,
+        activeDispatches: nextState.loadedDispatches,
+        activeRoomBindings: nextState.loadedRoomBindings,
+        loading: false,
+        bootstrapPhase: nextActiveCompany ? "ready" : "missing",
+      });
+
+      if (nextActiveCompany) {
+        persistActiveWorkItems(nextActiveCompany.id, nextState.loadedWorkItems);
+        persistActiveConversationStates(nextActiveCompany.id, nextState.loadedConversationStates);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ error: message, loading: false });
+      throw error;
+    }
   },
 
   updateCompany: async (updates: Partial<Company>) => {
@@ -651,24 +886,47 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
     if (!activeCompany) {
       return;
     }
+    if (
+      (room.topicKey && isArtifactRequirementTopic(room.topicKey)) ||
+      room.workItemId?.startsWith("topic:artifact:")
+    ) {
+      return;
+    }
 
+    const normalizedRoom = normalizeRoomRecordForState(room, activeCompany.id);
+    const canonicalRoomId = normalizedRoom.id;
+    const canonicalWorkItemId = normalizedRoom.workItemId ?? null;
     const next = [...activeRoomRecords];
-    const index = next.findIndex((item) => item.id === room.id);
+    const index = next.findIndex(
+      (item) =>
+        item.id === canonicalRoomId ||
+        (canonicalWorkItemId
+          ? item.workItemId === canonicalWorkItemId || item.id === buildRoomRecordIdFromWorkItem(canonicalWorkItemId)
+          : false),
+    );
     let nextRoomRecord: RequirementRoomRecord;
     if (index >= 0) {
       const existing = next[index];
       nextRoomRecord = {
         ...existing,
-        ...room,
-        companyId: room.companyId ?? existing.companyId ?? activeCompany.id,
-        workItemId: room.workItemId ?? existing.workItemId,
-        ownerActorId: room.ownerActorId ?? existing.ownerActorId ?? room.ownerAgentId ?? existing.ownerAgentId ?? null,
-        memberActorIds: mergeRoomMemberIds(existing.memberActorIds ?? existing.memberIds, room.memberActorIds ?? room.memberIds),
-        status: room.status ?? existing.status ?? "active",
-        memberIds: mergeRoomMemberIds(existing.memberIds, room.memberIds),
-        topicKey: room.topicKey ?? existing.topicKey,
-        transcript: mergeRoomTranscript(existing.transcript, room.transcript),
-        updatedAt: Math.max(existing.updatedAt, room.updatedAt),
+        ...normalizedRoom,
+        id: canonicalRoomId,
+        companyId: normalizedRoom.companyId ?? existing.companyId ?? activeCompany.id,
+        workItemId: normalizedRoom.workItemId ?? existing.workItemId,
+        ownerActorId: normalizedRoom.ownerActorId ?? existing.ownerActorId ?? normalizedRoom.ownerAgentId ?? existing.ownerAgentId ?? null,
+        batonActorId: normalizedRoom.batonActorId ?? existing.batonActorId ?? null,
+        memberActorIds: mergeRoomMemberIds(existing.memberActorIds ?? existing.memberIds, normalizedRoom.memberActorIds ?? normalizedRoom.memberIds),
+        status: normalizedRoom.status ?? existing.status ?? "active",
+        headline: normalizedRoom.headline ?? existing.headline ?? normalizedRoom.title ?? existing.title,
+        progress: normalizedRoom.progress ?? existing.progress,
+        lastConclusionAt:
+          normalizedRoom.lastConclusionAt ??
+          existing.lastConclusionAt ??
+          null,
+        memberIds: mergeRoomMemberIds(existing.memberIds, normalizedRoom.memberIds),
+        topicKey: normalizedRoom.topicKey ?? existing.topicKey,
+        transcript: mergeRoomTranscript(existing.transcript, normalizedRoom.transcript),
+        updatedAt: Math.max(existing.updatedAt, normalizedRoom.updatedAt),
       };
       if (areRequirementRoomRecordsEquivalent(existing, nextRoomRecord)) {
         return;
@@ -676,28 +934,40 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       next[index] = nextRoomRecord;
     } else {
       nextRoomRecord = {
-        ...room,
-        companyId: room.companyId ?? activeCompany.id,
-        workItemId: room.workItemId,
-        ownerActorId: room.ownerActorId ?? room.ownerAgentId ?? null,
-        memberActorIds: mergeRoomMemberIds(room.memberActorIds ?? room.memberIds, room.memberIds),
-        status: room.status ?? "active",
-        transcript: mergeRoomTranscript([], room.transcript),
+        ...normalizedRoom,
+        id: canonicalRoomId,
+        companyId: normalizedRoom.companyId ?? activeCompany.id,
+        workItemId: normalizedRoom.workItemId,
+        ownerActorId: normalizedRoom.ownerActorId ?? normalizedRoom.ownerAgentId ?? null,
+        batonActorId: normalizedRoom.batonActorId ?? null,
+        memberActorIds: mergeRoomMemberIds(normalizedRoom.memberActorIds ?? normalizedRoom.memberIds, normalizedRoom.memberIds),
+        status: normalizedRoom.status ?? "active",
+        headline: normalizedRoom.headline ?? normalizedRoom.title,
+        progress: normalizedRoom.progress,
+        transcript: mergeRoomTranscript([], normalizedRoom.transcript),
+        lastConclusionAt: normalizedRoom.lastConclusionAt ?? null,
       };
       next.push(nextRoomRecord);
     }
 
-    const sorted = next.sort((left, right) => right.updatedAt - left.updatedAt);
+    const sorted = sanitizeRequirementRoomRecords(activeCompany.id, next);
+    const roomRecord = sorted.find((item) => item.id === canonicalRoomId) ?? nextRoomRecord;
     const reconciledWorkItems = reconcileStoredWorkItems({
       companyId: activeCompany.id,
       workItems: activeWorkItems,
       rooms: sorted,
       artifacts: activeArtifacts,
       dispatches: activeDispatches,
-      targetWorkItemIds: [room.workItemId],
-      targetRoomIds: [room.id],
-      targetTopicKeys: [room.topicKey],
+      targetWorkItemIds: [roomRecord?.workItemId],
+      targetRoomIds: [roomRecord?.id],
+      targetTopicKeys: [roomRecord?.topicKey],
     });
+    if (
+      areRequirementRoomRecordCollectionsEquivalent(activeRoomRecords, sorted) &&
+      areWorkItemRecordCollectionsEquivalent(activeWorkItems, reconciledWorkItems)
+    ) {
+      return;
+    }
     set({ activeRoomRecords: sorted, activeWorkItems: reconciledWorkItems });
     persistActiveRooms(activeCompany.id, sorted);
     persistActiveWorkItems(activeCompany.id, reconciledWorkItems);
@@ -708,9 +978,51 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
     if (!activeCompany || messages.length === 0) {
       return;
     }
+    if (
+      (meta?.topicKey && isArtifactRequirementTopic(meta.topicKey)) ||
+      meta?.workItemId?.startsWith("topic:artifact:")
+    ) {
+      return;
+    }
 
-    const index = activeRoomRecords.findIndex((room) => room.id === roomId);
     const now = messages.reduce((latest, message) => Math.max(latest, message.timestamp), Date.now());
+    const draftRoom = normalizeRoomRecordForState(
+      {
+        id: roomId,
+        sessionKey: meta?.sessionKey ?? roomId,
+        title: meta?.title ?? "需求团队房间",
+        companyId: meta?.companyId ?? activeCompany.id,
+        workItemId: meta?.workItemId,
+        topicKey: meta?.topicKey,
+        ownerActorId: meta?.ownerActorId ?? meta?.ownerAgentId ?? null,
+        batonActorId: meta?.batonActorId ?? null,
+        memberActorIds: mergeRoomMemberIds(meta?.memberActorIds ?? meta?.memberIds ?? [], meta?.memberIds ?? []),
+        status: meta?.status ?? "active",
+        headline: meta?.headline ?? meta?.title ?? "需求团队房间",
+        progress: meta?.progress,
+        memberIds: meta?.memberIds ?? [],
+        ownerAgentId: meta?.ownerAgentId ?? null,
+        transcript: messages,
+        createdAt: now,
+        updatedAt: now,
+        lastConclusionAt:
+          meta?.lastConclusionAt ??
+          (messages
+            .filter((message) => message.role === "assistant")
+            .reduce((latest, message) => Math.max(latest, message.timestamp), 0) || null),
+        lastSourceSyncAt: meta?.lastSourceSyncAt,
+      },
+      activeCompany.id,
+    );
+    const canonicalRoomId = draftRoom.id;
+    const canonicalWorkItemId = draftRoom.workItemId ?? null;
+    const index = activeRoomRecords.findIndex(
+      (room) =>
+        room.id === canonicalRoomId ||
+        (canonicalWorkItemId
+          ? room.workItemId === canonicalWorkItemId || room.id === buildRoomRecordIdFromWorkItem(canonicalWorkItemId)
+          : false),
+    );
     const next = [...activeRoomRecords];
     let nextRoomRecord: RequirementRoomRecord;
 
@@ -718,16 +1030,25 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       const existing = next[index];
       nextRoomRecord = {
         ...existing,
-        ...meta,
+        ...draftRoom,
         id: existing.id,
-        companyId: meta?.companyId ?? existing.companyId ?? activeCompany.id,
-        workItemId: meta?.workItemId ?? existing.workItemId,
-        ownerActorId: meta?.ownerActorId ?? existing.ownerActorId ?? existing.ownerAgentId ?? null,
-        memberActorIds: mergeRoomMemberIds(existing.memberActorIds ?? existing.memberIds, meta?.memberActorIds ?? meta?.memberIds ?? []),
-        status: meta?.status ?? existing.status ?? "active",
-        memberIds: mergeRoomMemberIds(existing.memberIds, meta?.memberIds ?? []),
-        topicKey: meta?.topicKey ?? existing.topicKey,
+        companyId: draftRoom.companyId ?? existing.companyId ?? activeCompany.id,
+        workItemId: draftRoom.workItemId ?? existing.workItemId,
+        ownerActorId: draftRoom.ownerActorId ?? existing.ownerActorId ?? existing.ownerAgentId ?? null,
+        batonActorId: draftRoom.batonActorId ?? existing.batonActorId ?? null,
+        memberActorIds: mergeRoomMemberIds(existing.memberActorIds ?? existing.memberIds, draftRoom.memberActorIds ?? draftRoom.memberIds ?? []),
+        status: draftRoom.status ?? existing.status ?? "active",
+        headline: draftRoom.headline ?? existing.headline ?? draftRoom.title ?? existing.title,
+        progress: draftRoom.progress ?? existing.progress,
+        memberIds: mergeRoomMemberIds(existing.memberIds, draftRoom.memberIds ?? []),
+        topicKey: draftRoom.topicKey ?? existing.topicKey,
         transcript: mergeRoomTranscript(existing.transcript, messages),
+        lastConclusionAt:
+          draftRoom.lastConclusionAt ??
+          existing.lastConclusionAt ??
+          (messages
+            .filter((message) => message.role === "assistant")
+            .reduce((latest, message) => Math.max(latest, message.timestamp), 0) || null),
         updatedAt: Math.max(existing.updatedAt, now),
       };
       if (areRequirementRoomRecordsEquivalent(existing, nextRoomRecord)) {
@@ -736,27 +1057,15 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       next[index] = nextRoomRecord;
     } else {
       nextRoomRecord = {
-        id: roomId,
-        sessionKey: meta?.sessionKey ?? roomId,
-        title: meta?.title ?? "需求团队房间",
-        companyId: meta?.companyId ?? activeCompany.id,
-        workItemId: meta?.workItemId,
-        topicKey: meta?.topicKey,
-        ownerActorId: meta?.ownerActorId ?? meta?.ownerAgentId ?? null,
-        memberActorIds: mergeRoomMemberIds(meta?.memberActorIds ?? meta?.memberIds ?? [], meta?.memberIds ?? []),
-        status: meta?.status ?? "active",
-        memberIds: meta?.memberIds ?? [],
-        ownerAgentId: meta?.ownerAgentId ?? null,
+        ...draftRoom,
+        id: canonicalRoomId,
         transcript: mergeRoomTranscript([], messages),
-        createdAt: now,
-        updatedAt: now,
-        lastSourceSyncAt: meta?.lastSourceSyncAt,
       };
       next.push(nextRoomRecord);
     }
 
-    const sorted = next.sort((left, right) => right.updatedAt - left.updatedAt);
-    const roomRecord = sorted.find((room) => room.id === roomId) ?? null;
+    const sorted = sanitizeRequirementRoomRecords(activeCompany.id, next);
+    const roomRecord = sorted.find((room) => room.id === canonicalRoomId) ?? null;
     const reconciledWorkItems = reconcileStoredWorkItems({
       companyId: activeCompany.id,
       workItems: activeWorkItems,
@@ -764,9 +1073,15 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       artifacts: activeArtifacts,
       dispatches: activeDispatches,
       targetWorkItemIds: [roomRecord?.workItemId],
-      targetRoomIds: [roomId],
+      targetRoomIds: [roomRecord?.id ?? canonicalRoomId],
       targetTopicKeys: [roomRecord?.topicKey],
     });
+    if (
+      areRequirementRoomRecordCollectionsEquivalent(activeRoomRecords, sorted) &&
+      areWorkItemRecordCollectionsEquivalent(activeWorkItems, reconciledWorkItems)
+    ) {
+      return;
+    }
     set({ activeRoomRecords: sorted, activeWorkItems: reconciledWorkItems });
     persistActiveRooms(activeCompany.id, sorted);
     persistActiveWorkItems(activeCompany.id, reconciledWorkItems);
@@ -848,6 +1163,9 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       ?? activeWorkItems.find((item) => item.sourceMissionId === mission.id)
       ?? null;
     const workItem =
+      mission.topicKey && isArtifactRequirementTopic(mission.topicKey)
+        ? null
+        :
       reconcileWorkItemRecord({
         companyId: activeCompany.id,
         existingWorkItem,
@@ -862,23 +1180,25 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
         room: matchingRoom,
       });
     const nextWorkItems = [...activeWorkItems];
-    const workItemIndex = nextWorkItems.findIndex((item) => item.id === workItem.id);
-    if (workItemIndex >= 0) {
-      const existingWorkItem = nextWorkItems[workItemIndex];
-      if (workItem.updatedAt > existingWorkItem.updatedAt) {
-        nextWorkItems[workItemIndex] = {
-          ...existingWorkItem,
-          ...workItem,
-          roomId: workItem.roomId ?? existingWorkItem.roomId,
-          artifactIds: workItem.artifactIds.length > 0 ? workItem.artifactIds : existingWorkItem.artifactIds,
-          dispatchIds: workItem.dispatchIds.length > 0 ? workItem.dispatchIds : existingWorkItem.dispatchIds,
-        };
+    if (workItem) {
+      const workItemIndex = nextWorkItems.findIndex((item) => item.id === workItem.id);
+      if (workItemIndex >= 0) {
+        const existingWorkItem = nextWorkItems[workItemIndex];
+        if (workItem.updatedAt > existingWorkItem.updatedAt) {
+          nextWorkItems[workItemIndex] = {
+            ...existingWorkItem,
+            ...workItem,
+            roomId: workItem.roomId ?? existingWorkItem.roomId,
+            artifactIds: workItem.artifactIds.length > 0 ? workItem.artifactIds : existingWorkItem.artifactIds,
+            dispatchIds: workItem.dispatchIds.length > 0 ? workItem.dispatchIds : existingWorkItem.dispatchIds,
+          };
+        }
+      } else {
+        nextWorkItems.push(workItem);
       }
-    } else {
-      nextWorkItems.push(workItem);
     }
 
-    const sortedWorkItems = nextWorkItems.sort((left, right) => right.updatedAt - left.updatedAt);
+    const sortedWorkItems = sanitizeWorkItemRecords(nextWorkItems);
     set({ activeMissionRecords: sorted, activeWorkItems: sortedWorkItems });
     persistActiveMissions(activeCompany.id, sorted);
     persistActiveWorkItems(activeCompany.id, sortedWorkItems);
@@ -895,9 +1215,60 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
     persistActiveMissions(activeCompany.id, next);
   },
 
+  setConversationCurrentWorkKey: (conversationId, workKey, workItemId, roundId) => {
+    const { activeCompany, activeConversationStates } = get();
+    if (!activeCompany || !conversationId) {
+      return;
+    }
+
+    const nextRecord: ConversationStateRecord = {
+      companyId: activeCompany.id,
+      conversationId,
+      currentWorkKey: workKey ?? null,
+      currentWorkItemId: workItemId ?? null,
+      currentRoundId: roundId ?? null,
+      updatedAt: Date.now(),
+    };
+    const next = [...activeConversationStates];
+    const index = next.findIndex((record) => record.conversationId === conversationId);
+    if (index >= 0) {
+      const existing = next[index]!;
+      const merged: ConversationStateRecord = {
+        ...existing,
+        ...nextRecord,
+        companyId: activeCompany.id,
+      };
+      if (areConversationStateRecordsEquivalent(existing, merged)) {
+        return;
+      }
+      next[index] = merged;
+    } else {
+      next.push(nextRecord);
+    }
+    const sorted = next.sort((left, right) => right.updatedAt - left.updatedAt);
+    set({ activeConversationStates: sorted });
+    persistActiveConversationStates(activeCompany.id, sorted);
+  },
+
+  clearConversationState: (conversationId) => {
+    const { activeCompany, activeConversationStates } = get();
+    if (!activeCompany || !conversationId) {
+      return;
+    }
+    const next = activeConversationStates.filter((record) => record.conversationId !== conversationId);
+    if (next.length === activeConversationStates.length) {
+      return;
+    }
+    set({ activeConversationStates: next });
+    persistActiveConversationStates(activeCompany.id, next);
+  },
+
   upsertWorkItemRecord: (workItem: WorkItemRecord) => {
     const { activeCompany, activeWorkItems, activeRoomRecords } = get();
     if (!activeCompany) {
+      return;
+    }
+    if (workItem.topicKey && isArtifactRequirementTopic(workItem.topicKey)) {
       return;
     }
 
@@ -911,9 +1282,6 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
     };
     if (index >= 0) {
       const existing = next[index];
-      if (normalizedWorkItem.updatedAt <= existing.updatedAt) {
-        return;
-      }
       const mergedWorkItem = {
         ...existing,
         ...normalizedWorkItem,
@@ -925,6 +1293,7 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
         sourceConversationId:
           normalizedWorkItem.sourceConversationId ?? existing.sourceConversationId ?? null,
         providerId: normalizedWorkItem.providerId ?? existing.providerId ?? null,
+        updatedAt: Math.max(existing.updatedAt, normalizedWorkItem.updatedAt),
       };
       if (areWorkItemRecordsEquivalent(existing, mergedWorkItem)) {
         return;
@@ -934,7 +1303,7 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       next.push(normalizedWorkItem);
     }
 
-    const sorted = next.sort((left, right) => right.updatedAt - left.updatedAt);
+    const sorted = sanitizeWorkItemRecords(next);
     const nextRooms = activeRoomRecords.map((room) =>
       room.workItemId === normalizedWorkItem.id || room.id === normalizedWorkItem.roomId
         ? {
@@ -985,7 +1354,10 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       next.push(normalized);
     }
 
-    const sorted = next.sort((left, right) => right.archivedAt - left.archivedAt);
+    const sorted = sanitizeRoundRecords(next);
+    if (areRoundRecordCollectionsEquivalent(activeRoundRecords, sorted)) {
+      return;
+    }
     set({ activeRoundRecords: sorted });
     persistActiveRounds(activeCompany.id, sorted);
   },
@@ -1146,6 +1518,25 @@ export const useCompanyStore = create<CompanyState>((set, get) => ({
       targetWorkItemIds: [dispatch.workItemId],
       targetRoomIds: [dispatch.roomId],
       targetTopicKeys: [dispatch.topicKey],
+    });
+    set({ activeDispatches: sortedDispatches, activeWorkItems: syncedWorkItems });
+    persistActiveDispatches(activeCompany.id, sortedDispatches);
+    persistActiveWorkItems(activeCompany.id, syncedWorkItems);
+  },
+
+  replaceDispatchRecords: (dispatches: DispatchRecord[]) => {
+    const { activeCompany, activeWorkItems, activeArtifacts, activeRoomRecords } = get();
+    if (!activeCompany) {
+      return;
+    }
+
+    const sortedDispatches = [...dispatches].sort((left, right) => right.updatedAt - left.updatedAt);
+    const syncedWorkItems = reconcileStoredWorkItems({
+      companyId: activeCompany.id,
+      workItems: syncArtifactLinks(syncDispatchLinks(activeWorkItems, sortedDispatches), activeArtifacts),
+      rooms: activeRoomRecords,
+      artifacts: activeArtifacts,
+      dispatches: sortedDispatches,
     });
     set({ activeDispatches: sortedDispatches, activeWorkItems: syncedWorkItems });
     persistActiveDispatches(activeCompany.id, sortedDispatches);

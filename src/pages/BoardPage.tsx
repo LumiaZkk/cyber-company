@@ -19,6 +19,7 @@ import { ExecutionStateBadge } from "../components/execution-state-badge";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { syncCompanyCommunicationState } from "../features/company/sync-company-communication";
 import { useCompanyStore } from "../features/company/store";
 import { buildRequirementRoomHrefFromRecord, buildRequirementRoomRoute } from "../features/execution/requirement-room";
 import type {
@@ -28,12 +29,16 @@ import type {
   WorkItemRecord,
 } from "../features/company/types";
 import {
-  isRoomBackedWorkItem,
-  matchesWorkItemSourceActor,
+  buildRoomRecordIdFromWorkItem,
+  pickConversationScopedWorkItem,
   pickWorkItemRecord,
 } from "../features/execution/work-item";
 import { reconcileWorkItemRecord } from "../features/execution/work-item-reconciler";
-import { isReliableWorkItemRecord } from "../features/execution/work-item-signal";
+import {
+  isCanonicalProductWorkItemRecord,
+  isReliableRequirementOverview,
+  isReliableWorkItemRecord,
+} from "../features/execution/work-item-signal";
 import { isSyntheticWorkflowPromptText } from "../features/execution/message-truth";
 import {
   resolveExecutionState,
@@ -60,12 +65,11 @@ import {
 } from "../features/execution/requirement-kind";
 import { evaluateSlaAlerts } from "../features/sla/escalation-rules";
 import { getActiveHandoffs } from "../features/handoffs/active-handoffs";
-import { buildRequestRecords } from "../features/requests/request-object";
-import { reconcileCompanyCommunication } from "../features/requests/reconcile";
 import { summarizeRequestHealth } from "../features/requests/request-health";
 import { buildTaskObjectSnapshot } from "../features/tasks/task-object";
 import { gateway, type GatewaySessionRow, type ChatMessage } from "../features/backend";
 import { useGatewayStore } from "../features/gateway/store";
+import { readPageSnapshot, writePageSnapshot } from "../features/runtime/page-snapshots";
 import { toast } from "../features/ui/toast-store";
 import { resolveConversationPresentation } from "../lib/chat-routes";
 import {
@@ -77,6 +81,33 @@ import { usePageVisibility } from "../lib/use-page-visibility";
 import { formatTime } from "../lib/utils";
 
 type TaskLane = "critical" | "needs_input" | "handoff" | "active" | "queued" | "done";
+
+function extractChatSyncSessionKey(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidate = payload as { sessionKey?: unknown; state?: unknown };
+  if (typeof candidate.sessionKey !== "string") {
+    return null;
+  }
+  if (
+    candidate.state !== "final" &&
+    candidate.state !== "error" &&
+    candidate.state !== "aborted"
+  ) {
+    return null;
+  }
+  return candidate.sessionKey;
+}
+
+type BoardPageSnapshot = {
+  sessions: GatewaySessionRow[];
+  sessionMetaEntries: Array<[string, { topic: string; msgCount: number }]>;
+  sessionStateEntries: Array<[string, ResolvedExecutionState]>;
+  sessionTakeoverPackEntries: Array<[string, ManualTakeoverPack]>;
+  fileTasks: TrackedTask[];
+  companySessionSnapshots: RequirementSessionSnapshot[];
+};
 
 type TaskStepSummary = {
   total: number;
@@ -188,9 +219,25 @@ function truncateRoomPreview(text: string, maxLength = 88): string {
   return `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-function describeRequirementRoomPreview(room: { transcript: Array<{ role: "user" | "assistant"; text?: string; senderLabel?: string; audienceAgentIds?: string[] }> }) {
+function describeRequirementRoomPreview(
+  room: {
+    transcript: Array<{ role: "user" | "assistant"; text?: string; senderLabel?: string; audienceAgentIds?: string[] }>;
+    progress?: string;
+    lastConclusionAt?: number | null;
+  },
+  workItem?: WorkItemRecord | null,
+) {
   const latest = [...room.transcript].reverse().find((message) => typeof message.text === "string" && message.text.trim().length > 0);
   if (!latest?.text) {
+    if (room.lastConclusionAt) {
+      return workItem?.displaySummary || workItem?.summary || "这间房间已有历史回传，继续在这里推进即可。";
+    }
+    if (room.progress && room.progress !== "0 条可见消息") {
+      return workItem?.displayNextAction || workItem?.displaySummary || room.progress;
+    }
+    if (workItem) {
+      return workItem.displaySummary || workItem.displayNextAction || workItem.summary || "这间房间已经绑定到当前主线任务，可以继续在这里推进。";
+    }
     return "房间已建立，等待第一条团队指令。";
   }
   if (latest.role === "assistant") {
@@ -428,19 +475,6 @@ function buildStrategicWorkItemFocusSummary(
   };
 }
 
-function isCanonicalWorkItemRecord(
-  workItem: WorkItemRecord,
-  ceoAgentId: string | null | undefined,
-): boolean {
-  if (!isReliableWorkItemRecord(workItem)) {
-    return false;
-  }
-  if (isRoomBackedWorkItem(workItem)) {
-    return true;
-  }
-  return matchesWorkItemSourceActor(workItem, ceoAgentId);
-}
-
 function mapWorkStepStatusToTaskStepStatus(status: WorkItemRecord["steps"][number]["status"]): TaskStep["status"] {
   if (status === "done" || status === "skipped") {
     return "done";
@@ -505,31 +539,36 @@ export function BoardPage() {
   const navigate = useNavigate();
   const {
     activeCompany,
+    activeConversationStates,
+    activeDispatches,
     activeRoomRecords,
     activeWorkItems,
     activeArtifacts,
-    activeDispatches,
-    upsertWorkItemRecord,
+    replaceDispatchRecords,
     upsertTask,
     updateCompany,
   } = useCompanyStore();
   const connected = useGatewayStore((state) => state.connected);
   const supportsAgentFiles = useGatewayStore((state) => state.capabilities.agentFiles);
   const isPageVisible = usePageVisibility();
-  const [sessions, setSessions] = useState<GatewaySessionRow[]>([]);
-  const [, setLoading] = useState(true);
+  const boardSnapshotKey = activeCompany ? `board:${activeCompany.id}` : "board:none";
+  const initialBoardSnapshot = readPageSnapshot<BoardPageSnapshot>(boardSnapshotKey);
+  const [sessions, setSessions] = useState<GatewaySessionRow[]>(() => initialBoardSnapshot?.sessions ?? []);
+  const [, setLoading] = useState(() => !initialBoardSnapshot);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [sessionMeta, setSessionMeta] = useState<Map<string, { topic: string; msgCount: number }>>(
-    new Map(),
+    () => new Map(initialBoardSnapshot?.sessionMetaEntries ?? []),
   );
-  const [sessionStates, setSessionStates] = useState<Map<string, ResolvedExecutionState>>(new Map());
+  const [sessionStates, setSessionStates] = useState<Map<string, ResolvedExecutionState>>(
+    () => new Map(initialBoardSnapshot?.sessionStateEntries ?? []),
+  );
   const [sessionTakeoverPacks, setSessionTakeoverPacks] = useState<Map<string, ManualTakeoverPack>>(
-    new Map(),
+    () => new Map(initialBoardSnapshot?.sessionTakeoverPackEntries ?? []),
   );
   const fetchedKeysRef = useRef<Set<string>>(new Set());
   const [showSessions, setShowSessions] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [fileTasks, setFileTasks] = useState<TrackedTask[]>([]);
+  const [fileTasks, setFileTasks] = useState<TrackedTask[]>(() => initialBoardSnapshot?.fileTasks ?? []);
   const [dialogConfig, setDialogConfig] = useState<{
     open: boolean;
     type: "nudge" | "compact" | "delete" | null;
@@ -537,7 +576,46 @@ export function BoardPage() {
   }>({ open: false, type: null, sessionKey: null });
   const [dialogSubmitting, setDialogSubmitting] = useState(false);
   const [recoveringCommunication, setRecoveringCommunication] = useState(false);
-  const [companySessionSnapshots, setCompanySessionSnapshots] = useState<RequirementSessionSnapshot[]>([]);
+  const [companySessionSnapshots, setCompanySessionSnapshots] = useState<RequirementSessionSnapshot[]>(
+    () => initialBoardSnapshot?.companySessionSnapshots ?? [],
+  );
+
+  useEffect(() => {
+    const snapshot = readPageSnapshot<BoardPageSnapshot>(boardSnapshotKey);
+    if (!snapshot) {
+      return;
+    }
+    setSessions(snapshot.sessions);
+    setSessionMeta(new Map(snapshot.sessionMetaEntries));
+    setSessionStates(new Map(snapshot.sessionStateEntries));
+    setSessionTakeoverPacks(new Map(snapshot.sessionTakeoverPackEntries));
+    setFileTasks(snapshot.fileTasks);
+    setCompanySessionSnapshots(snapshot.companySessionSnapshots);
+    setLoading(false);
+  }, [boardSnapshotKey]);
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    writePageSnapshot<BoardPageSnapshot>(boardSnapshotKey, {
+      sessions,
+      sessionMetaEntries: [...sessionMeta.entries()],
+      sessionStateEntries: [...sessionStates.entries()],
+      sessionTakeoverPackEntries: [...sessionTakeoverPacks.entries()],
+      fileTasks,
+      companySessionSnapshots,
+    });
+  }, [
+    activeCompany,
+    boardSnapshotKey,
+    companySessionSnapshots,
+    fileTasks,
+    sessionMeta,
+    sessionStates,
+    sessionTakeoverPacks,
+    sessions,
+  ]);
 
   useEffect(() => {
     async function loadBoard() {
@@ -849,7 +927,7 @@ export function BoardPage() {
     () =>
       activeWorkItems.filter(
         (item) =>
-          isCanonicalWorkItemRecord(item, ceo?.agentId) &&
+          isCanonicalProductWorkItemRecord(item, ceo?.agentId) &&
           !isArtifactRequirementTopic(item.topicKey),
       ),
     [activeWorkItems, ceo?.agentId],
@@ -880,6 +958,15 @@ export function BoardPage() {
         .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
     [canonicalWorkItems],
   );
+  const ceoConversationWorkItem = useMemo(
+    () =>
+      pickConversationScopedWorkItem({
+        items: canonicalWorkItems,
+        conversationStates: activeConversationStates,
+        actorId: ceo?.agentId ?? null,
+      }),
+    [activeConversationStates, canonicalWorkItems, ceo?.agentId],
+  );
   const requirementTopicKeyHint = rawRequirementOverview?.topicKey ?? latestOpenWorkItem?.topicKey ?? null;
   const requirementStartedAtHint = rawRequirementOverview?.startedAt ?? latestOpenWorkItem?.startedAt ?? null;
   const currentRequirementSessionKey =
@@ -898,62 +985,75 @@ export function BoardPage() {
       }),
     [canonicalWorkItems, currentRequirementSessionKey, requirementStartedAtHint, requirementTopicKeyHint],
   );
-  const bootstrapRequirementWorkItem = useMemo(() => {
-    if (!activeCompany || !rawRequirementOverview) {
-      return null;
+  const previewRequirementWorkItem = useMemo(
+    () => {
+      if (!activeCompany || !rawRequirementOverview || !isReliableRequirementOverview(rawRequirementOverview)) {
+        return null;
+      }
+      return reconcileWorkItemRecord({
+        companyId: activeCompany.id,
+        existingWorkItem:
+          ceoConversationWorkItem ??
+          latestStrategicWorkItem ??
+          latestOpenWorkItem ??
+          matchedWorkItem ??
+          null,
+        overview: rawRequirementOverview,
+        fallbackSessionKey: currentRequirementSessionKey ?? null,
+      });
+    },
+    [
+      activeCompany,
+      ceoConversationWorkItem,
+      currentRequirementSessionKey,
+      latestOpenWorkItem,
+      latestStrategicWorkItem,
+      matchedWorkItem,
+      rawRequirementOverview,
+    ],
+  );
+  const shouldPreferPreviewRequirementWorkItem = useMemo(() => {
+    if (!previewRequirementWorkItem) {
+      return false;
     }
-    if (isArtifactRequirementTopic(rawRequirementOverview.topicKey)) {
-      return null;
+    if (!ceoConversationWorkItem) {
+      return true;
     }
-
-    const currentWorkItemMatches =
-      matchedWorkItem &&
-      matchedWorkItem.topicKey === rawRequirementOverview.topicKey &&
-      Math.abs((matchedWorkItem.startedAt ?? 0) - rawRequirementOverview.startedAt) <= 1_000;
-    if (currentWorkItemMatches) {
-      return null;
-    }
-
-    return reconcileWorkItemRecord({
-      companyId: activeCompany.id,
-      existingWorkItem: matchedWorkItem,
-      overview: rawRequirementOverview,
-      room: activeRoomRecords.find((room) => room.workItemId === matchedWorkItem?.id) ?? null,
-      artifacts: activeArtifacts,
-      dispatches: activeDispatches,
-      fallbackSessionKey: currentRequirementSessionKey,
-    });
-  }, [
-    activeArtifacts,
-    activeCompany,
-    activeDispatches,
-    activeRoomRecords,
-    currentRequirementSessionKey,
-    matchedWorkItem,
-    rawRequirementOverview,
-  ]);
+    return (
+      ceoConversationWorkItem.kind !== "strategic" ||
+      ceoConversationWorkItem.topicKey !== previewRequirementWorkItem.topicKey ||
+      ceoConversationWorkItem.title !== previewRequirementWorkItem.title
+    );
+  }, [ceoConversationWorkItem, previewRequirementWorkItem]);
   const activeWorkItem = useMemo(() => {
-    if (bootstrapRequirementWorkItem) {
-      return bootstrapRequirementWorkItem;
+    if (shouldPreferPreviewRequirementWorkItem && previewRequirementWorkItem) {
+      return previewRequirementWorkItem;
     }
-    if (latestOpenWorkItem?.topicKey && !matchedWorkItem?.topicKey) {
+    if (ceoConversationWorkItem) {
+      return ceoConversationWorkItem;
+    }
+    if (latestStrategicWorkItem) {
+      return latestStrategicWorkItem;
+    }
+    if (latestOpenWorkItem) {
       return latestOpenWorkItem;
     }
-    return matchedWorkItem ?? latestOpenWorkItem;
-  }, [bootstrapRequirementWorkItem, latestOpenWorkItem, matchedWorkItem]);
-  const scopedRequirementWorkItem = useMemo(
-    () =>
-      rawRequirementOverview && isStrategicRequirementTopic(rawRequirementOverview.topicKey)
-        ? latestStrategicWorkItem ?? activeWorkItem
-        : activeWorkItem,
-    [activeWorkItem, latestStrategicWorkItem, rawRequirementOverview],
-  );
+    return activeWorkItems.length === 0 ? matchedWorkItem ?? null : null;
+  }, [
+    activeWorkItems.length,
+    ceoConversationWorkItem,
+    latestOpenWorkItem,
+    latestStrategicWorkItem,
+    matchedWorkItem,
+    previewRequirementWorkItem,
+    shouldPreferPreviewRequirementWorkItem,
+  ]);
   const currentWorkItem = useMemo(
     () =>
-      scopedRequirementWorkItem && isReliableWorkItemRecord(scopedRequirementWorkItem)
-        ? scopedRequirementWorkItem
+      activeWorkItem && isReliableWorkItemRecord(activeWorkItem)
+        ? activeWorkItem
         : null,
-    [scopedRequirementWorkItem],
+    [activeWorkItem],
   );
   const requirementOverview = useMemo(
     () => {
@@ -978,12 +1078,6 @@ export function BoardPage() {
     [activeCompany, currentWorkItem, requirementOverview],
   );
 
-  useEffect(() => {
-    if (!bootstrapRequirementWorkItem) {
-      return;
-    }
-    upsertWorkItemRecord(bootstrapRequirementWorkItem);
-  }, [bootstrapRequirementWorkItem, upsertWorkItemRecord]);
   const primaryRequirementTopicKey = currentWorkItem?.topicKey ?? requirementOverview?.topicKey ?? null;
   const isStrategicRequirement = Boolean(
     primaryRequirementTopicKey && isStrategicRequirementTopic(primaryRequirementTopicKey),
@@ -1006,29 +1100,29 @@ export function BoardPage() {
     [activeRoomRecords, currentWorkItem],
   );
   const requirementDisplayTitle =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.title
-      : currentWorkItem?.title ?? requirementOverview?.title ?? "当前需求";
+    currentWorkItem
+      ? currentWorkItem.title || currentWorkItem.headline || "当前需求"
+      : "当前需求";
   const requirementDisplayCurrentStep =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.headline
-      : currentWorkItem?.stageLabel ?? requirementOverview?.headline ?? "待确认";
+    currentWorkItem
+      ? currentWorkItem.displayStage || currentWorkItem.stageLabel || "待确认"
+      : "待确认";
   const requirementDisplaySummary =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.summary
-      : currentWorkItem?.summary ?? requirementOverview?.summary ?? "待确认";
+    currentWorkItem
+      ? currentWorkItem.displaySummary || currentWorkItem.summary || "待确认"
+      : "待确认";
   const requirementDisplayOwner =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.currentOwnerLabel || "待确认"
-      : currentWorkItem?.ownerLabel || requirementOverview?.currentOwnerLabel || "待确认";
+    currentWorkItem
+      ? currentWorkItem.displayOwnerLabel || currentWorkItem.ownerLabel || "待确认"
+      : "待确认";
   const requirementDisplayStage =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.currentStage
-      : currentWorkItem?.stageLabel ?? requirementOverview?.currentStage ?? "待确认";
+    currentWorkItem
+      ? currentWorkItem.displayStage || currentWorkItem.stageLabel || "待确认"
+      : "待确认";
   const requirementDisplayNext =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.nextAction
-      : currentWorkItem?.nextAction ?? requirementOverview?.nextAction ?? "待确认";
+    currentWorkItem
+      ? currentWorkItem.displayNextAction || currentWorkItem.nextAction || "待确认"
+      : "待确认";
   const requirementSyntheticTask = useMemo(
     () =>
       currentWorkItem
@@ -1064,23 +1158,66 @@ export function BoardPage() {
     requirementOverview?.title ??
     requirementDisplayTitle;
   const requirementRoomRecords = useMemo(() => {
+    const dedupeRooms = (rooms: typeof activeRoomRecords) =>
+      [...new Map(rooms.map((room) => [room.id, room] as const)).values()].sort(
+        (left, right) => right.updatedAt - left.updatedAt,
+      );
+
+    const currentRoomId =
+      currentWorkItem?.roomId ??
+      (currentRequirementWorkItemId ? buildRoomRecordIdFromWorkItem(currentRequirementWorkItemId) : null);
+    if (currentRoomId) {
+      const exactRoom = activeRoomRecords.find((room) => room.id === currentRoomId) ?? null;
+      if (exactRoom) {
+        return [exactRoom];
+      }
+    }
+
+    if (currentRequirementWorkItemId) {
+      const exactMatches = dedupeRooms(
+        activeRoomRecords.filter((room) => room.workItemId === currentRequirementWorkItemId),
+      );
+      if (exactMatches.length > 0) {
+        return exactMatches.slice(0, 1);
+      }
+    }
+
+    if (currentWorkItem?.workKey) {
+      const exactWorkKeyMatches = dedupeRooms(
+        activeRoomRecords.filter((room) => room.workItemId === currentWorkItem.workKey),
+      );
+      if (exactWorkKeyMatches.length > 0) {
+        return exactWorkKeyMatches.slice(0, 1);
+      }
+    }
+
+    if (currentWorkItem) {
+      return [];
+    }
+
     if (!currentRequirementTopicKey && !currentRequirementRoomTitle) {
       return [];
     }
     if (currentRequirementTopicKey) {
       const normalizedTopicKey = currentRequirementTopicKey.trim().toLowerCase();
-      const exactMatches = activeRoomRecords.filter(
+      const exactMatches = dedupeRooms(activeRoomRecords.filter(
         (room) => room.topicKey?.trim().toLowerCase() === normalizedTopicKey,
-      );
+      ));
       if (exactMatches.length > 0) {
-        return [...exactMatches].sort((left, right) => right.updatedAt - left.updatedAt);
+        return exactMatches.slice(0, 1);
       }
     }
     const normalizedTitle = currentRequirementRoomTitle.trim().toLowerCase();
-    return activeRoomRecords
-      .filter((room) => room.title.trim().toLowerCase() === normalizedTitle)
-      .sort((left, right) => right.updatedAt - left.updatedAt);
-  }, [activeRoomRecords, currentRequirementRoomTitle, currentRequirementTopicKey]);
+    return dedupeRooms(
+      activeRoomRecords.filter((room) => room.title.trim().toLowerCase() === normalizedTitle),
+    ).slice(0, 1);
+  }, [
+    activeRoomRecords,
+    currentRequirementRoomTitle,
+    currentRequirementTopicKey,
+    currentRequirementWorkItemId,
+    currentWorkItem,
+  ]);
   const requirementRoomMemberIds = useMemo(
     () => {
       const overview = strategicRequirementOverview ?? requirementOverview;
@@ -1387,48 +1524,76 @@ export function BoardPage() {
     { key: "queued", items: queuedTaskItems },
   ];
 
-  const handleRecoverCommunication = async () => {
+  const handleRecoverCommunication = async (options?: { silent?: boolean; force?: boolean }) => {
     if (!activeCompany) {
       return;
     }
 
     setRecoveringCommunication(true);
     try {
-      const discoveredRequests = (
-        await Promise.all(
-          companySessions.map(async (session) => {
-            const history = await gateway.getChatHistory(session.key, 20);
-            const relatedTask = (activeCompany.tasks ?? []).find((task) => task.sessionKey === session.key);
-            const relatedHandoffs = rawHandoffRecords.filter(
-              (handoff) => handoff.sessionKey === session.key,
-            );
-
-            return buildRequestRecords({
-              sessionKey: session.key,
-              messages: history.messages ?? [],
-              handoffs: relatedHandoffs,
-              relatedTask,
-            });
-          }),
-        )
-      ).flat();
-
-      const { companyPatch, summary } = reconcileCompanyCommunication(
-        activeCompany,
-        discoveredRequests,
-        Date.now(),
-      );
+      const { companyPatch, dispatches, sessionSnapshots, summary } =
+        await syncCompanyCommunicationState({
+          company: activeCompany,
+          previousSnapshots: companySessionSnapshots,
+          activeArtifacts,
+          activeDispatches,
+          force: options?.force,
+        });
+      setCompanySessionSnapshots(sessionSnapshots);
+      replaceDispatchRecords(dispatches);
       await updateCompany(companyPatch);
-      toast.success(
-        "请求闭环已同步",
-        `新增 ${summary.requestsAdded}，更新 ${summary.requestsUpdated}，恢复任务 ${summary.tasksRecovered}，恢复交接 ${summary.handoffsRecovered}。`,
-      );
+      if (!options?.silent) {
+        toast.success(
+          "请求闭环已同步",
+          `新增 ${summary.requestsAdded}，更新 ${summary.requestsUpdated}，恢复任务 ${summary.tasksRecovered}，恢复交接 ${summary.handoffsRecovered}。`,
+        );
+      }
     } catch (error) {
-      toast.error("恢复失败", error instanceof Error ? error.message : String(error));
+      if (!options?.silent) {
+        toast.error("恢复失败", error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setRecoveringCommunication(false);
     }
   };
+
+  useEffect(() => {
+    if (!activeCompany || !connected || !isPageVisible) {
+      return;
+    }
+    void handleRecoverCommunication({
+      silent: true,
+      force: companySessionSnapshots.length === 0,
+    });
+  }, [activeCompany?.id, companySessionSnapshots.length, connected, isPageVisible]);
+
+  useEffect(() => {
+    if (!activeCompany || !connected || !isPageVisible) {
+      return;
+    }
+    const companyAgentIds = new Set(activeCompany.employees.map((employee) => employee.agentId));
+    let timerId: number | null = null;
+    const unsubscribe = gateway.subscribe("chat", (payload) => {
+      const sessionKey = extractChatSyncSessionKey(payload);
+      const actorId = resolveSessionActorId(sessionKey);
+      if (!actorId || !companyAgentIds.has(actorId)) {
+        return;
+      }
+      if (timerId !== null) {
+        return;
+      }
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        void handleRecoverCommunication({ silent: true });
+      }, 400);
+    });
+    return () => {
+      unsubscribe();
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [activeCompany, connected, handleRecoverCommunication, isPageVisible]);
 
   const renderTaskCard = (
     task: TrackedTask,
@@ -1913,7 +2078,14 @@ export function BoardPage() {
                       最近更新：{formatTime(room.updatedAt)}
                     </div>
                     <div className="mt-2 text-sm leading-6 text-slate-700">
-                      {describeRequirementRoomPreview(room)}
+                      {describeRequirementRoomPreview(
+                        room,
+                        currentWorkItem &&
+                          (room.workItemId === currentWorkItem.id ||
+                            room.workItemId === currentWorkItem.workKey)
+                          ? currentWorkItem
+                          : null,
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 md:justify-end">

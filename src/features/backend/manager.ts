@@ -180,6 +180,14 @@ export class BackendManager implements AgentBackend {
     return this.currentBackend.request<T>(method, params);
   }
 
+  appendCompanyEvent(event: Parameters<AgentBackend["appendCompanyEvent"]>[0]) {
+    return this.currentBackend.appendCompanyEvent(event);
+  }
+
+  listCompanyEvents(params: Parameters<AgentBackend["listCompanyEvents"]>[0]) {
+    return this.currentBackend.listCompanyEvents(params);
+  }
+
   listAgents() {
     return this.currentBackend.listAgents();
   }
@@ -214,6 +222,10 @@ export class BackendManager implements AgentBackend {
 
   createAgent(name: string) {
     return this.currentBackend.createAgent(name);
+  }
+
+  deleteAgent(agentId: string, opts?: Parameters<AgentBackend["deleteAgent"]>[1]) {
+    return this.currentBackend.deleteAgent(agentId, opts);
   }
 
   listAgentFiles(agentId: string) {

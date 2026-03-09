@@ -35,22 +35,22 @@ import {
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
 import { ImmersiveHireDialog, type HireConfig } from "../components/ui/immersive-hire-dialog";
-import type { EmployeeRef, WorkItemRecord } from "../features/company/types";
+import type { EmployeeRef } from "../features/company/types";
 import { buildCeoControlSurface } from "../features/ceo/control-surface";
+import { syncCompanyCommunicationState } from "../features/company/sync-company-communication";
 import { getActiveHandoffs } from "../features/handoffs/active-handoffs";
-import { buildRequestRecords } from "../features/requests/request-object";
-import { reconcileCompanyCommunication } from "../features/requests/reconcile";
 import { summarizeRequestHealth } from "../features/requests/request-health";
 import { requestTopicMatchesText } from "../features/requests/topic";
 import { useCompanyStore } from "../features/company/store";
 import { buildCompanyBlueprint } from "../features/company/blueprint";
 import {
-  isRoomBackedWorkItem,
-  matchesWorkItemSourceActor,
+  pickConversationScopedWorkItem,
   pickWorkItemRecord,
 } from "../features/execution/work-item";
-import { reconcileWorkItemRecord } from "../features/execution/work-item-reconciler";
-import { isReliableWorkItemRecord } from "../features/execution/work-item-signal";
+import {
+  isCanonicalProductWorkItemRecord,
+  isReliableWorkItemRecord,
+} from "../features/execution/work-item-signal";
 import { useGatewayStore } from "../features/gateway/store";
 import {
   isBlockedExecutionState,
@@ -91,6 +91,10 @@ import {
   type GatewaySessionRow,
   type CronJob,
 } from "../features/backend";
+import {
+  readCompanyRuntimeSnapshot,
+  writeCompanyRuntimeSnapshot,
+} from "../features/runtime/company-runtime";
 import { toast } from "../features/ui/toast-store";
 import { AgentOps } from "../lib/agent-ops";
 import { resolveConversationPresentation } from "../lib/chat-routes";
@@ -132,6 +136,24 @@ type OpsSectionCardProps = {
   children: ReactNode;
 };
 
+function extractChatSyncSessionKey(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidate = payload as { sessionKey?: unknown; state?: unknown };
+  if (typeof candidate.sessionKey !== "string") {
+    return null;
+  }
+  if (
+    candidate.state !== "final" &&
+    candidate.state !== "error" &&
+    candidate.state !== "aborted"
+  ) {
+    return null;
+  }
+  return candidate.sessionKey;
+}
+
 function OpsSectionCard({
   title,
   description,
@@ -159,35 +181,24 @@ function OpsSectionCard({
   );
 }
 
-function isCanonicalWorkItemRecord(
-  workItem: WorkItemRecord,
-  ceoAgentId: string | null | undefined,
-): boolean {
-  if (!isReliableWorkItemRecord(workItem)) {
-    return false;
-  }
-  if (isRoomBackedWorkItem(workItem)) {
-    return true;
-  }
-  return matchesWorkItemSourceActor(workItem, ceoAgentId);
-}
-
 export function CompanyLobby() {
   const navigate = useNavigate();
   const {
     activeCompany,
-    activeRoomRecords,
-    activeWorkItems,
+    activeConversationStates,
     activeArtifacts,
     activeDispatches,
-    upsertWorkItemRecord,
+    activeRoomRecords,
+    activeWorkItems,
+    replaceDispatchRecords,
     updateCompany,
   } = useCompanyStore();
   const connected = useGatewayStore((state) => state.connected);
   const isPageVisible = usePageVisibility();
-  const [agentsCache, setAgentsCache] = useState<AgentListEntry[]>([]);
-  const [sessionsCache, setSessionsCache] = useState<GatewaySessionRow[]>([]);
-  const [cronCache, setCronCache] = useState<CronJob[]>([]);
+  const runtimeSnapshot = readCompanyRuntimeSnapshot(activeCompany?.id);
+  const [agentsCache, setAgentsCache] = useState<AgentListEntry[]>(() => runtimeSnapshot?.agents ?? []);
+  const [sessionsCache, setSessionsCache] = useState<GatewaySessionRow[]>(() => runtimeSnapshot?.sessions ?? []);
+  const [cronCache, setCronCache] = useState<CronJob[]>(() => runtimeSnapshot?.cronJobs ?? []);
   const [sessionExecutionMap, setSessionExecutionMap] = useState<Map<string, ResolvedExecutionState>>(
     new Map(),
   );
@@ -208,9 +219,38 @@ export function CompanyLobby() {
   const [quickTaskTarget, setQuickTaskTarget] = useState<string>("");
   const [quickTaskSubmitting, setQuickTaskSubmitting] = useState(false);
   const [recoveringCommunication, setRecoveringCommunication] = useState(false);
-  const [companySessionSnapshots, setCompanySessionSnapshots] = useState<RequirementSessionSnapshot[]>([]);
+  const [companySessionSnapshots, setCompanySessionSnapshots] = useState<RequirementSessionSnapshot[]>(
+    () => runtimeSnapshot?.companySessionSnapshots ?? [],
+  );
+  const [usageCost, setUsageCost] = useState<number | null>(() => runtimeSnapshot?.usageCost ?? null);
 
-  const [usageCost, setUsageCost] = useState<number | null>(null);
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    const snapshot = readCompanyRuntimeSnapshot(activeCompany.id);
+    if (!snapshot) {
+      return;
+    }
+    setAgentsCache(snapshot.agents ?? []);
+    setSessionsCache(snapshot.sessions ?? []);
+    setCronCache(snapshot.cronJobs ?? []);
+    setCompanySessionSnapshots(snapshot.companySessionSnapshots ?? []);
+    setUsageCost(snapshot.usageCost ?? null);
+  }, [activeCompany?.id]);
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    writeCompanyRuntimeSnapshot(activeCompany.id, {
+      agents: agentsCache,
+      sessions: sessionsCache,
+      cronJobs: cronCache,
+      companySessionSnapshots,
+      usageCost,
+    });
+  }, [activeCompany, agentsCache, companySessionSnapshots, cronCache, sessionsCache, usageCost]);
 
   useEffect(() => {
     async function fetchData() {
@@ -434,7 +474,7 @@ export function CompanyLobby() {
     () =>
       activeWorkItems.filter(
         (item) =>
-          isCanonicalWorkItemRecord(item, ceoEmployee?.agentId) &&
+          isCanonicalProductWorkItemRecord(item, ceoEmployee?.agentId) &&
           !isArtifactRequirementTopic(item.topicKey),
       ),
     [activeWorkItems, ceoEmployee?.agentId],
@@ -465,6 +505,15 @@ export function CompanyLobby() {
         .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
     [canonicalWorkItems],
   );
+  const ceoConversationWorkItem = useMemo(
+    () =>
+      pickConversationScopedWorkItem({
+        items: canonicalWorkItems,
+        conversationStates: activeConversationStates,
+        actorId: ceoEmployee?.agentId ?? null,
+      }),
+    [activeConversationStates, canonicalWorkItems, ceoEmployee?.agentId],
+  );
   const requirementTopicKeyHint = rawRequirementOverview?.topicKey ?? latestOpenWorkItem?.topicKey ?? null;
   const requirementStartedAtHint = rawRequirementOverview?.startedAt ?? latestOpenWorkItem?.startedAt ?? null;
   const matchedWorkItem = useMemo(
@@ -489,72 +538,33 @@ export function CompanyLobby() {
       requirementTopicKeyHint,
     ],
   );
-  const bootstrapRequirementWorkItem = useMemo(() => {
-    if (!activeCompany || !rawRequirementOverview) {
-      return null;
-    }
-    if (isArtifactRequirementTopic(rawRequirementOverview.topicKey)) {
-      return null;
-    }
-
-    const currentWorkItemMatches =
-      matchedWorkItem &&
-      matchedWorkItem.topicKey === rawRequirementOverview.topicKey &&
-      Math.abs((matchedWorkItem.startedAt ?? 0) - rawRequirementOverview.startedAt) <= 1_000;
-    if (currentWorkItemMatches) {
-      return null;
-    }
-
-    return reconcileWorkItemRecord({
-      companyId: activeCompany.id,
-      existingWorkItem: matchedWorkItem,
-      overview: rawRequirementOverview,
-      room: activeRoomRecords.find((room) => room.workItemId === matchedWorkItem?.id) ?? null,
-      artifacts: activeArtifacts,
-      dispatches: activeDispatches,
-      fallbackSessionKey:
-        requirementCurrentOwner && companySessions.length > 0
-          ? companySessions.find((session) => session.agentId === requirementCurrentOwner.agentId)?.key ?? null
-          : latestOpenWorkItem?.ownerActorId
-            ? companySessions.find((session) => session.agentId === latestOpenWorkItem.ownerActorId)?.key ?? null
-            : null,
-    });
-  }, [
-    activeArtifacts,
-    activeCompany,
-    activeDispatches,
-    activeRoomRecords,
-    companySessions,
-    latestOpenWorkItem?.ownerActorId,
-    matchedWorkItem,
-    requirementCurrentOwner,
-    rawRequirementOverview,
-  ]);
   const activeWorkItem = useMemo(
     () => {
-      if (bootstrapRequirementWorkItem) {
-        return bootstrapRequirementWorkItem;
+      if (ceoConversationWorkItem) {
+        return ceoConversationWorkItem;
       }
-      if (latestOpenWorkItem?.topicKey && !matchedWorkItem?.topicKey) {
+      if (latestStrategicWorkItem) {
+        return latestStrategicWorkItem;
+      }
+      if (latestOpenWorkItem) {
         return latestOpenWorkItem;
       }
-      return matchedWorkItem ?? latestOpenWorkItem;
+      return activeWorkItems.length === 0 ? matchedWorkItem ?? null : null;
     },
-    [bootstrapRequirementWorkItem, latestOpenWorkItem, matchedWorkItem],
-  );
-  const scopedRequirementWorkItem = useMemo(
-    () =>
-      rawRequirementOverview && isStrategicRequirementTopic(rawRequirementOverview.topicKey)
-        ? latestStrategicWorkItem ?? activeWorkItem
-        : activeWorkItem,
-    [activeWorkItem, latestStrategicWorkItem, rawRequirementOverview],
+    [
+      activeWorkItems.length,
+      ceoConversationWorkItem,
+      latestOpenWorkItem,
+      latestStrategicWorkItem,
+      matchedWorkItem,
+    ],
   );
   const currentWorkItem = useMemo(
     () =>
-      scopedRequirementWorkItem && isReliableWorkItemRecord(scopedRequirementWorkItem)
-        ? scopedRequirementWorkItem
+      activeWorkItem && isReliableWorkItemRecord(activeWorkItem)
+        ? activeWorkItem
         : null,
-    [scopedRequirementWorkItem],
+    [activeWorkItem],
   );
   const requirementOverview = useMemo(
     () => {
@@ -814,12 +824,6 @@ export function CompanyLobby() {
   const requestHealth = summarizeRequestHealth(companyRequests);
   const primaryWorkItem = currentWorkItem;
 
-  useEffect(() => {
-    if (!bootstrapRequirementWorkItem) {
-      return;
-    }
-    upsertWorkItemRecord(bootstrapRequirementWorkItem);
-  }, [bootstrapRequirementWorkItem, upsertWorkItemRecord]);
   const currentRequirementWorkItemId = primaryWorkItem?.id ?? null;
   const primaryRequirementTopicKey = primaryWorkItem?.topicKey ?? requirementOverview?.topicKey ?? null;
   const isStrategicRequirement = Boolean(
@@ -830,29 +834,41 @@ export function CompanyLobby() {
       ? requirementOverview
       : null;
   const requirementDisplayTitle =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.title
-      : primaryWorkItem?.title ?? requirementOverview?.title ?? "当前需求";
+    primaryWorkItem
+      ? primaryWorkItem.title || primaryWorkItem.headline || "当前需求"
+      : (isStrategicRequirement && strategicRequirementOverview
+          ? strategicRequirementOverview.title
+          : requirementOverview?.title) ?? "当前需求";
   const requirementDisplayCurrentStep =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.headline
-      : primaryWorkItem?.stageLabel ?? requirementOverview?.headline ?? "待确认";
+    primaryWorkItem
+      ? primaryWorkItem.displayStage || primaryWorkItem.stageLabel || "待确认"
+      : (isStrategicRequirement && strategicRequirementOverview
+          ? strategicRequirementOverview.headline
+          : requirementOverview?.headline) ?? "待确认";
   const requirementDisplaySummary =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.summary
-      : primaryWorkItem?.summary ?? requirementOverview?.summary ?? "待确认";
+    primaryWorkItem
+      ? primaryWorkItem.displaySummary || primaryWorkItem.summary || "待确认"
+      : (isStrategicRequirement && strategicRequirementOverview
+          ? strategicRequirementOverview.summary
+          : requirementOverview?.summary) ?? "待确认";
   const requirementDisplayOwner =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.currentOwnerLabel || "待确认"
-      : primaryWorkItem?.ownerLabel || requirementOverview?.currentOwnerLabel || "待确认";
+    primaryWorkItem
+      ? primaryWorkItem.displayOwnerLabel || primaryWorkItem.ownerLabel || "待确认"
+      : (isStrategicRequirement && strategicRequirementOverview
+          ? strategicRequirementOverview.currentOwnerLabel
+          : requirementOverview?.currentOwnerLabel) || "待确认";
   const requirementDisplayStage =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.currentStage
-      : primaryWorkItem?.stageLabel ?? requirementOverview?.currentStage ?? "待确认";
+    primaryWorkItem
+      ? primaryWorkItem.displayStage || primaryWorkItem.stageLabel || "待确认"
+      : (isStrategicRequirement && strategicRequirementOverview
+          ? strategicRequirementOverview.currentStage
+          : requirementOverview?.currentStage) ?? "待确认";
   const requirementDisplayNext =
-    isStrategicRequirement && strategicRequirementOverview
-      ? strategicRequirementOverview.nextAction
-      : primaryWorkItem?.nextAction ?? requirementOverview?.nextAction ?? "待确认";
+    primaryWorkItem
+      ? primaryWorkItem.displayNextAction || primaryWorkItem.nextAction || "待确认"
+      : (isStrategicRequirement && strategicRequirementOverview
+          ? strategicRequirementOverview.nextAction
+          : requirementOverview?.nextAction) ?? "待确认";
   const primaryOwnerEmployee =
     primaryWorkItem?.ownerActorId
       ? activeCompany.employees.find((employee) => employee.agentId === primaryWorkItem.ownerActorId) ?? null
@@ -925,46 +941,76 @@ export function CompanyLobby() {
     toast.success("共享知识已同步", `已写入 ${knowledgeItems.length} 条公司级知识内容。`);
   };
 
-  const handleRecoverCommunication = async () => {
+  const handleRecoverCommunication = async (options?: { silent?: boolean; force?: boolean }) => {
     if (!activeCompany) {
       return;
     }
 
     setRecoveringCommunication(true);
     try {
-      const discoveredRequests = (
-        await Promise.all(
-          scopedSessions.map(async (session) => {
-            const history = await gateway.getChatHistory(session.key, 20);
-            const relatedTask = (activeCompany.tasks ?? []).find((task) => task.sessionKey === session.key);
-            const relatedHandoffs = handoffRecords.filter((handoff) => handoff.sessionKey === session.key);
-
-            return buildRequestRecords({
-              sessionKey: session.key,
-              messages: history.messages ?? [],
-              handoffs: relatedHandoffs,
-              relatedTask,
-            });
-          }),
-        )
-      ).flat();
-
-      const { companyPatch, summary } = reconcileCompanyCommunication(
-        activeCompany,
-        discoveredRequests,
-        Date.now(),
-      );
+      const { companyPatch, dispatches, sessionSnapshots, summary } =
+        await syncCompanyCommunicationState({
+          company: activeCompany,
+          previousSnapshots: companySessionSnapshots,
+          activeArtifacts,
+          activeDispatches,
+          force: options?.force,
+        });
+      setCompanySessionSnapshots(sessionSnapshots);
+      replaceDispatchRecords(dispatches);
       await updateCompany(companyPatch);
-      toast.success(
-        "请求闭环已同步",
-        `新增 ${summary.requestsAdded}，更新 ${summary.requestsUpdated}，恢复任务 ${summary.tasksRecovered}，恢复交接 ${summary.handoffsRecovered}。`,
-      );
+      if (!options?.silent) {
+        toast.success(
+          "请求闭环已同步",
+          `新增 ${summary.requestsAdded}，更新 ${summary.requestsUpdated}，恢复任务 ${summary.tasksRecovered}，恢复交接 ${summary.handoffsRecovered}。`,
+        );
+      }
     } catch (error) {
-      toast.error("恢复失败", error instanceof Error ? error.message : String(error));
+      if (!options?.silent) {
+        toast.error("恢复失败", error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setRecoveringCommunication(false);
     }
   };
+
+  useEffect(() => {
+    if (!activeCompany || !connected || !isPageVisible) {
+      return;
+    }
+    void handleRecoverCommunication({
+      silent: true,
+      force: companySessionSnapshots.length === 0,
+    });
+  }, [activeCompany, companySessionSnapshots.length, connected, isPageVisible]);
+
+  useEffect(() => {
+    if (!activeCompany || !connected || !isPageVisible) {
+      return;
+    }
+    const companyAgentIds = new Set(activeCompany.employees.map((employee) => employee.agentId));
+    let timerId: number | null = null;
+    const unsubscribe = gateway.subscribe("chat", (payload) => {
+      const sessionKey = extractChatSyncSessionKey(payload);
+      const actorId = resolveSessionActorId(sessionKey);
+      if (!actorId || !companyAgentIds.has(actorId)) {
+        return;
+      }
+      if (timerId !== null) {
+        return;
+      }
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        void handleRecoverCommunication({ silent: true });
+      }, 400);
+    });
+    return () => {
+      unsubscribe();
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [activeCompany, connected, handleRecoverCommunication, isPageVisible]);
 
   const handleHireSubmit = async (config: HireConfig) => {
     if (!activeCompany) {

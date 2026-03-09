@@ -29,6 +29,7 @@ type BackendCoreExtras = Partial<
     | "importCodexCliAuth"
     | "updateAgent"
     | "createAgent"
+    | "deleteAgent"
     | "listAgentFiles"
     | "getAgentFile"
     | "setAgentFile"
@@ -43,6 +44,8 @@ type BackendCoreExtras = Partial<
     | "resolveSession"
     | "getChatHistory"
     | "sendChatMessage"
+    | "appendCompanyEvent"
+    | "listCompanyEvents"
     | "listCron"
     | "addCron"
     | "updateCron"
@@ -151,6 +154,9 @@ export function createAgentBackendFromCore(
     createAgent:
       extras.createAgent ??
       (async () => unsupported("createAgent")),
+    deleteAgent:
+      extras.deleteAgent ??
+      (async () => unsupported("deleteAgent")),
     listAgentFiles:
       extras.listAgentFiles ??
       (async (agentId) => ({ agentId, workspace: "", files: [] })),
@@ -237,6 +243,12 @@ export function createAgentBackendFromCore(
         });
         return { runId: result.run.runId, status: result.status };
       }),
+    appendCompanyEvent:
+      extras.appendCompanyEvent ??
+      (async () => unsupported("appendCompanyEvent")),
+    listCompanyEvents:
+      extras.listCompanyEvents ??
+      (async () => unsupported("listCompanyEvents")),
     listCron:
       extras.listCron ??
       (async () => ({ jobs: [] })),

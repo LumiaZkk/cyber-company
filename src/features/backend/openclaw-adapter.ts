@@ -202,6 +202,10 @@ class OpenClawBackendAdapter implements AgentBackend {
     return this.gateway.createAgent(name);
   }
 
+  deleteAgent(agentId: string, opts?: Parameters<CyberGateway["deleteAgent"]>[1]) {
+    return this.gateway.deleteAgent(agentId, opts);
+  }
+
   listAgentFiles(agentId: string) {
     return this.gateway.listAgentFiles(agentId);
   }
@@ -260,6 +264,14 @@ class OpenClawBackendAdapter implements AgentBackend {
     opts?: Parameters<CyberGateway["sendChatMessage"]>[2],
   ) {
     return this.gateway.sendChatMessage(sessionKey, message, opts);
+  }
+
+  appendCompanyEvent(event: Parameters<CyberGateway["appendCompanyEvent"]>[0]) {
+    return this.gateway.appendCompanyEvent(event);
+  }
+
+  listCompanyEvents(params: Parameters<CyberGateway["listCompanyEvents"]>[0]) {
+    return this.gateway.listCompanyEvents(params);
   }
 
   listCron() {

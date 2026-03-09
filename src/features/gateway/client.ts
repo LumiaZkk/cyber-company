@@ -1,5 +1,6 @@
 import { GatewayBrowserClient } from "./openclaw-gateway-client";
 import type { GatewayEventFrame, GatewayHelloOk } from "./openclaw-gateway-client";
+import type { CompanyEvent, CompanyEventsListResult } from "../company/events";
 import type {
   GatewayAuthCodexOauthCallbackResult,
   GatewayAuthCodexOauthStatusResult,
@@ -37,6 +38,15 @@ export interface AgentsListResult {
   mainKey: string;
   scope: "per-sender" | "global";
   agents: AgentListEntry[];
+}
+
+export interface AgentsDeleteResult {
+  ok: true;
+  agentId: string;
+  removedBindings?: number;
+  removedAllow?: number;
+  removedSessions?: number;
+  removedCronJobs?: number;
 }
 
 export interface GatewaySessionRow {
@@ -263,6 +273,15 @@ function stringifyError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function isLegacyAgentsDeletePurgeStateError(error: unknown): boolean {
+  const message = stringifyError(error);
+  return (
+    message.includes("invalid agents.delete params") &&
+    message.includes("unexpected property") &&
+    message.includes("purgeState")
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -504,6 +523,30 @@ export class CyberGateway {
     });
   }
 
+  async deleteAgent(
+    agentId: string,
+    opts?: { deleteFiles?: boolean; purgeState?: boolean },
+  ): Promise<AgentsDeleteResult> {
+    const params = {
+      agentId,
+      deleteFiles: opts?.deleteFiles ?? true,
+      purgeState: opts?.purgeState ?? true,
+    };
+
+    try {
+      return await this.client!.request<AgentsDeleteResult>("agents.delete", params);
+    } catch (error) {
+      if (!params.purgeState || !isLegacyAgentsDeletePurgeStateError(error)) {
+        throw error;
+      }
+
+      return this.client!.request<AgentsDeleteResult>("agents.delete", {
+        agentId,
+        deleteFiles: params.deleteFiles,
+      });
+    }
+  }
+
   async listAgentFiles(
     agentId: string,
   ): Promise<{ agentId: string; workspace: string; files: AgentFileEntry[] }> {
@@ -660,6 +703,19 @@ export class CyberGateway {
       ...(typeof opts?.timeoutMs === "number" ? { timeoutMs: opts.timeoutMs } : {}),
       idempotencyKey: crypto.randomUUID(),
     });
+  }
+
+  async appendCompanyEvent(event: CompanyEvent): Promise<{ ok: true; event: CompanyEvent }> {
+    return this.client!.request("company.events.append", { event });
+  }
+
+  async listCompanyEvents(params: {
+    companyId: string;
+    since?: number;
+    cursor?: string;
+    limit?: number;
+  }): Promise<CompanyEventsListResult> {
+    return this.client!.request("company.events.list", params);
   }
 
   async listCron(): Promise<CronListResult> {

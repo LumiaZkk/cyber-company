@@ -1,5 +1,6 @@
 import type {
   AgentControlSnapshot,
+  AgentsDeleteResult,
   AgentListEntry,
   AgentsListResult,
   ChatEventPayload,
@@ -18,6 +19,7 @@ import type {
   SessionsUsageEntry,
   SessionsUsageResult,
 } from "../gateway/client";
+import type { CompanyEvent, CompanyEventsListResult } from "../company/events";
 import type { GatewayEventFrame, GatewayHelloOk } from "../gateway/openclaw-gateway-client";
 import type {
   GatewayAuthCodexOauthCallbackResult,
@@ -193,6 +195,10 @@ export interface AgentBackend extends BackendCore {
     avatar?: string;
   }): Promise<{ ok: true; agentId: string }>;
   createAgent(name: string): Promise<{ ok: true; agentId: string; name: string; workspace: string }>;
+  deleteAgent(
+    agentId: string,
+    opts?: { deleteFiles?: boolean; purgeState?: boolean },
+  ): Promise<AgentsDeleteResult>;
   listAgentFiles(agentId: string): Promise<{ agentId: string; workspace: string; files: Array<{
     name: string;
     path: string;
@@ -264,6 +270,13 @@ export interface AgentBackend extends BackendCore {
       attachments?: Array<{ type: string; mimeType: string; content: string }>;
     },
   ): Promise<{ runId: string; status: "started" | "in_flight" }>;
+  appendCompanyEvent(event: CompanyEvent): Promise<{ ok: true; event: CompanyEvent }>;
+  listCompanyEvents(params: {
+    companyId: string;
+    since?: number;
+    cursor?: string;
+    limit?: number;
+  }): Promise<CompanyEventsListResult>;
   listCron(): Promise<CronListResult>;
   addCron(job: Record<string, unknown>): Promise<unknown>;
   updateCron(jobId: string, patch: Record<string, unknown>): Promise<unknown>;
@@ -311,10 +324,13 @@ export interface AgentBackend extends BackendCore {
 
 export type {
   AgentControlSnapshot,
+  AgentsDeleteResult,
   AgentListEntry,
   AgentsListResult,
   ChatEventPayload,
   ChatMessage,
+  CompanyEvent,
+  CompanyEventsListResult,
   CostUsageTotals,
   CostUsageSummary,
   CronJob,

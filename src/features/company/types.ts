@@ -85,6 +85,8 @@ export type WorkItemStatus =
   | "blocked"
   | "archived";
 
+export type WorkItemKind = "strategic" | "execution" | "artifact";
+
 export type WorkStepStatus = "pending" | "active" | "done" | "blocked" | "skipped";
 
 export type DispatchStatus =
@@ -98,7 +100,12 @@ export type DispatchStatus =
 export type ArtifactStatus = "draft" | "ready" | "superseded" | "archived";
 
 export type RoomVisibility = "public" | "system" | "debug";
-export type RoomMessageSource = "user" | "owner_dispatch" | "member_reply" | "system";
+export type RoomMessageSource =
+  | "user"
+  | "owner_dispatch"
+  | "member_reply"
+  | "member_message"
+  | "system";
 export type RoomStatus = "active" | "paused" | "archived";
 
 export interface ProviderConversationRef {
@@ -132,6 +139,7 @@ export interface DispatchRecord {
   responseMessageId?: string;
   providerRunId?: string;
   topicKey?: string;
+  syncSource?: "event" | "history";
   createdAt: number;
   updatedAt: number;
 }
@@ -181,9 +189,13 @@ export interface RoomRecord {
   companyId?: string;
   workItemId?: string;
   title: string;
+  headline?: string;
   ownerActorId?: string | null;
+  batonActorId?: string | null;
   memberActorIds: string[];
   status: RoomStatus;
+  progress?: string;
+  lastConclusionAt?: number | null;
   providerConversationRefs?: ProviderConversationRef[];
   transcript: RoomMessage[];
   createdAt: number;
@@ -240,6 +252,9 @@ export interface ConversationMissionRecord {
 
 export interface WorkItemRecord {
   id: string;
+  workKey: string;
+  kind: WorkItemKind;
+  roundId: string;
   companyId: string;
   sessionKey?: string;
   topicKey?: string;
@@ -250,6 +265,11 @@ export interface WorkItemRecord {
   providerId?: string | null;
   title: string;
   goal: string;
+  headline: string;
+  displayStage: string;
+  displaySummary: string;
+  displayOwnerLabel: string;
+  displayNextAction: string;
   status: WorkItemStatus;
   stageLabel: string;
   ownerActorId?: string | null;
@@ -266,6 +286,15 @@ export interface WorkItemRecord {
   nextAction: string;
   steps: WorkStepRecord[];
   sourceMissionId?: string;
+}
+
+export interface ConversationStateRecord {
+  companyId: string;
+  conversationId: string;
+  currentWorkKey?: string | null;
+  currentWorkItemId?: string | null;
+  currentRoundId?: string | null;
+  updatedAt: number;
 }
 
 export type RoundMessageSnapshot = {
@@ -346,6 +375,7 @@ export interface HandoffRecord {
   artifactUrls?: string[];
   artifactPaths?: string[];
   sourceMessageTs?: number;
+  syncSource?: "event" | "history";
   createdAt: number;
   updatedAt: number;
 }
@@ -375,6 +405,7 @@ export interface RequestRecord {
   responseSummary?: string;
   sourceMessageTs?: number;
   responseMessageTs?: number;
+  syncSource?: "event" | "history";
   createdAt: number;
   updatedAt: number;
 }

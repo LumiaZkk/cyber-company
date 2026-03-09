@@ -17,12 +17,14 @@ import {
 import {
   buildCeoControlSurface,
 } from "../features/ceo/control-surface";
+import { createCompanyEvent } from "../features/company/events";
+import { syncCompanyCommunicationState } from "../features/company/sync-company-communication";
 import { useCompanyStore } from "../features/company/store";
 import type {
-  ArtifactRecord,
   Company,
   ConversationMissionStepRecord,
   DispatchRecord,
+  RequirementRoomMessage,
   RequirementRoomRecord,
   RoundMessageSnapshot,
   RoundRecord,
@@ -38,6 +40,7 @@ import {
 import {
   buildRoundRecord,
   buildRoomRecordIdFromWorkItem,
+  deriveWorkKeyFromWorkItemId,
   pickWorkItemRecord,
 } from "../features/execution/work-item";
 import { reconcileWorkItemRecord } from "../features/execution/work-item-reconciler";
@@ -48,9 +51,6 @@ import {
 } from "../features/execution/focus-summary";
 import {
   buildRequirementExecutionOverview,
-  createRequirementMessageSnapshots,
-  REQUIREMENT_SNAPSHOT_MESSAGE_LIMIT,
-  type RequirementArtifactCheck,
   type RequirementExecutionOverview,
   type RequirementParticipantProgress,
   type RequirementSessionSnapshot,
@@ -60,31 +60,53 @@ import {
   buildRequirementRoomRecordSignature,
   buildRoomConversationBindingsFromSessions,
   buildRequirementRoomRecord,
+  buildRequirementRoomRecordFromSnapshots,
+  buildRequirementRoomHrefFromRecord,
   buildRequirementRoomRoute,
   buildRequirementRoomSessions,
   convertRequirementRoomRecordToChatMessages,
   createIncomingRequirementRoomMessage,
   createOutgoingRequirementRoomMessage,
   mergeRequirementRoomRecordFromSessions,
+  mergeRequirementRoomRecordFromSnapshots,
   searchRequirementRoomMentionCandidates,
+  isVisibleRequirementRoomMessage,
   type RequirementRoomMentionCandidate,
   resolveRequirementRoomMentionTargets,
 } from "../features/execution/requirement-room";
 import { buildRequirementTeamView } from "../features/execution/requirement-team";
 import {
+  isArtifactRequirementTopic,
   isParticipantCompletedStatus,
   isParticipantRunningStatus,
   isParticipantWaitingStatus,
   isStrategicRequirementTopic,
 } from "../features/execution/requirement-kind";
 import {
+  buildAutoDispatchPlan,
+  shouldDelegateToNextBaton,
+} from "../features/execution/auto-dispatch";
+import {
+  isCanonicalProductWorkItemRecord,
+  isReliableRequirementOverview,
+  shouldPreferReliableStrategicOverview,
+  shouldReplaceLockedStrategicWorkItem,
+} from "../features/execution/work-item-signal";
+import {
+  buildTruthComparableText,
   isInternalAssistantMonologueText,
+  isTruthMirrorNoiseText,
   isSyntheticWorkflowPromptText,
   normalizeTruthText,
   stripTruthControlMetadata,
   stripTruthInternalMonologue,
   stripTruthTaskTracker,
 } from "../features/execution/message-truth";
+import { buildHistoryRoundItems, getHistoryRoundBadgeLabel } from "../features/company/round-history";
+import {
+  readCompanyRuntimeSnapshot,
+  writeCompanyRuntimeSnapshot,
+} from "../features/runtime/company-runtime";
 import { resolveExecutionState } from "../features/execution/state";
 import { buildManualTakeoverPack } from "../features/execution/takeover-pack";
 import { buildHandoffRecords } from "../features/handoffs/handoff-object";
@@ -92,7 +114,6 @@ import {
   buildOrgAdvisorSnapshot,
 } from "../features/org/org-advisor";
 import { buildRequestRecords } from "../features/requests/request-object";
-import { reconcileCompanyCommunication } from "../features/requests/reconcile";
 import { summarizeRequestHealth } from "../features/requests/request-health";
 import { inferMissionTopicKey, inferRequestTopicKey } from "../features/requests/topic";
 import { evaluateSlaAlerts } from "../features/sla/escalation-rules";
@@ -109,11 +130,16 @@ import {
 import { useGatewayStore } from "../features/gateway/store";
 import { toast } from "../features/ui/toast-store";
 import { AgentOps } from "../lib/agent-ops";
-import { resolveSessionPresentation } from "../lib/chat-routes";
+import {
+  appendCompanyScopeToChatRoute,
+  buildCompanyChatRoute,
+  findCompaniesByAgentId,
+  resolveSessionPresentation,
+} from "../lib/chat-routes";
 import { parseHrDepartmentPlan } from "../lib/hr-dept-plan";
 import {
-  parseAgentIdFromSessionKey,
   resolveSessionActorId,
+  resolveLegacyConversationRoute,
   resolveSessionTitle,
   resolveSessionUpdatedAt,
 } from "../lib/sessions";
@@ -139,6 +165,8 @@ function createComposerMentionBoundaryRegex() {
 
 const CHAT_HISTORY_FETCH_LIMIT = 80;
 const CHAT_UI_MESSAGE_LIMIT = 120;
+const CHAT_INITIAL_RENDER_WINDOW = 80;
+const CHAT_RENDER_WINDOW_STEP = 80;
 
 function workItemToConversationMission(
   workItem: WorkItemRecord,
@@ -168,11 +196,11 @@ function workItemToConversationMission(
               : "进行中",
     progressLabel:
       workItem.steps.length > 0 ? `${completedCount}/${workItem.steps.length}` : "进行中",
-    ownerLabel: workItem.ownerLabel,
-    currentStepLabel: workItem.stageLabel,
+    ownerLabel: workItem.displayOwnerLabel || workItem.ownerLabel,
+    currentStepLabel: workItem.displayStage || workItem.stageLabel,
     nextLabel: workItem.batonLabel,
-    summary: workItem.summary,
-    guidance: workItem.nextAction,
+    summary: workItem.displaySummary || workItem.summary,
+    guidance: workItem.displayNextAction || workItem.nextAction,
     planSteps: workItem.steps.map((step) => ({
       id: step.id,
       title: step.title,
@@ -204,69 +232,245 @@ function normalizeChatDisplaySignature(message: ChatMessage): string {
   if (!text) {
     return "";
   }
-  return normalizeTruthText(stripTruthInternalMonologue(text));
+  return buildTruthComparableText(stripTruthInternalMonologue(text));
+}
+
+function resolveDisplayMessageSenderKey(message: ChatMessage): string {
+  if (typeof message.senderAgentId === "string" && message.senderAgentId.trim().length > 0) {
+    return `agent:${message.senderAgentId.trim()}`;
+  }
+
+  if (typeof message.provenance === "object" && message.provenance) {
+    const provenance = message.provenance as Record<string, unknown>;
+    if (typeof provenance.sourceActorId === "string" && provenance.sourceActorId.trim().length > 0) {
+      return `agent:${provenance.sourceActorId.trim()}`;
+    }
+    if (typeof provenance.sourceSessionKey === "string" && provenance.sourceSessionKey.trim().length > 0) {
+      return `session:${provenance.sourceSessionKey.trim()}`;
+    }
+  }
+
+  if (typeof message.roomAgentId === "string" && message.roomAgentId.trim().length > 0) {
+    return `room-agent:${message.roomAgentId.trim()}`;
+  }
+
+  return `role:${message.role}`;
+}
+
+function resolveDisplayConversationScopeKey(message: ChatMessage): string {
+  if (typeof message.roomSessionKey === "string" && message.roomSessionKey.trim().length > 0) {
+    return `room:${message.roomSessionKey.trim()}`;
+  }
+  if (typeof message.roomAgentId === "string" && message.roomAgentId.trim().length > 0) {
+    return `room-agent:${message.roomAgentId.trim()}`;
+  }
+  return "direct";
+}
+
+function pickPreferredVisibleMessage(current: ChatMessage, incoming: ChatMessage): ChatMessage {
+  const currentText = extractTextFromMessage(current) ?? "";
+  const incomingText = extractTextFromMessage(incoming) ?? "";
+  const currentScore =
+    currentText.length +
+    (Array.isArray(current.content) ? current.content.length * 10 : 0) +
+    (current.senderAgentId ? 5 : 0);
+  const incomingScore =
+    incomingText.length +
+    (Array.isArray(incoming.content) ? incoming.content.length * 10 : 0) +
+    (incoming.senderAgentId ? 5 : 0);
+
+  if (incomingScore > currentScore) {
+    return incoming;
+  }
+  if (incomingScore === currentScore) {
+    const currentTimestamp = typeof current.timestamp === "number" ? current.timestamp : 0;
+    const incomingTimestamp = typeof incoming.timestamp === "number" ? incoming.timestamp : 0;
+    if (incomingTimestamp >= currentTimestamp) {
+      return incoming;
+    }
+  }
+  return current;
 }
 
 function dedupeVisibleChatMessages(messages: ChatMessage[]): ChatMessage[] {
   const result: ChatMessage[] = [];
+  const recentBySemanticKey = new Map<string, { index: number; timestamp: number }>();
 
   for (const message of messages) {
-    const last = result[result.length - 1];
-    if (!last) {
-      result.push(message);
-      continue;
-    }
-
     const currentText = normalizeChatDisplaySignature(message);
-    const lastText = normalizeChatDisplaySignature(last);
     const currentTimestamp = typeof message.timestamp === "number" ? message.timestamp : 0;
-    const lastTimestamp = typeof last.timestamp === "number" ? last.timestamp : 0;
-    const sameDirectUserEcho =
-      message.role === "user" &&
-      last.role === "user" &&
-      (message.roomAgentId ?? null) === null &&
-      (last.roomAgentId ?? null) === null &&
-      currentText.length > 0 &&
-      currentText === lastText &&
-      Math.abs(currentTimestamp - lastTimestamp) <= 120_000;
-    const withinWindow = sameDirectUserEcho || Math.abs(currentTimestamp - lastTimestamp) <= 5_000;
-    const sameConversationScope =
-      (message.roomAgentId ?? null) !== (last.roomAgentId ?? null)
-        ? false
-        : (message.roomAgentId ?? null) === null && (last.roomAgentId ?? null) === null
-          ? true
-          : (message.roomSessionKey ?? null) === (last.roomSessionKey ?? null);
+    if (currentText.length > 0) {
+      const senderKey = resolveDisplayMessageSenderKey(message);
+      const scopeKey = resolveDisplayConversationScopeKey(message);
+      const semanticKey = `${scopeKey}::${message.role}::${senderKey}::${currentText}`;
+      const userEchoKey =
+        message.role === "user" ? `${scopeKey}::user-echo::${currentText}` : null;
+      const candidateKeys = userEchoKey ? [semanticKey, userEchoKey] : [semanticKey];
+      const dedupeWindowMs = message.role === "user" ? 120_000 : 5_000;
+      const matchedEntry = candidateKeys
+        .map((key) => recentBySemanticKey.get(key))
+        .find(
+          (entry) =>
+            entry &&
+            Math.abs(currentTimestamp - entry.timestamp) <= dedupeWindowMs &&
+            entry.index >= 0 &&
+            entry.index < result.length,
+        );
 
-    if (
-      withinWindow &&
-      message.role === last.role &&
-      currentText.length > 0 &&
-      currentText === lastText &&
-      sameConversationScope
-    ) {
-      if (currentTimestamp > lastTimestamp) {
-        result[result.length - 1] = {
-          ...message,
+      if (matchedEntry) {
+        const current = result[matchedEntry.index]!;
+        result[matchedEntry.index] = {
+          ...pickPreferredVisibleMessage(current, message),
           roomAudienceAgentIds:
-            Array.isArray(last.roomAudienceAgentIds) || Array.isArray(message.roomAudienceAgentIds)
+            Array.isArray(current.roomAudienceAgentIds) || Array.isArray(message.roomAudienceAgentIds)
               ? [
                   ...new Set(
                     [
-                      ...(Array.isArray(last.roomAudienceAgentIds) ? last.roomAudienceAgentIds : []),
+                      ...(Array.isArray(current.roomAudienceAgentIds) ? current.roomAudienceAgentIds : []),
                       ...(Array.isArray(message.roomAudienceAgentIds) ? message.roomAudienceAgentIds : []),
                     ].map((agentId) => String(agentId)),
                   ),
                 ]
               : message.roomAudienceAgentIds,
         };
+        candidateKeys.forEach((key) =>
+          recentBySemanticKey.set(key, {
+            index: matchedEntry.index,
+            timestamp: Math.max(currentTimestamp, matchedEntry.timestamp),
+          }),
+        );
+        continue;
       }
-      continue;
     }
 
     result.push(message);
+    if (currentText.length > 0) {
+      const senderKey = resolveDisplayMessageSenderKey(message);
+      const scopeKey = resolveDisplayConversationScopeKey(message);
+      const semanticKey = `${scopeKey}::${message.role}::${senderKey}::${currentText}`;
+      const nextEntry = { index: result.length - 1, timestamp: currentTimestamp };
+      recentBySemanticKey.set(semanticKey, nextEntry);
+      if (message.role === "user") {
+        recentBySemanticKey.set(`${scopeKey}::user-echo::${currentText}`, nextEntry);
+      }
+    }
   }
 
   return result;
+}
+
+type WorkItemPrimaryView = {
+  headline: string;
+  ownerAgentId: string | null;
+  ownerLabel: string;
+  stage: string;
+  statusLabel: string;
+  summary: string;
+  actionHint: string;
+  nextAgentId: string | null;
+  nextLabel: string;
+  tone: FocusProgressTone;
+};
+
+function buildWorkItemPrimaryView(input: {
+  company: Company | null | undefined;
+  workItem: WorkItemRecord | null | undefined;
+}): WorkItemPrimaryView | null {
+  const { company, workItem } = input;
+  if (!workItem) {
+    return null;
+  }
+
+  const ownerAgentId = workItem.ownerActorId ?? null;
+  const ownerLabel =
+    workItem.displayOwnerLabel ||
+    workItem.ownerLabel ||
+    (ownerAgentId ? formatAgentLabel(company, ownerAgentId) : "当前负责人");
+  const batonAgentId =
+    workItem.batonActorId && workItem.batonActorId !== ownerAgentId
+      ? workItem.batonActorId
+      : null;
+  const batonLabel =
+    workItem.batonLabel ||
+    (batonAgentId ? formatAgentLabel(company, batonAgentId) : ownerLabel);
+  const currentStep =
+    workItem.steps.find((step) => step.status === "active")
+    ?? workItem.steps.find((step) => step.status === "pending")
+    ?? null;
+  const stage = workItem.displayStage || currentStep?.title || workItem.stageLabel;
+  const summary = workItem.displaySummary || workItem.summary || workItem.goal || "当前任务正在推进。";
+  const actionHint = workItem.displayNextAction || workItem.nextAction || stage || "继续推进当前工作项。";
+
+  switch (workItem.status) {
+    case "blocked":
+      return {
+        headline: workItem.title || workItem.headline || `当前卡点在 ${ownerLabel}`,
+        ownerAgentId,
+        ownerLabel,
+        stage,
+        statusLabel: "已阻塞",
+        summary,
+        actionHint,
+        nextAgentId: batonAgentId ?? ownerAgentId,
+        nextLabel: batonLabel || ownerLabel,
+        tone: "rose",
+      };
+    case "waiting_owner":
+      return {
+        headline: workItem.title || workItem.headline || `等待 ${ownerLabel} 收口`,
+        ownerAgentId,
+        ownerLabel,
+        stage,
+        statusLabel: "待负责人收口",
+        summary,
+        actionHint,
+        nextAgentId: ownerAgentId,
+        nextLabel: ownerLabel,
+        tone: "amber",
+      };
+    case "waiting_review":
+      return {
+        headline: workItem.title || workItem.headline || "等待确认当前阶段",
+        ownerAgentId,
+        ownerLabel,
+        stage,
+        statusLabel: "待你确认",
+        summary,
+        actionHint,
+        nextAgentId: ownerAgentId,
+        nextLabel: ownerLabel,
+        tone: "amber",
+      };
+    case "completed":
+      return {
+        headline: workItem.title || workItem.headline || `${ownerLabel} 这一步已完成`,
+        ownerAgentId,
+        ownerLabel,
+        stage,
+        statusLabel: "已完成",
+        summary,
+        actionHint,
+        nextAgentId: batonAgentId,
+        nextLabel: batonLabel,
+        tone: "emerald",
+      };
+    default:
+      return {
+        headline:
+          workItem.title ||
+          workItem.headline ||
+          (batonAgentId ? `当前流转到 ${batonLabel}` : `当前流转到 ${ownerLabel}`),
+        ownerAgentId,
+        ownerLabel,
+        stage,
+        statusLabel: currentStep?.status === "pending" ? "待处理" : "进行中",
+        summary,
+        actionHint,
+        nextAgentId: batonAgentId ?? ownerAgentId,
+        nextLabel: batonLabel || ownerLabel,
+        tone: batonAgentId ? "amber" : "indigo",
+      };
+  }
 }
 
 function hasRichMarkdownSyntax(text: string): boolean {
@@ -312,22 +516,94 @@ function extractTextFromMessage(message: ChatMessage | undefined): string | null
   return textBlocks.length > 0 ? textBlocks.join("\n") : null;
 }
 
+function sanitizeVisibleMessageText(text: string): string {
+  return stripTruthInternalMonologue(stripChatControlMetadata(text))
+    .replace(/\bANNOUNCE_SKIP\b/g, "")
+    .trim();
+}
+
+function sanitizeVisibleMessageContent(content: unknown): unknown {
+  if (typeof content === "string") {
+    const normalized = sanitizeVisibleMessageText(content);
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  if (!Array.isArray(content)) {
+    return content;
+  }
+
+  const visibleBlocks = getChatBlocks(content).flatMap((block) => {
+    const blockType = normalizeChatBlockType(block.type);
+    if (blockType === "text" && typeof block.text === "string") {
+      const normalized = sanitizeVisibleMessageText(block.text);
+      if (!normalized) {
+        return [];
+      }
+      return [{ ...block, text: normalized }];
+    }
+    if (blockType === "image") {
+      return [block];
+    }
+    return [];
+  });
+
+  return visibleBlocks.length > 0 ? visibleBlocks : null;
+}
+
+function buildVisibleChatMessage(message: ChatMessage): ChatMessage {
+  if (message.role === "user") {
+    return message;
+  }
+
+  const nextText =
+    typeof message.text === "string" && message.text.trim().length > 0
+      ? sanitizeVisibleMessageText(message.text)
+      : undefined;
+  const nextContent = sanitizeVisibleMessageContent(message.content);
+
+  return {
+    ...message,
+    text: nextText && nextText.length > 0 ? nextText : undefined,
+    content: nextContent,
+  };
+}
+
+function shouldKeepVisibleChatMessage(message: ChatMessage): boolean {
+  if (message.role === "system") {
+    return false;
+  }
+
+  const rawText = extractTextFromMessage(message);
+  if (
+    rawText &&
+    (isSyntheticWorkflowPromptText(rawText) ||
+      isInternalAssistantMonologueText(rawText) ||
+      isTruthMirrorNoiseText(rawText) ||
+      isLikelyLegacyRelayUserMessage(message, rawText))
+  ) {
+    return false;
+  }
+
+  if (isToolActivityMessage(message) || isToolResultMessage(message)) {
+    return false;
+  }
+
+  const renderableContent = getRenderableMessageContent(message.content);
+  return Boolean(rawText || renderableContent);
+}
+
+function sanitizeVisibleChatFlow(messages: ChatMessage[]): ChatMessage[] {
+  return limitChatMessages(
+    messages
+      .map(normalizeMessage)
+      .map(buildVisibleChatMessage)
+      .filter(shouldKeepVisibleChatMessage),
+  );
+}
+
 type TaskItem = {
   status: "done" | "wip" | "pending";
   text: string;
-};
-
-type HistoryRoundItem = {
-  id: string;
-  title: string;
-  preview?: string | null;
-  archivedAt: number;
-  restorable: boolean;
-  source: "product" | "provider";
-  providerArchiveId?: string | null;
-  fileName?: string;
-  reason?: string;
-  round?: RoundRecord | null;
 };
 
 function uniqueTaskList(tasks: TrackedTask[]): TrackedTask[] {
@@ -378,21 +654,50 @@ function compactRoundText(text: string, limit: number = 320): string {
 }
 
 function createRoundMessageSnapshots(messages: ChatMessage[], limit: number = 24): RoundMessageSnapshot[] {
-  return messages
+  const snapshots = messages
     .filter((message) => !isToolActivityMessage(message) && !isToolResultMessage(message))
     .map((message) => {
       const text = extractTextFromMessage(message);
       if (!text) {
         return null;
       }
+      const compacted = compactRoundText(text, 480);
+      if (
+        !compacted ||
+        isTruthMirrorNoiseText(compacted) ||
+        isSyntheticWorkflowPromptText(compacted) ||
+        isInternalAssistantMonologueText(text) ||
+        isLikelyLegacyRelayUserMessage(message, text)
+      ) {
+        return null;
+      }
       return {
         role: message.role,
-        text: compactRoundText(text, 480),
+        text: compacted,
         timestamp: typeof message.timestamp === "number" ? message.timestamp : Date.now(),
       } satisfies RoundMessageSnapshot;
     })
     .filter((message): message is RoundMessageSnapshot => Boolean(message))
-    .slice(-limit);
+    .reduce<RoundMessageSnapshot[]>((result, snapshot) => {
+      const last = result[result.length - 1];
+      if (!last) {
+        result.push(snapshot);
+        return result;
+      }
+
+      const sameRole = last.role === snapshot.role;
+      const sameTruth = buildTruthComparableText(last.text) === buildTruthComparableText(snapshot.text);
+      const withinWindow = Math.abs(snapshot.timestamp - last.timestamp) <= 120_000;
+      if (sameRole && sameTruth && withinWindow) {
+        result[result.length - 1] = snapshot.text.length >= last.text.length ? snapshot : last;
+        return result;
+      }
+
+      result.push(snapshot);
+      return result;
+    }, []);
+
+  return snapshots.slice(-limit);
 }
 
 function buildRoundPreview(messages: RoundMessageSnapshot[]): string | null {
@@ -400,11 +705,23 @@ function buildRoundPreview(messages: RoundMessageSnapshot[]): string | null {
   return latest ? compactRoundText(latest.text, 140) : null;
 }
 
-function roundSnapshotToChatMessage(message: RoundMessageSnapshot): ChatMessage {
+function roundSnapshotToChatMessage(message: RoundMessageSnapshot): ChatMessage | null {
+  if (message.role !== "user" && message.role !== "assistant") {
+    return null;
+  }
+  const normalizedText = normalizeTruthText(message.text);
+  if (
+    !normalizedText ||
+    isTruthMirrorNoiseText(normalizedText) ||
+    isSyntheticWorkflowPromptText(normalizedText) ||
+    (message.role === "assistant" && isInternalAssistantMonologueText(normalizedText))
+  ) {
+    return null;
+  }
   return {
     role: message.role,
-    text: message.text,
-    content: message.text,
+    text: normalizedText,
+    content: normalizedText,
     timestamp: message.timestamp,
   };
 }
@@ -413,14 +730,19 @@ function buildProductRoundRestorePrompt(round: RoundRecord, actorLabel: string):
   const transcript = round.messages
     .slice(-8)
     .map((message) => {
+      const normalizedText = normalizeTruthText(message.text);
+      if (!normalizedText) {
+        return null;
+      }
       const speaker =
         message.role === "user"
           ? "用户"
           : message.role === "assistant"
             ? actorLabel
             : "系统";
-      return `- ${speaker}: ${message.text}`;
+      return `- ${speaker}: ${normalizedText}`;
     })
+    .filter((entry): entry is string => Boolean(entry))
     .join("\n");
 
   return [
@@ -432,43 +754,6 @@ function buildProductRoundRestorePrompt(round: RoundRecord, actorLabel: string):
   ]
     .filter(Boolean)
     .join("\n\n");
-}
-
-function buildHistoryRoundItems(input: {
-  productRounds: RoundRecord[];
-  providerRounds: GatewaySessionArchiveRow[];
-}): HistoryRoundItem[] {
-  const productItems = input.productRounds.map((round) => ({
-    id: round.id,
-    title: round.title,
-    preview: round.preview ?? null,
-    archivedAt: round.archivedAt,
-    restorable: round.restorable,
-    source: "product" as const,
-    providerArchiveId: round.providerArchiveId ?? null,
-    reason: round.reason ?? undefined,
-    round,
-  }));
-
-  const coveredProviderIds = new Set(
-    productItems.map((item) => item.providerArchiveId).filter((value): value is string => Boolean(value)),
-  );
-  const providerItems = input.providerRounds
-    .filter((archive) => !coveredProviderIds.has(archive.id))
-    .map((archive) => ({
-      id: archive.id,
-      title: archive.title || archive.fileName,
-      preview: archive.preview ? compactRoundText(archive.preview, 140) : null,
-      archivedAt: archive.archivedAt,
-      restorable: true,
-      source: "provider" as const,
-      providerArchiveId: archive.id,
-      fileName: archive.fileName,
-      reason: archive.reason,
-      round: null,
-    }));
-
-  return [...productItems, ...providerItems].sort((left, right) => right.archivedAt - left.archivedAt);
 }
 
 function matchesProductRoundToActor(round: RoundRecord, actorId: string | null | undefined): boolean {
@@ -1425,6 +1710,7 @@ function isSubstantiveConversationText(text: string): boolean {
   if (
     !cleaned ||
     cleaned === "ANNOUNCE_SKIP" ||
+    isTruthMirrorNoiseText(cleaned) ||
     isEphemeralConversationText(cleaned) ||
     isSyntheticWorkflowPromptText(cleaned) ||
     isInternalAssistantMonologueText(text)
@@ -1434,40 +1720,28 @@ function isSubstantiveConversationText(text: string): boolean {
   return cleaned.length >= 30 || /[。！？\n【】]/.test(text);
 }
 
-function extractArtifactPathsFromMessages(messages: ChatMessage[]): string[] {
-  const pathPattern = /\/Users\/[^\s`"]+?\.md\b/g;
-  const paths = new Set<string>();
-
-  for (const message of messages) {
-    const text = extractTextFromMessage(message);
-    if (!text) {
-      continue;
-    }
-    for (const match of text.matchAll(pathPattern)) {
-      if (match[0]) {
-        paths.add(match[0]);
-      }
-    }
+function isLikelyLegacyRelayUserMessage(message: ChatMessage, rawText: string | null): boolean {
+  if (message.role !== "user" || !rawText) {
+    return false;
   }
-
-  return [...paths];
-}
-
-function findArtifactMirrorRecord(
-  absolutePath: string,
-  artifacts: ArtifactRecord[],
-): ArtifactRecord | null {
-  const normalizedPath = absolutePath.trim();
-  if (!normalizedPath) {
-    return null;
+  if (
+    (typeof message.roomAgentId === "string" && message.roomAgentId.trim().length > 0) ||
+    (typeof message.roomSessionKey === "string" && message.roomSessionKey.trim().length > 0)
+  ) {
+    return false;
+  }
+  const extractedName = extractNameFromMessage(rawText);
+  if (!extractedName) {
+    return false;
+  }
+  const normalized = sanitizeConversationText(rawText);
+  if (!normalized) {
+    return false;
   }
   return (
-    artifacts.find((artifact) => artifact.sourcePath === normalizedPath)
-    ?? artifacts.find((artifact) => artifact.sourceUrl === normalizedPath)
-    ?? artifacts.find((artifact) =>
-      artifact.sourcePath ? normalizedPath.endsWith(artifact.sourcePath) : false,
-    )
-    ?? null
+    rawText.includes("\n") ||
+    normalized.length >= 180 ||
+    /day\s*\d|已交付|已入库|阻塞|路径[:：]|下一步建议|验收标准|终审口径/i.test(normalized)
   );
 }
 
@@ -1708,17 +1982,24 @@ function buildChatDisplayItems(
 ): ChatDisplayItem[] {
   const items: ChatDisplayItem[] = [];
 
-  messages.forEach((message, index) => {
+  dedupeVisibleChatMessages(messages).forEach((message, index) => {
+    const visibleMessage = buildVisibleChatMessage(message);
     if (message.role === "system") {
       return;
     }
 
-    const rawText = extractTextFromMessage(message);
-    if (rawText && (isSyntheticWorkflowPromptText(rawText) || isInternalAssistantMonologueText(rawText))) {
+    const rawText = extractTextFromMessage(visibleMessage);
+    if (
+      rawText &&
+      (isSyntheticWorkflowPromptText(rawText) ||
+        isInternalAssistantMonologueText(rawText) ||
+        isTruthMirrorNoiseText(rawText) ||
+        isLikelyLegacyRelayUserMessage(message, rawText))
+    ) {
       return;
     }
 
-    const renderableContent = getRenderableMessageContent(message.content);
+    const renderableContent = getRenderableMessageContent(visibleMessage.content);
     if (!rawText && !renderableContent) {
       return;
     }
@@ -1757,7 +2038,7 @@ function buildChatDisplayItems(
     items.push({
       kind: "message",
       id: `message-${index}`,
-      message,
+      message: visibleMessage,
     });
   });
 
@@ -1978,9 +2259,11 @@ export function ChatPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const config = useCompanyStore((state) => state.config);
   const activeCompany = useCompanyStore((state) => state.activeCompany);
   const activeRoomRecords = useCompanyStore((state) => state.activeRoomRecords);
   const activeMissionRecords = useCompanyStore((state) => state.activeMissionRecords);
+  const activeConversationStates = useCompanyStore((state) => state.activeConversationStates);
   const activeWorkItems = useCompanyStore((state) => state.activeWorkItems);
   const activeRoundRecords = useCompanyStore((state) => state.activeRoundRecords);
   const activeArtifacts = useCompanyStore((state) => state.activeArtifacts);
@@ -1995,8 +2278,12 @@ export function ChatPage() {
   const appendRoomMessages = useCompanyStore((state) => state.appendRoomMessages);
   const upsertRoomConversationBindings = useCompanyStore((state) => state.upsertRoomConversationBindings);
   const upsertMissionRecord = useCompanyStore((state) => state.upsertMissionRecord);
+  const setConversationCurrentWorkKey = useCompanyStore((state) => state.setConversationCurrentWorkKey);
+  const clearConversationState = useCompanyStore((state) => state.clearConversationState);
   const upsertWorkItemRecord = useCompanyStore((state) => state.upsertWorkItemRecord);
   const upsertDispatchRecord = useCompanyStore((state) => state.upsertDispatchRecord);
+  const replaceDispatchRecords = useCompanyStore((state) => state.replaceDispatchRecords);
+  const switchCompany = useCompanyStore((state) => state.switchCompany);
   const providerId = useGatewayStore((state) => state.providerId);
   const connected = useGatewayStore((state) => state.connected);
   const providerCapabilities = useGatewayStore((state) => state.capabilities);
@@ -2011,6 +2298,8 @@ export function ChatPage() {
   const [recentArchivedRounds, setRecentArchivedRounds] = useState<GatewaySessionArchiveRow[]>([]);
   const [archiveHistoryNotice, setArchiveHistoryNotice] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [isHistoryMenuOpen, setIsHistoryMenuOpen] = useState(false);
+  const [displayWindowSize, setDisplayWindowSize] = useState(CHAT_INITIAL_RENDER_WINDOW);
   const [historyRefreshNonce, setHistoryRefreshNonce] = useState(0);
   const [deletingHistorySessionKey, setDeletingHistorySessionKey] = useState<string | null>(null);
   const [deletingArchiveId, setDeletingArchiveId] = useState<string | null>(null);
@@ -2021,8 +2310,13 @@ export function ChatPage() {
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isTechnicalSummaryOpen, setIsTechnicalSummaryOpen] = useState(false);
   const [summaryPanelView, setSummaryPanelView] = useState<"owner" | "team" | "debug">("owner");
-  const [companySessionSnapshots, setCompanySessionSnapshots] = useState<RequirementSessionSnapshot[]>([]);
-  const [hasBootstrappedCompanySync, setHasBootstrappedCompanySync] = useState(false);
+  const companyRuntimeSnapshot = readCompanyRuntimeSnapshot(activeCompany?.id);
+  const [companySessionSnapshots, setCompanySessionSnapshots] = useState<RequirementSessionSnapshot[]>(
+    () => companyRuntimeSnapshot?.companySessionSnapshots ?? [],
+  );
+  const [hasBootstrappedCompanySync, setHasBootstrappedCompanySync] = useState(
+    () => Boolean(companyRuntimeSnapshot?.companySessionSnapshots?.length),
+  );
   const [localProgressEvents, setLocalProgressEvents] = useState<FocusProgressEvent[]>([]);
   const [actionWatches, setActionWatches] = useState<FocusActionWatch[]>([]);
   const [roomBroadcastMode, setRoomBroadcastMode] = useState(false);
@@ -2038,6 +2332,7 @@ export function ChatPage() {
   const lastScrollTopRef = useRef(0);
   const lockedScrollTopRef = useRef<number | null>(null);
   const lastSyncedRoomSignatureRef = useRef<string | null>(null);
+  const autoDispatchInFlightRef = useRef<Set<string>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: number; text: string } | null>(null);
 
   const [isDragging, setIsDragging] = useState(false);
@@ -2095,11 +2390,21 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => {
-    // A company switch should not reuse the previous company's requirement cache.
-    setHasBootstrappedCompanySync(false);
-    setCompanySessionSnapshots([]);
-    companySessionSnapshotsRef.current = [];
+    const snapshot = readCompanyRuntimeSnapshot(activeCompany?.id);
+    const nextSnapshots = snapshot?.companySessionSnapshots ?? [];
+    setHasBootstrappedCompanySync(nextSnapshots.length > 0);
+    setCompanySessionSnapshots(nextSnapshots);
+    companySessionSnapshotsRef.current = nextSnapshots;
   }, [activeCompany?.id]);
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    writeCompanyRuntimeSnapshot(activeCompany.id, {
+      companySessionSnapshots,
+    });
+  }, [activeCompany, companySessionSnapshots]);
 
   useEffect(() => {
     const routeState = location.state as { prefillText?: string; prefillId?: number } | null;
@@ -2121,31 +2426,82 @@ export function ChatPage() {
 
   const isRoomRoute = agentId?.startsWith("room:") ?? false;
   const routeRoomId = isRoomRoute ? agentId?.slice("room:".length).trim() || null : null;
-  // If the URL parameter contains a colon, it's likely a full provider conversation key.
-  // Room routes use product room ids instead and should not leak provider keys into routing.
-  const isDirectKey = !isRoomRoute && agentId?.includes(":");
-  const targetSessionKey = isDirectKey ? agentId?.split("?")[0] ?? null : null;
-  const directRouteAgentId = isDirectKey ? parseAgentIdFromSessionKey(targetSessionKey ?? "") : null;
+  // Legacy fallback only: old deep links may still encode a provider conversation key.
+  // Product routes should now resolve by actor id or room id instead.
+  const {
+    isLegacyConversationRoute,
+    legacyRouteSessionKey,
+    legacyRouteActorId,
+    isLegacyGroupRoute,
+    legacyGroupTopic,
+  } = useMemo(
+    () => resolveLegacyConversationRoute(!isRoomRoute ? agentId : null),
+    [agentId, isRoomRoute],
+  );
 
   // Derive title/avatar for group chat vs 1v1
-  const isGroup = Boolean(isRoomRoute || (isDirectKey && agentId?.includes(":group:")));
-  const targetAgentId = isRoomRoute ? null : isDirectKey ? (isGroup ? null : directRouteAgentId) : agentId;
-  const historyAgentId = targetAgentId ?? directRouteAgentId;
-  const groupTopic = isGroup && !isRoomRoute ? agentId?.split(":group:")[1] ?? null : null;
+  const isGroup = Boolean(
+    isRoomRoute || isLegacyGroupRoute,
+  );
+  const targetAgentId = isRoomRoute
+    ? null
+    : isLegacyConversationRoute
+      ? (isGroup ? null : legacyRouteActorId)
+      : agentId;
+  const historyAgentId = targetAgentId ?? legacyRouteActorId;
+  const groupTopic = isGroup && !isRoomRoute ? legacyGroupTopic : null;
   // If we are in a group, parse the member agents from the '?m=' query param injected by the lobby
   const searchParams = new URLSearchParams(location.search);
+  const routeCompanyId = searchParams.get("cid")?.trim() || null;
   const groupMembersCsv = searchParams.get("m") ?? agentId?.split("?m=")[1] ?? null;
   const groupMembers = groupMembersCsv ? [...new Set(groupMembersCsv.split(",").filter(Boolean))] : [];
   const routeGroupTopicKey = isGroup ? searchParams.get("tk")?.trim().toLowerCase() || null : null;
   const routeWorkItemId = isGroup ? searchParams.get("wi")?.trim() || null : null;
   const archiveId = searchParams.get("archive")?.trim() || null;
   const isArchiveView = Boolean(archiveId && (historyAgentId || isGroup));
+  const routeAgentCompanies = useMemo(
+    () => findCompaniesByAgentId(config, targetAgentId),
+    [config, targetAgentId],
+  );
+  const resolvedRouteCompanyId = useMemo(() => {
+    if (routeCompanyId) {
+      return config?.companies.some((company) => company.id === routeCompanyId) ? routeCompanyId : null;
+    }
+    if (!isGroup && routeAgentCompanies.length === 1) {
+      return routeAgentCompanies[0]?.id ?? null;
+    }
+    return null;
+  }, [config?.companies, isGroup, routeAgentCompanies, routeCompanyId]);
+  const routeCompanyConflictMessage = useMemo(() => {
+    if (routeCompanyId && !resolvedRouteCompanyId) {
+      return `聊天路由引用了不存在的公司：${routeCompanyId}`;
+    }
+    if (!routeCompanyId && !isGroup && targetAgentId && routeAgentCompanies.length > 1) {
+      return `员工 ${targetAgentId} 同时存在于多个公司，当前路由缺少公司作用域，已阻止发送以避免串线。`;
+    }
+    return null;
+  }, [isGroup, resolvedRouteCompanyId, routeAgentCompanies.length, routeCompanyId, targetAgentId]);
+  const companyRouteReady = !resolvedRouteCompanyId || activeCompany?.id === resolvedRouteCompanyId;
   const supportsSessionHistory = providerCapabilities.sessionHistory;
   const supportsSessionArchives = providerCapabilities.sessionArchives;
   const supportsSessionArchiveRestore = providerCapabilities.sessionArchiveRestore;
   useEffect(() => {
     lastSyncedRoomSignatureRef.current = null;
   }, [activeCompany?.id, sessionKey, archiveId]);
+  useEffect(() => {
+    if (!resolvedRouteCompanyId || activeCompany?.id === resolvedRouteCompanyId) {
+      return;
+    }
+    switchCompany(resolvedRouteCompanyId);
+  }, [activeCompany?.id, resolvedRouteCompanyId, switchCompany]);
+  const lastRouteConflictRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!routeCompanyConflictMessage || lastRouteConflictRef.current === routeCompanyConflictMessage) {
+      return;
+    }
+    lastRouteConflictRef.current = routeCompanyConflictMessage;
+    toast.error("聊天路由冲突", routeCompanyConflictMessage);
+  }, [routeCompanyConflictMessage]);
   const rawGroupTitle =
     searchParams.get("title")?.trim() ||
     (groupTopic
@@ -2165,7 +2521,7 @@ export function ChatPage() {
           ) ??
           null
         : null,
-    [activeRoomRecords, isGroup, routeRoomId, routeWorkItemId, targetSessionKey],
+    [activeRoomRecords, isGroup, routeRoomId, routeWorkItemId],
   );
   const groupTitle = activeRequirementRoom?.title ?? rawGroupTitle;
   const groupTopicKey = activeRequirementRoom?.topicKey ?? routeGroupTopicKey;
@@ -2187,7 +2543,17 @@ export function ChatPage() {
         typeof binding.conversationId === "string" &&
         binding.conversationId.trim().length > 0,
     )?.conversationId ??
-    targetSessionKey;
+    legacyRouteSessionKey;
+  const conversationStateKey = isGroup
+    ? productRoomId
+    : sessionKey ?? historyAgentId ?? targetAgentId ?? null;
+  const activeConversationState = useMemo(
+    () =>
+      conversationStateKey
+        ? activeConversationStates.find((record) => record.conversationId === conversationStateKey) ?? null
+        : null,
+    [activeConversationStates, conversationStateKey],
+  );
   const productArchivedRounds = useMemo(
     () => {
       if (isGroup) {
@@ -2210,6 +2576,9 @@ export function ChatPage() {
     },
     [activeRequirementRoom?.id, activeRoundRecords, groupWorkItemId, historyAgentId, isGroup, routeRoomId],
   );
+  useEffect(() => {
+    setDisplayWindowSize(CHAT_INITIAL_RENDER_WINDOW);
+  }, [agentId, archiveId, historyAgentId, productRoomId]);
   const activeArchivedRound = useMemo(
     () =>
       archiveId ? productArchivedRounds.find((round) => round.id === archiveId) ?? null : null,
@@ -2254,6 +2623,30 @@ export function ChatPage() {
     () => new Set(requirementRoomSessions.map((session) => session.sessionKey)),
     [requirementRoomSessions],
   );
+  const requirementRoomSnapshotAgentIds = useMemo(() => {
+    const ids = [
+      ...requirementRoomTargetAgentIds,
+      activeRequirementRoom?.ownerActorId ?? activeRequirementRoom?.ownerAgentId ?? null,
+      activeRequirementRoom?.batonActorId ?? null,
+      targetAgentId ?? null,
+    ].filter((value): value is string => Boolean(value && value.trim()));
+    return [...new Set(ids)].sort();
+  }, [
+    activeRequirementRoom?.batonActorId,
+    activeRequirementRoom?.ownerActorId,
+    activeRequirementRoom?.ownerAgentId,
+    requirementRoomTargetAgentIds,
+    targetAgentId,
+  ]);
+  const requirementRoomSnapshots = useMemo(
+    () =>
+      isGroup && requirementRoomSnapshotAgentIds.length > 0
+        ? companySessionSnapshots
+            .filter((snapshot) => requirementRoomSnapshotAgentIds.includes(snapshot.agentId))
+            .sort((left, right) => left.updatedAt - right.updatedAt)
+        : [],
+    [companySessionSnapshots, isGroup, requirementRoomSnapshotAgentIds],
+  );
   const requirementRoomMentionCandidates = useMemo(
     () =>
       searchRequirementRoomMentionCandidates({
@@ -2272,6 +2665,7 @@ export function ChatPage() {
         session.key,
         resolveSessionPresentation({
           session,
+          companyId: activeCompany?.id,
           rooms: activeRoomRecords,
           bindings: activeRoomBindings,
           employees,
@@ -2298,18 +2692,9 @@ export function ChatPage() {
       connected &&
       !hasBootstrappedCompanySync &&
       messages.length === 0 &&
-      !isFreshConversation,
+      !isFreshConversation &&
+      !activeConversationState?.currentWorkKey,
   );
-
-  useEffect(() => {
-    if (!isGroup) {
-      return;
-    }
-    const nextMessages = convertRequirementRoomRecordToChatMessages(activeRequirementRoom);
-    setMessages((previous) =>
-      areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages,
-    );
-  }, [activeRequirementRoom, isGroup]);
 
   useEffect(() => {
     setRoomBroadcastMode(false);
@@ -2320,6 +2705,11 @@ export function ChatPage() {
       setRecentAgentSessions([]);
       setRecentArchivedRounds([]);
       setArchiveHistoryNotice(null);
+      setHistoryLoading(false);
+      return;
+    }
+
+    if (!isHistoryMenuOpen && !isArchiveView) {
       setHistoryLoading(false);
       return;
     }
@@ -2391,6 +2781,8 @@ export function ChatPage() {
     historyAgentId,
     historyRefreshNonce,
     isGroup,
+    isHistoryMenuOpen,
+    isArchiveView,
     sessionKey,
     supportsSessionArchives,
     supportsSessionHistory,
@@ -2616,23 +3008,142 @@ export function ChatPage() {
       }
       return {
         text,
-        topicKey: inferRequestTopicKey([text]) ?? inferMissionTopicKey([text]),
+        topicKey: (() => {
+          const inferred = inferRequestTopicKey([text]) ?? inferMissionTopicKey([text]);
+          return inferred && !isArtifactRequirementTopic(inferred) ? inferred : null;
+        })(),
         timestamp: typeof message.timestamp === "number" ? message.timestamp : null,
       };
     }
 
     return null;
   }, [isGroup, messages]);
-  const requirementOverview = useMemo(
+  const latestStrategicConversationHint = useMemo(() => {
+    if (isGroup || !isCeoSession) {
+      return null;
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== "user") {
+        continue;
+      }
+      const text = extractTextFromMessage(message);
+      if (!text || !isSubstantiveConversationText(text)) {
+        continue;
+      }
+      if (
+        !/从头开始|重新搭建|新立项|重新规划|旧任务.*作废|全部作废|先别管旧任务|搭建.*团队|创作团队|组织架构|招聘JD|兼任方案|世界观架构师|伏笔管理员|去AI味专员|方案|系统|工具|实现|规划|优先级|业务流程|技术架构|阅读|团队|组织|招聘|岗位|班底|专项|质量提升/iu.test(
+          text,
+        )
+      ) {
+        continue;
+      }
+      return {
+        text,
+        topicKey: (() => {
+          const inferred = inferRequestTopicKey([text]) ?? inferMissionTopicKey([text]);
+          return inferred && !isArtifactRequirementTopic(inferred) ? inferred : null;
+        })(),
+        timestamp: typeof message.timestamp === "number" ? message.timestamp : null,
+      };
+    }
+
+    return null;
+  }, [isCeoSession, isGroup, messages]);
+  const resolvedConversationRequirementHint = useMemo(
+    () =>
+      !isGroup && isCeoSession
+        ? latestStrategicConversationHint ?? currentConversationRequirementHint
+        : currentConversationRequirementHint,
+    [currentConversationRequirementHint, isCeoSession, isGroup, latestStrategicConversationHint],
+  );
+  const canonicalWorkItems = useMemo(
+    () =>
+      activeWorkItems.filter((item) =>
+        isCanonicalProductWorkItemRecord(item, historyAgentId),
+      ),
+    [activeWorkItems, historyAgentId],
+  );
+  const latestOpenCanonicalWorkItem = useMemo(
+    () =>
+      [...canonicalWorkItems]
+        .filter((item) => item.status !== "completed" && item.status !== "archived")
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
+    [canonicalWorkItems],
+  );
+  const latestStrategicCanonicalWorkItem = useMemo(
+    () =>
+      [...canonicalWorkItems]
+        .filter(
+          (item) =>
+            isStrategicRequirementTopic(item.topicKey) &&
+            item.status !== "completed" &&
+            item.status !== "archived",
+        )
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
+    [canonicalWorkItems],
+  );
+  const stableConversationWorkItem = useMemo(() => {
+    if (!activeConversationState) {
+      return null;
+    }
+
+    if (activeConversationState.currentWorkItemId) {
+      const matchedById =
+        canonicalWorkItems.find((item) => item.id === activeConversationState.currentWorkItemId) ?? null;
+      if (matchedById) {
+        return matchedById;
+      }
+    }
+
+    if (activeConversationState.currentWorkKey) {
+      return canonicalWorkItems.find((item) => item.workKey === activeConversationState.currentWorkKey) ?? null;
+    }
+
+    return null;
+  }, [activeConversationState, canonicalWorkItems]);
+  const stableConversationTopicKey = useMemo(() => {
+    if (stableConversationWorkItem?.topicKey) {
+      return stableConversationWorkItem.topicKey;
+    }
+    const workKey = activeConversationState?.currentWorkKey?.trim() ?? "";
+    return workKey.startsWith("topic:") ? workKey.slice("topic:".length) : null;
+  }, [activeConversationState?.currentWorkKey, stableConversationWorkItem?.topicKey]);
+  const lockedStrategicConversationWorkItem = useMemo(
+    () =>
+      !isGroup &&
+      isCeoSession &&
+      stableConversationWorkItem &&
+      isStrategicRequirementTopic(stableConversationWorkItem.topicKey) &&
+      stableConversationWorkItem.status !== "completed" &&
+      stableConversationWorkItem.status !== "archived"
+        ? stableConversationWorkItem
+        : null,
+    [isCeoSession, isGroup, stableConversationWorkItem],
+  );
+  const rawConversationRequirementOverview = useMemo(
     () =>
       activeCompany && !isRequirementBootstrapPending && !isFreshConversation
         ? buildRequirementExecutionOverview({
             company: activeCompany,
-            preferredTopicKey: currentConversationRequirementHint?.topicKey ?? null,
-            preferredTopicText: currentConversationRequirementHint?.text ?? null,
-            preferredTopicTimestamp: currentConversationRequirementHint?.timestamp ?? null,
+            includeArtifactTopics: false,
+            preferredTopicKey:
+              resolvedConversationRequirementHint?.topicKey ?? stableConversationTopicKey ?? null,
+            preferredTopicText:
+              resolvedConversationRequirementHint?.text ??
+              stableConversationWorkItem?.title ??
+              stableConversationWorkItem?.summary ??
+              null,
+            preferredTopicTimestamp:
+              resolvedConversationRequirementHint?.timestamp ??
+              stableConversationWorkItem?.updatedAt ??
+              stableConversationWorkItem?.startedAt ??
+              null,
             topicHints: [
-              currentConversationRequirementHint?.text,
+              resolvedConversationRequirementHint?.text,
+              stableConversationWorkItem?.title,
+              stableConversationWorkItem?.summary,
               ...requestPreview.map((request) => request.topicKey ?? request.title ?? request.summary),
               ...handoffPreview.map((handoff) => `${handoff.title}\n${handoff.summary}`),
               structuredTaskPreview?.title,
@@ -2645,14 +3156,113 @@ export function ChatPage() {
       activeCompany,
       companySessionSnapshots,
       currentTime,
-      currentConversationRequirementHint?.text,
-      currentConversationRequirementHint?.timestamp,
-      currentConversationRequirementHint?.topicKey,
       handoffPreview,
-      isGroup,
       isFreshConversation,
       isRequirementBootstrapPending,
       requestPreview,
+      resolvedConversationRequirementHint?.text,
+      resolvedConversationRequirementHint?.timestamp,
+      resolvedConversationRequirementHint?.topicKey,
+      stableConversationTopicKey,
+      stableConversationWorkItem?.startedAt,
+      stableConversationWorkItem?.summary,
+      stableConversationWorkItem?.title,
+      stableConversationWorkItem?.updatedAt,
+      structuredTaskPreview?.title,
+    ],
+  );
+  const shouldReplaceLockedConversationWorkItem = useMemo(
+    () =>
+      shouldReplaceLockedStrategicWorkItem({
+        lockedWorkItem: lockedStrategicConversationWorkItem,
+        latestHintText: resolvedConversationRequirementHint?.text,
+        latestHintTopicKey: resolvedConversationRequirementHint?.topicKey,
+        overview: rawConversationRequirementOverview,
+      }),
+    [
+      lockedStrategicConversationWorkItem,
+      rawConversationRequirementOverview,
+      resolvedConversationRequirementHint?.text,
+      resolvedConversationRequirementHint?.topicKey,
+    ],
+  );
+  const shouldPreferStrategicOverviewOverStableConversationWorkItem = useMemo(
+    () =>
+      !isGroup &&
+      isCeoSession &&
+      shouldPreferReliableStrategicOverview({
+        stableWorkItem: stableConversationWorkItem,
+        latestHintText: resolvedConversationRequirementHint?.text,
+        latestHintTopicKey: resolvedConversationRequirementHint?.topicKey,
+        overview: rawConversationRequirementOverview,
+      }),
+    [
+      isCeoSession,
+      isGroup,
+      rawConversationRequirementOverview,
+      resolvedConversationRequirementHint?.text,
+      resolvedConversationRequirementHint?.topicKey,
+      stableConversationWorkItem,
+    ],
+  );
+  const effectiveStableConversationWorkItem =
+    shouldReplaceLockedConversationWorkItem || shouldPreferStrategicOverviewOverStableConversationWorkItem
+      ? null
+      : stableConversationWorkItem;
+  const effectiveLockedStrategicConversationWorkItem =
+    shouldReplaceLockedConversationWorkItem ? null : lockedStrategicConversationWorkItem;
+  const preferredConversationTopicKey =
+    effectiveLockedStrategicConversationWorkItem?.topicKey ??
+    resolvedConversationRequirementHint?.topicKey ??
+    stableConversationTopicKey ??
+    null;
+  const preferredConversationTopicText =
+    effectiveLockedStrategicConversationWorkItem?.title ??
+    resolvedConversationRequirementHint?.text ??
+    null;
+  const preferredConversationTopicTimestamp =
+    effectiveLockedStrategicConversationWorkItem?.updatedAt ??
+    effectiveLockedStrategicConversationWorkItem?.startedAt ??
+    resolvedConversationRequirementHint?.timestamp ??
+    null;
+  const requirementOverview = useMemo(
+    () =>
+      activeCompany && !isRequirementBootstrapPending && !isFreshConversation
+        ? buildRequirementExecutionOverview({
+            company: activeCompany,
+            includeArtifactTopics: false,
+            preferredTopicKey: preferredConversationTopicKey,
+            preferredTopicText: preferredConversationTopicText,
+            preferredTopicTimestamp: preferredConversationTopicTimestamp,
+            topicHints: [
+              resolvedConversationRequirementHint?.text,
+              effectiveStableConversationWorkItem?.title,
+              effectiveStableConversationWorkItem?.summary,
+              ...requestPreview.map((request) => request.topicKey ?? request.title ?? request.summary),
+              ...handoffPreview.map((handoff) => `${handoff.title}\n${handoff.summary}`),
+              structuredTaskPreview?.title,
+            ],
+            sessionSnapshots: companySessionSnapshots,
+            now: currentTime,
+          })
+        : null,
+    [
+      activeCompany,
+      companySessionSnapshots,
+      currentTime,
+      handoffPreview,
+      effectiveLockedStrategicConversationWorkItem?.startedAt,
+      effectiveLockedStrategicConversationWorkItem?.title,
+      effectiveLockedStrategicConversationWorkItem?.updatedAt,
+      effectiveStableConversationWorkItem?.summary,
+      effectiveStableConversationWorkItem?.title,
+      isFreshConversation,
+      isRequirementBootstrapPending,
+      requestPreview,
+      preferredConversationTopicKey,
+      preferredConversationTopicText,
+      preferredConversationTopicTimestamp,
+      resolvedConversationRequirementHint?.text,
       structuredTaskPreview?.title,
     ],
   );
@@ -2728,6 +3338,290 @@ export function ChatPage() {
       repliedAt: null,
     };
   }, [isGroup, messages]);
+  const latestAssistantRequestsNewTask = useMemo(() => {
+    if (isGroup) {
+      return false;
+    }
+    const latestAssistantText = [...messages]
+      .reverse()
+      .map((message) => (message?.role === "assistant" ? extractTextFromMessage(message) : ""))
+      .find((text) => Boolean(text && text.trim().length > 0));
+    return Boolean(
+      latestAssistantText &&
+        /(没有收到任何待办任务|没有进行中的工作流|请告诉我：)/.test(latestAssistantText),
+    );
+  }, [isGroup, messages]);
+  const ceoReplyExplicitlyRequestsNewTask = Boolean(
+    !isGroup &&
+      isCeoSession &&
+      (latestAssistantRequestsNewTask ||
+        (latestDirectTurnSummary?.state === "answered" &&
+          latestDirectTurnSummary.replyText &&
+          /(没有收到任何待办任务|没有进行中的工作流|请告诉我：)/.test(latestDirectTurnSummary.replyText))),
+  );
+  const hasDirectConversationWorkSignal = Boolean(
+    !isGroup &&
+      !ceoReplyExplicitlyRequestsNewTask &&
+      (activeConversationState?.currentWorkKey ||
+        preferredConversationTopicKey ||
+        preferredConversationTopicText),
+  );
+  const previewConversationWorkItem: WorkItemRecord | null = useMemo(() => {
+    if (
+      !activeCompany ||
+      isGroup ||
+      ceoReplyExplicitlyRequestsNewTask ||
+      !isReliableRequirementOverview(rawConversationRequirementOverview ?? requirementOverview)
+    ) {
+      return null;
+    }
+
+    return reconcileWorkItemRecord({
+      companyId: activeCompany.id,
+      existingWorkItem: effectiveStableConversationWorkItem,
+      overview: rawConversationRequirementOverview ?? requirementOverview,
+      fallbackSessionKey: sessionKey,
+      fallbackRoomId: productRoomId,
+    });
+  }, [
+    activeCompany,
+    ceoReplyExplicitlyRequestsNewTask,
+    effectiveStableConversationWorkItem,
+    isGroup,
+    productRoomId,
+    rawConversationRequirementOverview,
+    requirementOverview,
+    sessionKey,
+  ]);
+  const preferredConversationWorkKey =
+    preferredConversationTopicKey ? `topic:${preferredConversationTopicKey}` : null;
+  const doesWorkItemMatchCurrentConversation = useCallback(
+    (item: WorkItemRecord | null | undefined) => {
+      if (!item) {
+        return false;
+      }
+      if (!preferredConversationTopicKey) {
+        return true;
+      }
+      return (
+        item.topicKey === preferredConversationTopicKey ||
+        item.workKey === preferredConversationWorkKey ||
+        item.id === preferredConversationWorkKey
+      );
+    },
+    [preferredConversationTopicKey, preferredConversationWorkKey],
+  );
+  const shouldPreferPreviewConversationWorkItem = useMemo(() => {
+    if (!previewConversationWorkItem) {
+      return false;
+    }
+    if (shouldPreferStrategicOverviewOverStableConversationWorkItem) {
+      return true;
+    }
+    if (!effectiveStableConversationWorkItem) {
+      return true;
+    }
+
+    const sameMainline =
+      previewConversationWorkItem.id === effectiveStableConversationWorkItem.id ||
+      previewConversationWorkItem.workKey === effectiveStableConversationWorkItem.workKey ||
+      (previewConversationWorkItem.topicKey &&
+        previewConversationWorkItem.topicKey === effectiveStableConversationWorkItem.topicKey);
+    if (!sameMainline) {
+      return false;
+    }
+
+    return (
+      previewConversationWorkItem.title !== effectiveStableConversationWorkItem.title ||
+      previewConversationWorkItem.headline !== effectiveStableConversationWorkItem.headline ||
+      previewConversationWorkItem.displayStage !== effectiveStableConversationWorkItem.displayStage ||
+      previewConversationWorkItem.displaySummary !== effectiveStableConversationWorkItem.displaySummary ||
+      previewConversationWorkItem.displayOwnerLabel !==
+        effectiveStableConversationWorkItem.displayOwnerLabel ||
+      previewConversationWorkItem.displayNextAction !==
+        effectiveStableConversationWorkItem.displayNextAction ||
+      previewConversationWorkItem.ownerActorId !== effectiveStableConversationWorkItem.ownerActorId ||
+      previewConversationWorkItem.batonActorId !== effectiveStableConversationWorkItem.batonActorId ||
+      previewConversationWorkItem.status !== effectiveStableConversationWorkItem.status
+    );
+  }, [
+    effectiveStableConversationWorkItem,
+    previewConversationWorkItem,
+    shouldPreferStrategicOverviewOverStableConversationWorkItem,
+  ]);
+  const shouldForcePreviewConversationWorkItem = Boolean(
+    !isGroup &&
+      isCeoSession &&
+      previewConversationWorkItem &&
+      isStrategicRequirementTopic(previewConversationWorkItem.topicKey) &&
+      (!effectiveStableConversationWorkItem ||
+        !doesWorkItemMatchCurrentConversation(effectiveStableConversationWorkItem) ||
+        effectiveStableConversationWorkItem.kind !== "strategic" ||
+        shouldPreferPreviewConversationWorkItem ||
+        shouldPreferStrategicOverviewOverStableConversationWorkItem ||
+        shouldReplaceLockedConversationWorkItem),
+  );
+  const persistedWorkItem: WorkItemRecord | null = useMemo(
+    () => {
+      if (ceoReplyExplicitlyRequestsNewTask) {
+        return null;
+      }
+      if (
+        previewConversationWorkItem &&
+        (shouldForcePreviewConversationWorkItem || shouldPreferPreviewConversationWorkItem)
+      ) {
+        return previewConversationWorkItem;
+      }
+      if (
+        effectiveStableConversationWorkItem &&
+        (!isCeoSession || isGroup || doesWorkItemMatchCurrentConversation(effectiveStableConversationWorkItem))
+      ) {
+        return effectiveStableConversationWorkItem;
+      }
+      const matched = pickWorkItemRecord({
+        items: canonicalWorkItems,
+        sessionKey,
+        roomId: productRoomId,
+        topicKey: requirementOverview?.topicKey ?? groupTopicKey ?? null,
+        startedAt: requirementOverview?.startedAt ?? activeRequirementRoom?.createdAt ?? null,
+      });
+      if (
+        matched &&
+        !(shouldPreferStrategicOverviewOverStableConversationWorkItem && matched.kind === "execution") &&
+        (!isCeoSession || isGroup || doesWorkItemMatchCurrentConversation(matched))
+      ) {
+        return matched;
+      }
+      if (previewConversationWorkItem) {
+        return previewConversationWorkItem;
+      }
+      if (!isGroup && isCeoSession) {
+        if (ceoReplyExplicitlyRequestsNewTask) {
+          return null;
+        }
+        if (!hasDirectConversationWorkSignal) {
+          return null;
+        }
+        const compatibleFallback =
+          [latestStrategicCanonicalWorkItem, latestOpenCanonicalWorkItem].find((item) =>
+            doesWorkItemMatchCurrentConversation(item),
+          ) ?? null;
+        return shouldReplaceLockedConversationWorkItem
+          ? compatibleFallback
+          : compatibleFallback ?? latestStrategicCanonicalWorkItem ?? latestOpenCanonicalWorkItem;
+      }
+      return latestOpenCanonicalWorkItem;
+    },
+    [
+      canonicalWorkItems,
+      doesWorkItemMatchCurrentConversation,
+      effectiveStableConversationWorkItem,
+      ceoReplyExplicitlyRequestsNewTask,
+      groupTopicKey,
+      hasDirectConversationWorkSignal,
+      isCeoSession,
+      isGroup,
+      latestOpenCanonicalWorkItem,
+      latestStrategicCanonicalWorkItem,
+      previewConversationWorkItem,
+      productRoomId,
+      activeRequirementRoom?.createdAt,
+      requirementOverview?.startedAt,
+      requirementOverview?.topicKey,
+      sessionKey,
+      shouldForcePreviewConversationWorkItem,
+      shouldPreferPreviewConversationWorkItem,
+      shouldReplaceLockedConversationWorkItem,
+      shouldPreferStrategicOverviewOverStableConversationWorkItem,
+    ],
+  );
+  const linkedRequirementRoom: RequirementRoomRecord | null = useMemo(() => {
+    const workItemId = persistedWorkItem?.id ?? groupWorkItemId ?? null;
+    const stableRoomId: string | null = persistedWorkItem?.roomId ?? null;
+    if (!workItemId) {
+      return null;
+    }
+    return (
+      activeRoomRecords.find(
+        (room) =>
+          room.id === stableRoomId ||
+          room.workItemId === workItemId || room.id === buildRoomRecordIdFromWorkItem(workItemId),
+      ) ?? null
+    );
+  }, [activeRoomRecords, groupWorkItemId, persistedWorkItem?.id, persistedWorkItem?.roomId]);
+  const effectiveRequirementRoom: RequirementRoomRecord | null =
+    activeRequirementRoom ?? linkedRequirementRoom ?? null;
+  const roomBoundWorkItem: WorkItemRecord | null = useMemo(() => {
+    const roomWorkItemId = effectiveRequirementRoom?.workItemId ?? null;
+    if (!roomWorkItemId) {
+      return null;
+    }
+    return (
+      activeWorkItems.find(
+        (item) => item.id === roomWorkItemId || item.workKey === roomWorkItemId,
+      ) ?? null
+    );
+  }, [activeWorkItems, effectiveRequirementRoom?.workItemId]);
+  const stableDisplayWorkItem = useMemo(() => {
+    if (isGroup || isFreshConversation || isRequirementBootstrapPending) {
+      return null;
+    }
+    return persistedWorkItem ?? roomBoundWorkItem ?? null;
+  }, [isFreshConversation, isGroup, isRequirementBootstrapPending, persistedWorkItem, roomBoundWorkItem]);
+  const effectiveRequirementRoomSnapshots = useMemo(() => {
+    if (!isGroup) {
+      return requirementRoomSnapshots;
+    }
+    const augmentedActorIds = new Set(requirementRoomSnapshotAgentIds);
+    if (persistedWorkItem?.ownerActorId) {
+      augmentedActorIds.add(persistedWorkItem.ownerActorId);
+    }
+    if (persistedWorkItem?.batonActorId) {
+      augmentedActorIds.add(persistedWorkItem.batonActorId);
+    }
+    if (augmentedActorIds.size === requirementRoomSnapshotAgentIds.length) {
+      return requirementRoomSnapshots;
+    }
+    return companySessionSnapshots
+      .filter((snapshot) => augmentedActorIds.has(snapshot.agentId))
+      .sort((left, right) => left.updatedAt - right.updatedAt);
+  }, [
+    companySessionSnapshots,
+    isGroup,
+    persistedWorkItem?.batonActorId,
+    persistedWorkItem?.ownerActorId,
+    requirementRoomSnapshotAgentIds,
+    requirementRoomSnapshots,
+  ]);
+  const workItemPrimaryView = useMemo(
+    () =>
+      !isGroup && !isFreshConversation && !isRequirementBootstrapPending
+        ? buildWorkItemPrimaryView({
+            company: activeCompany,
+            workItem: stableDisplayWorkItem,
+          })
+        : null,
+    [activeCompany, isFreshConversation, isGroup, isRequirementBootstrapPending, stableDisplayWorkItem],
+  );
+  useEffect(() => {
+    if (!isGroup) {
+      return;
+    }
+    const nextMessages = convertRequirementRoomRecordToChatMessages(effectiveRequirementRoom);
+    setMessages((previous) =>
+      areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages,
+    );
+  }, [effectiveRequirementRoom, isGroup]);
+  const hasStableConversationWorkItem = Boolean(!isGroup && stableDisplayWorkItem);
+  const shouldUsePersistedWorkItemPrimaryView = hasStableConversationWorkItem;
+  const stableDisplayPrimaryView =
+    !isGroup &&
+    !isFreshConversation &&
+    !isRequirementBootstrapPending &&
+    workItemPrimaryView &&
+    stableDisplayWorkItem
+      ? workItemPrimaryView
+      : null;
   const taskPlanOverview = useMemo(() => {
     const supportsStructuredTaskPlan =
       !requirementOverview?.topicKey || requirementOverview.topicKey.startsWith("chapter:");
@@ -2780,7 +3674,7 @@ export function ChatPage() {
     };
   }, [activeCompany, requirementOverview?.participants, requirementOverview?.topicKey, structuredTaskPreview]);
   const shouldComputeTeamPanelDetails = isSummaryOpen && summaryPanelView === "team";
-  const teamPanelRoomTranscript = shouldComputeTeamPanelDetails ? activeRequirementRoom?.transcript : undefined;
+  const teamPanelRoomTranscript = shouldComputeTeamPanelDetails ? effectiveRequirementRoom?.transcript : undefined;
   const teamPanelSnapshots = shouldComputeTeamPanelDetails ? companySessionSnapshots : undefined;
   const requirementTeam = useMemo(
     () =>
@@ -2994,155 +3888,28 @@ export function ChatPage() {
         setCompanySessionSnapshots([]);
         return null;
       }
-
-      const sessionResult = await gateway.listSessions();
-      const companyAgentIds = new Set(activeCompany.employees.map((employee) => employee.agentId));
-      const companySessions = sessionResult.sessions
-        .filter((session) => {
-        const sessionAgentId = resolveSessionActorId(session);
-        return sessionAgentId ? companyAgentIds.has(sessionAgentId) : false;
-        })
-        .sort((left, right) => resolveSessionUpdatedAt(right) - resolveSessionUpdatedAt(left));
-      const activeSessionKeys = new Set(companySessions.map((session) => session.key));
-      const snapshotBySessionKey = new Map(
-        companySessionSnapshotsRef.current.map((snapshot) => [snapshot.sessionKey, snapshot] as const),
-      );
-      const sessionsToCheck =
-        companySessions.length > 0
-          ? companySessions
-              .filter((session) => {
-                if (options?.force) {
-                  return true;
-                }
-                const knownSnapshot = snapshotBySessionKey.get(session.key);
-                return !knownSnapshot || resolveSessionUpdatedAt(session) > knownSnapshot.updatedAt;
-              })
-              .slice(0, options?.force ? 12 : 8)
-          : sessionKey
-            ? [{ key: sessionKey, updatedAt: Date.now() }]
-            : [];
-
-      if (sessionsToCheck.length === 0) {
-        return {
-          requestsAdded: 0,
-          requestsUpdated: 0,
-          requestsSuperseded: 0,
-          handoffsRecovered: 0,
-          tasksRecovered: 0,
-        };
-      }
-
-      const discovered = (
-        await Promise.all(
-          sessionsToCheck.map(async (session) => {
-            const history = await gateway.getChatHistory(session.key, 20);
-            const sessionAgentId = resolveSessionActorId(session);
-            const normalizedMessages = (history.messages ?? []).map(normalizeMessage);
-            const snapshotMessages = createRequirementMessageSnapshots(normalizedMessages, {
-              limit: REQUIREMENT_SNAPSHOT_MESSAGE_LIMIT,
-            });
-            const relatedTask = (activeCompany.tasks ?? []).find((task) => task.sessionKey === session.key);
-            const discoveredHandoffs = buildHandoffRecords({
-              sessionKey: session.key,
-              messages: normalizedMessages,
-              company: activeCompany,
-              currentAgentId: sessionAgentId,
-              relatedTask,
-            });
-            const discoveredRequests = buildRequestRecords({
-              sessionKey: session.key,
-              messages: normalizedMessages,
-              handoffs: discoveredHandoffs,
-              relatedTask,
-            });
-
-            const artifactChecks: RequirementArtifactCheck[] = (
-              await Promise.all(
-                extractArtifactPathsFromMessages(normalizedMessages)
-                  .slice(-2)
-                  .map(async (absolutePath) => {
-                    const mirroredArtifact = findArtifactMirrorRecord(absolutePath, activeArtifacts);
-                    if (mirroredArtifact) {
-                      return {
-                        path: absolutePath,
-                        exists: mirroredArtifact.status !== "archived",
-                      } satisfies RequirementArtifactCheck;
-                    }
-                    return null;
-                  }),
-              )
-            ).filter((item): item is RequirementArtifactCheck => Boolean(item));
-
-            return {
-              handoffs: discoveredHandoffs,
-              requests: discoveredRequests,
-              snapshot:
-                sessionAgentId && companyAgentIds.has(sessionAgentId)
-                  ? ({
-                      agentId: sessionAgentId,
-                      sessionKey: session.key,
-                      updatedAt:
-                        normalizedMessages.reduce((latest, message) => {
-                          const timestamp = typeof message.timestamp === "number" ? message.timestamp : 0;
-                          return Math.max(latest, timestamp);
-                        }, session.updatedAt ?? 0) || Date.now(),
-                      messages: snapshotMessages,
-                      artifactChecks,
-                    } satisfies RequirementSessionSnapshot)
-                  : null,
-            };
-          }),
-        )
-      ).flatMap((item) => [item]);
-
-      const nextSnapshots: RequirementSessionSnapshot[] = discovered.flatMap((item) =>
-        item.snapshot ? [item.snapshot] : [],
-      );
-      setCompanySessionSnapshots((previous) => {
-        const merged = new Map(previous.map((snapshot) => [snapshot.sessionKey, snapshot] as const));
-        nextSnapshots.forEach((snapshot) => {
-          const current = merged.get(snapshot.sessionKey);
-          if (!current || snapshot.updatedAt >= current.updatedAt) {
-            merged.set(snapshot.sessionKey, snapshot);
-          }
+      const { companyPatch, dispatches, sessionSnapshots, summary } =
+        await syncCompanyCommunicationState({
+          company: activeCompany,
+          previousSnapshots: companySessionSnapshotsRef.current,
+          activeArtifacts,
+          activeDispatches,
+          force: options?.force,
         });
-        return [...merged.values()]
-          .filter((snapshot) => activeSessionKeys.has(snapshot.sessionKey))
-          .sort((left, right) => right.updatedAt - left.updatedAt)
-          .slice(0, 12);
-      });
-
-      const mergedHandoffs = uniqueHandoffList([
-        ...(activeCompany.handoffs ?? []),
-        ...discovered.flatMap((item) => item.handoffs),
-      ]);
-      const discoveredRequests = discovered.flatMap((item) => item.requests);
-      const { companyPatch, summary } = reconcileCompanyCommunication(
-        {
-          ...activeCompany,
-          handoffs: mergedHandoffs,
-        },
-        discoveredRequests,
-        Date.now(),
-      );
+      setCompanySessionSnapshots(sessionSnapshots);
+      replaceDispatchRecords(dispatches);
       const hasChanges =
         summary.requestsAdded > 0 ||
         summary.requestsUpdated > 0 ||
         summary.requestsSuperseded > 0 ||
         summary.handoffsRecovered > 0 ||
-        summary.tasksRecovered > 0 ||
-        mergedHandoffs.length !== (activeCompany.handoffs ?? []).length;
-
+        summary.tasksRecovered > 0;
       if (hasChanges) {
-        await updateCompany({
-          ...companyPatch,
-          handoffs: companyPatch.handoffs ?? mergedHandoffs,
-        });
+        await updateCompany(companyPatch);
       }
-
       return summary;
     },
-    [activeArtifacts, activeCompany, providerCapabilities.agentFiles, sessionKey, updateCompany],
+    [activeArtifacts, activeCompany, activeDispatches, replaceDispatchRecords, updateCompany],
   );
 
   const sessionProgressEvents = useMemo(
@@ -3276,7 +4043,7 @@ export function ChatPage() {
         description: `直接进入 ${blockerLabel} 会话，查看失败细节并继续处理。`,
         kind: "navigate",
         tone: "secondary",
-        href: `/chat/${encodeURIComponent(latestBlockingProgressEvent.actorAgentId)}`,
+          href: buildCompanyChatRoute(latestBlockingProgressEvent.actorAgentId, activeCompany?.id),
       });
     }
 
@@ -3321,7 +4088,7 @@ export function ChatPage() {
           description: `直接进入 ${assigneeLabel} 的会话，查看细节或手动补充指令。`,
           kind: "navigate",
           tone: "secondary",
-          href: `/chat/${encodeURIComponent(nextOpenTaskStepAgentId)}`,
+          href: buildCompanyChatRoute(nextOpenTaskStepAgentId, activeCompany?.id),
         });
       }
     } else if (activeCompany && primaryRequest) {
@@ -3368,12 +4135,12 @@ export function ChatPage() {
           description: `直接进入 ${targetLabel} 的会话，人工确认这条链路到底卡在哪。`,
           kind: "navigate",
           tone: "secondary",
-          href: `/chat/${encodeURIComponent(requestResponderId)}`,
+          href: buildCompanyChatRoute(requestResponderId, activeCompany?.id),
         });
       }
     }
 
-    if (!takeoverPack && sessionKey && targetSessionKey === null) {
+    if (!takeoverPack && sessionKey && legacyRouteSessionKey === null) {
       actions.push({
         id: `continue-current:${targetAgentId ?? sessionKey}`,
         label: `让 ${focusSummary.ownerLabel} 继续推进`,
@@ -3412,7 +4179,7 @@ export function ChatPage() {
     summaryAlertCount,
     takeoverPack,
     targetAgentId,
-    targetSessionKey,
+    legacyRouteSessionKey,
     latestBlockingProgressEvent,
   ]);
 
@@ -3512,7 +4279,7 @@ export function ChatPage() {
           kind: "navigate" as const,
           tone: "secondary" as const,
           targetAgentId: workbenchOwnerAgentId,
-          href: `/chat/${encodeURIComponent(workbenchOwnerAgentId)}`,
+          href: buildCompanyChatRoute(workbenchOwnerAgentId, activeCompany?.id),
         }
       : null);
   const requirementCurrentParticipant =
@@ -3527,53 +4294,82 @@ export function ChatPage() {
       }),
     [activeCompany, isCeoSession, requirementOverview, targetAgentId],
   );
+  const stableWorkTitle = isRequirementBootstrapPending
+    ? "正在恢复当前需求"
+    : isFreshConversation
+      ? "新的 CEO 对话已开始"
+      : stableDisplayWorkItem?.title?.trim() ||
+        stableDisplayWorkItem?.headline?.trim() ||
+        (isGroup
+          ? roomBoundWorkItem?.title?.trim() ||
+            persistedWorkItem?.title?.trim() ||
+            effectiveRequirementRoom?.headline?.trim() ||
+            groupTitle
+          : null) ||
+        null;
   const displayHeadline = isRequirementBootstrapPending
     ? "正在恢复当前需求"
     : isFreshConversation
     ? "新的 CEO 对话已开始"
-    : strategicDirectParticipantView?.headline
+    : stableWorkTitle
+      ? stableWorkTitle
+    : stableDisplayPrimaryView?.headline
+      ? stableDisplayPrimaryView.headline
+    : isCeoSession && strategicDirectParticipantView?.headline
       ? strategicDirectParticipantView.headline
     : requirementOverview?.headline ?? workbenchHeadline;
   const displayOwnerLabel = isRequirementBootstrapPending
     ? "系统"
     : isFreshConversation
     ? emp?.nickname ?? "CEO"
-    : strategicDirectParticipantView?.ownerLabel
+    : stableDisplayPrimaryView?.ownerLabel
+      ? stableDisplayPrimaryView.ownerLabel
+    : isCeoSession && strategicDirectParticipantView?.ownerLabel
       ? strategicDirectParticipantView.ownerLabel
     : requirementOverview?.currentOwnerLabel ?? workbenchOwnerLabel;
   const displayStage = isRequirementBootstrapPending
     ? "正在同步公司会话"
     : isFreshConversation
     ? "等待你的新指令"
-    : strategicDirectParticipantView?.stage
+    : stableDisplayPrimaryView?.stage
+      ? stableDisplayPrimaryView.stage
+    : isCeoSession && strategicDirectParticipantView?.stage
       ? strategicDirectParticipantView.stage
     : requirementOverview?.currentStage ?? workbenchStage;
   const displaySummary = isRequirementBootstrapPending
     ? "刷新后会先从公司范围的最新会话重建当前主线，避免先闪回旧章节再跳到新章节。"
     : isFreshConversation
     ? "这是一段新的空白对话，不会自动恢复旧任务。直接告诉 CEO 你现在的新需求即可。"
-    : strategicDirectParticipantView?.summary
+    : stableDisplayPrimaryView?.summary
+      ? stableDisplayPrimaryView.summary
+    : isCeoSession && strategicDirectParticipantView?.summary
       ? strategicDirectParticipantView.summary
     : requirementOverview?.summary ?? workbenchSummary;
   const displayActionHint = isRequirementBootstrapPending
     ? "稍等片刻；如果长时间没有恢复，再手动点“同步当前阻塞”。"
     : isFreshConversation
     ? "直接提这次的新需求；如果你是想继续旧任务，再去工作看板或运营大厅查看当前主线。"
-    : strategicDirectParticipantView?.actionHint
+    : stableDisplayPrimaryView?.actionHint
+      ? stableDisplayPrimaryView.actionHint
+    : isCeoSession && strategicDirectParticipantView?.actionHint
       ? strategicDirectParticipantView.actionHint
     : requirementOverview?.nextAction ?? workbenchActionHint;
   const displayStatusLabel = isRequirementBootstrapPending
     ? "恢复中"
     : isFreshConversation
     ? "新会话"
-    : strategicDirectParticipantView?.statusLabel
+    : stableDisplayPrimaryView?.statusLabel
+      ? stableDisplayPrimaryView.statusLabel
+    : isCeoSession && strategicDirectParticipantView?.statusLabel
       ? strategicDirectParticipantView.statusLabel
     : requirementCurrentParticipant?.statusLabel ?? workbenchStatusLabel;
   const displayTone: FocusProgressTone = isRequirementBootstrapPending
     ? "slate"
     : isFreshConversation
     ? "slate"
-    : strategicDirectParticipantView?.tone
+    : stableDisplayPrimaryView?.tone
+      ? stableDisplayPrimaryView.tone
+    : isCeoSession && strategicDirectParticipantView?.tone
       ? strategicDirectParticipantView.tone
     : requirementCurrentParticipant?.tone === "rose"
       ? "rose"
@@ -3590,9 +4386,16 @@ export function ChatPage() {
       return null;
     }
 
+    const persistedVisibleTranscript =
+      effectiveRequirementRoom?.transcript.filter((message: RequirementRoomMessage) =>
+        isVisibleRequirementRoomMessage(message),
+      ) ?? [];
+    const hasPersistedRoomHistory = persistedVisibleTranscript.length > 0;
+    const latestPersistedVisibleMessage =
+      persistedVisibleTranscript[persistedVisibleTranscript.length - 1] ?? null;
     const roomMessages = (
-      activeRequirementRoom
-        ? convertRequirementRoomRecordToChatMessages(activeRequirementRoom)
+      effectiveRequirementRoom
+        ? convertRequirementRoomRecordToChatMessages(effectiveRequirementRoom)
         : messages
     ).filter((message) => message.role === "user" || message.role === "assistant");
     const latestDispatch = [...roomMessages].reverse().find(
@@ -3642,8 +4445,8 @@ export function ChatPage() {
       .map((agentId) => activeCompany?.employees.find((employee) => employee.agentId === agentId)?.nickname ?? agentId)
       .filter(Boolean);
     const roomOwnerAgentId =
-      activeRequirementRoom?.ownerActorId ??
-      activeRequirementRoom?.ownerAgentId ??
+      effectiveRequirementRoom?.ownerActorId ??
+      effectiveRequirementRoom?.ownerAgentId ??
       activeCompany?.employees.find((employee) => employee.metaRole === "ceo")?.agentId ??
       targetAgentId ??
       null;
@@ -3660,29 +4463,113 @@ export function ChatPage() {
             kind: "navigate" as const,
             tone: "secondary" as const,
             targetAgentId: roomOwnerAgentId,
-            href: `/chat/${encodeURIComponent(roomOwnerAgentId)}`,
+            href: buildCompanyChatRoute(roomOwnerAgentId, activeCompany?.id),
           }
         : null;
 
     if (!latestDispatch) {
+      const restoredSummary =
+        latestPersistedVisibleMessage && typeof latestPersistedVisibleMessage.text === "string"
+          ? summarizeProgressText(latestPersistedVisibleMessage.text)?.summary ??
+            truncateText(latestPersistedVisibleMessage.text, 160)
+          : null;
+      const effectiveRoomWorkItem = roomBoundWorkItem ?? persistedWorkItem;
+      const stableRoomStage =
+        effectiveRoomWorkItem?.displayStage ||
+        effectiveRoomWorkItem?.stageLabel ||
+        effectiveRequirementRoom?.progress ||
+        "需求团队房间";
+      const stableRoomSummary =
+        restoredSummary ||
+        effectiveRoomWorkItem?.displaySummary ||
+        effectiveRoomWorkItem?.summary ||
+        "这间需求团队房间已经绑定到当前主线任务，可以继续在这里 @成员推进，或让负责人先收口当前结论。";
+      const stableRoomActionHint =
+        effectiveRoomWorkItem?.displayNextAction ||
+        "这不是新房间。你可以继续在这里 @成员推进，或先让负责人根据当前进度继续收口。";
+      if (hasPersistedRoomHistory) {
+        return {
+          headline:
+            effectiveRequirementRoom?.headline ??
+            effectiveRoomWorkItem?.title ??
+            `需求团队: ${groupTitle}`,
+          statusLabel: effectiveRequirementRoom?.lastConclusionAt ? "已恢复历史" : "已恢复房间历史",
+          tone: effectiveRequirementRoom?.lastConclusionAt ? ("amber" as const) : ("slate" as const),
+          ownerAgentId: roomOwnerAgentId,
+          ownerLabel: roomOwnerLabel,
+          stage: stableRoomStage,
+          summary: stableRoomSummary,
+          actionHint: stableRoomActionHint,
+          topSummaryItems: [
+            {
+              id: "history",
+              label: "已恢复",
+              value: `${persistedVisibleTranscript.length} 条消息`,
+            },
+            {
+              id: "owner",
+              label: "负责人",
+              value: roomOwnerLabel,
+            },
+          ],
+          primaryAction: null,
+          openAction: roomOwnerOpenAction,
+        };
+      }
+      if (effectiveRoomWorkItem && effectiveRequirementRoom) {
+        return {
+          headline: effectiveRoomWorkItem.title,
+          statusLabel: effectiveRequirementRoom.lastConclusionAt ? "进行中" : "主线已绑定",
+          tone: effectiveRequirementRoom.lastConclusionAt ? ("amber" as const) : ("slate" as const),
+          ownerAgentId: roomOwnerAgentId,
+          ownerLabel: roomOwnerLabel,
+          stage: stableRoomStage,
+          summary: stableRoomSummary,
+          actionHint: stableRoomActionHint,
+          topSummaryItems: [
+            {
+              id: "owner",
+              label: "负责人",
+              value: roomOwnerLabel,
+            },
+            {
+              id: "progress",
+              label: "当前进度",
+              value: stableRoomStage,
+            },
+          ],
+          primaryAction: null,
+          openAction: roomOwnerOpenAction,
+        };
+      }
       return {
-        headline: "房间已建立，等待第一条指令",
-        statusLabel: "待派发",
+        headline: (persistedWorkItem ?? roomBoundWorkItem)?.title || "需求团队房间",
+        statusLabel: "主线已绑定",
         tone: "slate" as const,
-        ownerAgentId: null,
-        ownerLabel: "负责人待定",
-        stage: "需求团队房间",
-        summary: "这个房间还没有派发新的团队指令。你可以直接在这里 @成员名 发起协作。",
-        actionHint: "输入 @成员名 可以定向派发；不写 @ 默认发给当前 baton，必要时再切到群发。",
+        ownerAgentId: roomOwnerAgentId,
+        ownerLabel: roomOwnerLabel,
+        stage: stableRoomStage,
+        summary:
+          (persistedWorkItem ?? roomBoundWorkItem)?.displaySummary ||
+          (persistedWorkItem ?? roomBoundWorkItem)?.summary ||
+          "这间需求团队房间已经绑定到当前主线任务，继续在这里 @成员推进即可。",
+        actionHint:
+          (persistedWorkItem ?? roomBoundWorkItem)?.displayNextAction ||
+          "这不是新房间。继续 @成员推进，或让负责人先收口当前结论。",
         topSummaryItems: [
           {
             id: "members",
             label: "房间成员",
             value: `${requirementRoomSessions.length} 人`,
           },
+          {
+            id: "owner",
+            label: "负责人",
+            value: roomOwnerLabel,
+          },
         ],
         primaryAction: null,
-        openAction: null,
+        openAction: roomOwnerOpenAction,
       };
     }
 
@@ -3718,7 +4605,7 @@ export function ChatPage() {
                 kind: "navigate" as const,
                 tone: "secondary" as const,
                 targetAgentId: primaryPendingAgentId,
-                href: `/chat/${encodeURIComponent(primaryPendingAgentId)}`,
+                href: buildCompanyChatRoute(primaryPendingAgentId, activeCompany?.id),
             }
             : null,
         primaryAction: null,
@@ -3773,17 +4660,38 @@ export function ChatPage() {
     };
   }, [
     activeCompany,
-    activeRequirementRoom,
+    effectiveRequirementRoom,
     groupTitle,
     isGroup,
     messages,
     requirementRoomSessions,
     requirementRoomTargetAgentIds,
     targetAgentId,
-    targetSessionKey,
+    legacyRouteSessionKey,
   ]);
   const displayOpenAction = isGroup
     ? requirementRoomSummary?.openAction ?? null
+    : isCeoSession && linkedRequirementRoom && stableDisplayWorkItem?.kind === "strategic"
+      ? {
+          id: `open-main-room:${linkedRequirementRoom.id}`,
+          label: "打开需求团队房间",
+          description: "进入这条主线任务的固定团队房间，查看完整协作消息和当前进度。",
+          kind: "navigate" as const,
+          tone: "secondary" as const,
+          href: buildRequirementRoomHrefFromRecord(linkedRequirementRoom),
+        }
+    : stableDisplayPrimaryView
+      ? stableDisplayPrimaryView.nextAgentId && stableDisplayPrimaryView.nextAgentId !== targetAgentId
+        ? {
+            id: `open-workitem-next:${stableDisplayPrimaryView.nextAgentId}`,
+            label: `打开 ${stableDisplayPrimaryView.nextLabel} 会话`,
+            description: `直接进入 ${stableDisplayPrimaryView.nextLabel} 的会话继续处理当前工作项。`,
+            kind: "navigate" as const,
+            tone: "secondary" as const,
+            targetAgentId: stableDisplayPrimaryView.nextAgentId,
+            href: buildCompanyChatRoute(stableDisplayPrimaryView.nextAgentId, activeCompany?.id),
+          }
+        : null
     : strategicDirectParticipantView?.nextAgentId && strategicDirectParticipantView.nextAgentId !== targetAgentId
       ? {
           id: `open-strategic-owner:${strategicDirectParticipantView.nextAgentId}`,
@@ -3796,7 +4704,7 @@ export function ChatPage() {
           kind: "navigate" as const,
           tone: "secondary" as const,
           targetAgentId: strategicDirectParticipantView.nextAgentId,
-          href: `/chat/${encodeURIComponent(strategicDirectParticipantView.nextAgentId)}`,
+              href: buildCompanyChatRoute(strategicDirectParticipantView.nextAgentId, activeCompany?.id),
         }
     : requirementOverview?.currentOwnerAgentId
       ? requirementOverview.currentOwnerAgentId !== targetAgentId
@@ -3807,13 +4715,13 @@ export function ChatPage() {
             kind: "navigate" as const,
             tone: "secondary" as const,
             targetAgentId: requirementOverview.currentOwnerAgentId,
-            href: `/chat/${encodeURIComponent(requirementOverview.currentOwnerAgentId)}`,
+            href: buildCompanyChatRoute(requirementOverview.currentOwnerAgentId, activeCompany?.id),
           }
         : null
       : workbenchOpenAction;
   const shouldUseTaskPlanPrimaryView = Boolean(
-    isChapterExecutionRequirement &&
-      taskPlanOverview?.currentStep &&
+    taskPlanOverview?.currentStep &&
+      isChapterExecutionRequirement &&
       requirementCurrentParticipant &&
       requirementProgressGroups &&
       requirementProgressGroups.working.length === 0 &&
@@ -3822,6 +4730,8 @@ export function ChatPage() {
   const effectiveOwnerAgentId =
     isGroup
       ? requirementRoomSummary?.ownerAgentId ?? null
+      : stableDisplayPrimaryView?.ownerAgentId
+        ? stableDisplayPrimaryView.ownerAgentId
       : strategicDirectParticipantView?.ownerAgentId
         ? strategicDirectParticipantView.ownerAgentId
       : shouldUseTaskPlanPrimaryView && taskPlanOverview?.currentStep?.assigneeAgentId
@@ -3853,7 +4763,9 @@ export function ChatPage() {
       : shouldAdvanceToNextPhase
         ? "待推进"
         : shouldUseTaskPlanPrimaryView
-          ? "待处理"
+          ? taskPlanOverview?.currentStep?.status === "wip"
+            ? "进行中"
+            : "待处理"
           : displayStatusLabel;
   const effectiveSummary =
     isGroup
@@ -3865,7 +4777,9 @@ export function ChatPage() {
       : shouldAdvanceToNextPhase
       ? "重开准备动作已经完成，当前不该继续盯写手或冻结节点，应该由 CEO 发起新版审校 -> 终审 -> 发布链。"
       : shouldUseTaskPlanPrimaryView && taskPlanOverview?.currentStep
-      ? `${taskPlanOverview.currentStep.assigneeLabel} 还没接住「${taskPlanOverview.currentStep.title}」这一步。`
+      ? taskPlanOverview.currentStep.status === "wip"
+        ? `${taskPlanOverview.currentStep.assigneeLabel} 正在推进「${taskPlanOverview.currentStep.title}」这一步。`
+        : `${taskPlanOverview.currentStep.assigneeLabel} 还没接住「${taskPlanOverview.currentStep.title}」这一步。`
       : displaySummary;
   const effectiveActionHint =
     isGroup
@@ -3879,7 +4793,9 @@ export function ChatPage() {
       : shouldAdvanceToNextPhase
       ? "现在该由 CEO 继续推进：先把 ch02_clean.md 发给审校，再转主编终审，最后再让 CTO 发布。"
       : shouldUseTaskPlanPrimaryView && taskPlanOverview?.currentStep
-      ? `先打开 ${taskPlanOverview.currentStep.assigneeLabel} 会话，推进「${taskPlanOverview.currentStep.title}」。`
+      ? taskPlanOverview.currentStep.status === "wip"
+        ? `继续跟进 ${taskPlanOverview.currentStep.assigneeLabel}，确认「${taskPlanOverview.currentStep.title}」有没有真实产物回传。`
+        : `先打开 ${taskPlanOverview.currentStep.assigneeLabel} 会话，推进「${taskPlanOverview.currentStep.title}」。`
       : displayActionHint;
   const effectiveHeadline =
     isGroup
@@ -3888,6 +4804,8 @@ export function ChatPage() {
       ? "正在恢复当前需求"
       : isFreshConversation
       ? "等待你的新指令"
+      : stableDisplayPrimaryView
+      ? displayHeadline
       : latestStageGate
       ? latestStageGate.status === "waiting_confirmation"
         ? "等待你确认下一阶段"
@@ -3919,7 +4837,7 @@ export function ChatPage() {
           kind: "navigate" as const,
           tone: "secondary" as const,
           targetAgentId: publishDispatchTargetAgentId,
-          href: `/chat/${encodeURIComponent(publishDispatchTargetAgentId)}`,
+          href: buildCompanyChatRoute(publishDispatchTargetAgentId, activeCompany?.id),
         }
       : null;
   const effectiveOpenAction =
@@ -3934,7 +4852,7 @@ export function ChatPage() {
           kind: "navigate" as const,
           tone: "secondary" as const,
           targetAgentId: effectiveOwnerAgentId,
-          href: `/chat/${encodeURIComponent(effectiveOwnerAgentId)}`,
+          href: buildCompanyChatRoute(effectiveOwnerAgentId, activeCompany?.id),
         }
       : displayOpenAction);
   const stagePlanningAction =
@@ -3965,7 +4883,7 @@ export function ChatPage() {
         }
       : null;
   const hasCurrentOwnerWatch = actionWatches.some(
-    (watch) => watch.kind === "owner" && watch.sessionKey === (sessionKey ?? targetSessionKey ?? ""),
+    (watch) => watch.kind === "owner" && watch.sessionKey === (sessionKey ?? legacyRouteSessionKey ?? ""),
   );
   const stageLaunchReminderAction =
     isCeoSession &&
@@ -4211,6 +5129,8 @@ export function ChatPage() {
   const canonicalNextBatonAgentId =
     shouldDispatchPublish
       ? publishDispatchTargetAgentId
+      : isCeoSession && stableDisplayPrimaryView?.nextAgentId
+        ? stableDisplayPrimaryView.nextAgentId
       : strategicDirectParticipantView?.nextAgentId
         ? strategicDirectParticipantView.nextAgentId
       : visibleDispatchTargetAgentId ??
@@ -4220,6 +5140,8 @@ export function ChatPage() {
   const canonicalNextBatonLabel =
     shouldDispatchPublish
       ? publishDispatchTargetLabel
+      : isCeoSession && stableDisplayPrimaryView?.nextLabel
+        ? stableDisplayPrimaryView.nextLabel
       : strategicDirectParticipantView?.nextLabel
         ? strategicDirectParticipantView.nextLabel
       : visibleDispatchTargetLabel ??
@@ -4252,7 +5174,7 @@ export function ChatPage() {
           kind: "navigate" as const,
           tone: "secondary" as const,
           targetAgentId: canonicalNextBatonAgentId,
-          href: `/chat/${encodeURIComponent(canonicalNextBatonAgentId)}`,
+          href: buildCompanyChatRoute(canonicalNextBatonAgentId, activeCompany?.id),
         }
       : null;
   const primaryOpenAction =
@@ -4422,7 +5344,12 @@ export function ChatPage() {
     }
 
     return {
-      title: requirementOverview?.title ?? latestStageGate?.title ?? structuredTaskPreview?.title ?? "当前规划/任务",
+      title:
+        (persistedWorkItem?.title?.trim() || persistedWorkItem?.headline?.trim()) ??
+        requirementOverview?.title ??
+        latestStageGate?.title ??
+        structuredTaskPreview?.title ??
+        "当前规划/任务",
       statusLabel: missionIsCompleted
         ? "已完成"
         : latestStageGate?.status === "waiting_confirmation"
@@ -4467,6 +5394,8 @@ export function ChatPage() {
     latestStageGate,
     missionIsCompleted,
     missionPlanSteps,
+    persistedWorkItem?.headline,
+    persistedWorkItem?.title,
     requirementOverview,
     requirementTeam?.progressLabel,
     structuredTaskPreview?.title,
@@ -4479,11 +5408,11 @@ export function ChatPage() {
         sessionKey,
         roomId: productRoomId,
         topicKey: requirementOverview?.topicKey ?? groupTopicKey ?? null,
-        startedAt: requirementOverview?.startedAt ?? activeRequirementRoom?.createdAt ?? null,
+        startedAt: requirementOverview?.startedAt ?? effectiveRequirementRoom?.createdAt ?? null,
       }),
     [
       activeMissionRecords,
-      activeRequirementRoom?.createdAt,
+      effectiveRequirementRoom?.createdAt,
       groupTopicKey,
       isGroup,
       productRoomId,
@@ -4492,43 +5421,22 @@ export function ChatPage() {
       sessionKey,
     ],
   );
-  const persistedWorkItem = useMemo(
-    () =>
-      pickWorkItemRecord({
-        items: activeWorkItems,
-        sessionKey,
-        roomId: productRoomId,
-        topicKey: requirementOverview?.topicKey ?? groupTopicKey ?? null,
-        startedAt: requirementOverview?.startedAt ?? activeRequirementRoom?.createdAt ?? null,
-      }),
-    [
-      activeMissionRecords,
-      activeRequirementRoom?.createdAt,
-      activeWorkItems,
-      groupTopicKey,
-      groupWorkItemId,
-      isGroup,
-      productRoomId,
-      requirementOverview?.startedAt,
-      requirementOverview?.topicKey,
-      sessionKey,
-    ],
-  );
-  const linkedRequirementRoom = useMemo(() => {
-    const workItemId = persistedWorkItem?.id ?? groupWorkItemId ?? null;
-    if (!workItemId) {
-      return null;
-    }
-    return (
-      activeRoomRecords.find(
-        (room) =>
-          room.workItemId === workItemId || room.id === buildRoomRecordIdFromWorkItem(workItemId),
-      ) ?? null
+  const persistedConversationMissionFromWorkItem = persistedWorkItem
+    ? workItemToConversationMission(persistedWorkItem)
+    : null;
+  const shouldPreferPersistedConversationMission =
+    Boolean(
+    !isGroup &&
+    isCeoSession &&
+    (hasStableConversationWorkItem || shouldUsePersistedWorkItemPrimaryView) &&
+        persistedConversationMissionFromWorkItem,
     );
-  }, [activeRoomRecords, groupWorkItemId, persistedWorkItem?.id]);
   const activeConversationMission =
+    ((hasStableConversationWorkItem || shouldPreferPersistedConversationMission)
+      ? persistedConversationMissionFromWorkItem
+      : null) ??
     conversationMission ??
-    (persistedWorkItem ? workItemToConversationMission(persistedWorkItem) : null) ??
+    persistedConversationMissionFromWorkItem ??
     (requirementOverview || latestStageGate || isRequirementBootstrapPending || isFreshConversation
       ? null
       : persistedConversationMission);
@@ -4537,8 +5445,8 @@ export function ChatPage() {
     if (latestMessageTimestamp > 0) {
       return latestMessageTimestamp;
     }
-    if (activeRequirementRoom?.updatedAt) {
-      return activeRequirementRoom.updatedAt;
+    if (effectiveRequirementRoom?.updatedAt) {
+      return effectiveRequirementRoom.updatedAt;
     }
     if (requirementOverview?.startedAt) {
       return requirementOverview.startedAt;
@@ -4548,7 +5456,7 @@ export function ChatPage() {
     }
     return persistedConversationMission?.updatedAt ?? 0;
   }, [
-    activeRequirementRoom?.updatedAt,
+    effectiveRequirementRoom?.updatedAt,
     latestMessageTimestamp,
     persistedWorkItem?.updatedAt,
     persistedConversationMission?.updatedAt,
@@ -4562,8 +5470,12 @@ export function ChatPage() {
       isFreshConversation ||
       isRequirementBootstrapPending ||
       conversationMissionUpdatedAt <= 0 ||
-      (isGroup && (activeRequirementRoom?.transcript.length ?? 0) === 0)
+      (isGroup && (effectiveRequirementRoom?.transcript.length ?? 0) === 0)
     ) {
+      return null;
+    }
+
+    if ((hasStableConversationWorkItem || shouldPreferPersistedConversationMission) && persistedWorkItem) {
       return null;
     }
 
@@ -4571,7 +5483,7 @@ export function ChatPage() {
       sessionKey,
       topicKey: requirementOverview?.topicKey ?? groupTopicKey ?? null,
       roomId: productRoomId,
-      startedAt: requirementOverview?.startedAt ?? activeRequirementRoom?.createdAt ?? latestMessageTimestamp,
+      startedAt: requirementOverview?.startedAt ?? effectiveRequirementRoom?.createdAt ?? latestMessageTimestamp,
       title: conversationMission.title,
       statusLabel: conversationMission.statusLabel,
       progressLabel: conversationMission.progressLabel,
@@ -4587,9 +5499,11 @@ export function ChatPage() {
       planSteps: conversationMission.planSteps as ConversationMissionStepRecord[],
     });
   }, [
-    activeRequirementRoom?.transcript.length,
+    effectiveRequirementRoom?.transcript.length,
     conversationMissionUpdatedAt,
     conversationMission,
+    shouldPreferPersistedConversationMission,
+    hasStableConversationWorkItem,
     displayNextBatonAgentId,
     effectiveOwnerAgentId,
     isArchiveView,
@@ -4598,6 +5512,7 @@ export function ChatPage() {
     isRequirementBootstrapPending,
     missionIsCompleted,
     groupTopicKey,
+    persistedWorkItem,
     productRoomId,
     requirementOverview?.topicKey,
     sessionKey,
@@ -4617,7 +5532,7 @@ export function ChatPage() {
       existingWorkItem: persistedWorkItem,
       mission: conversationMissionRecord,
       overview: requirementOverview,
-      room: activeRequirementRoom ?? linkedRequirementRoom,
+      room: effectiveRequirementRoom,
       artifacts: activeArtifacts,
       dispatches: activeDispatches,
       fallbackSessionKey: sessionKey,
@@ -4625,12 +5540,21 @@ export function ChatPage() {
     });
     if (workItemRecord) {
       upsertWorkItemRecord(workItemRecord);
+      if (conversationStateKey) {
+        setConversationCurrentWorkKey(
+          conversationStateKey,
+          workItemRecord.workKey,
+          workItemRecord.id,
+          workItemRecord.roundId,
+        );
+      }
     }
   }, [
     activeArtifacts,
     activeCompany,
-    activeRequirementRoom,
+    effectiveRequirementRoom,
     activeDispatches,
+    conversationStateKey,
     conversationMissionRecord,
     groupWorkItemId,
     isGroup,
@@ -4639,7 +5563,35 @@ export function ChatPage() {
     productRoomId,
     requirementOverview,
     sessionKey,
+    setConversationCurrentWorkKey,
     shouldPersistConversationTruth,
+    upsertWorkItemRecord,
+  ]);
+  useEffect(() => {
+    if (
+      !shouldPersistConversationTruth ||
+      !activeCompany ||
+      !previewConversationWorkItem ||
+      !shouldPreferPreviewConversationWorkItem
+    ) {
+      return;
+    }
+    upsertWorkItemRecord(previewConversationWorkItem);
+    if (conversationStateKey) {
+      setConversationCurrentWorkKey(
+        conversationStateKey,
+        previewConversationWorkItem.workKey,
+        previewConversationWorkItem.id,
+        previewConversationWorkItem.roundId,
+      );
+    }
+  }, [
+    activeCompany,
+    conversationStateKey,
+    previewConversationWorkItem,
+    setConversationCurrentWorkKey,
+    shouldPersistConversationTruth,
+    shouldPreferPreviewConversationWorkItem,
     upsertWorkItemRecord,
   ]);
   useEffect(() => {
@@ -4653,7 +5605,7 @@ export function ChatPage() {
       return;
     }
 
-    const workItemId = conversationMissionRecord?.id ?? persistedWorkItem?.id ?? groupWorkItemId ?? null;
+    const workItemId = persistedWorkItem?.id ?? groupWorkItemId ?? conversationMissionRecord?.id ?? null;
     if (!workItemId) {
       return;
     }
@@ -4661,23 +5613,50 @@ export function ChatPage() {
     const roomId = buildRoomRecordIdFromWorkItem(workItemId);
     const existingRoom =
       activeRoomRecords.find((room) => room.id === roomId || room.workItemId === workItemId) ?? null;
-    const nextRoomRecord = buildRequirementRoomRecord({
+    const preferredRoomTitle =
+      persistedWorkItem?.title?.trim() ||
+      requirementTeam.title?.trim() ||
+      existingRoom?.title?.trim() ||
+      "需求团队房间";
+    const roomBaseInput = {
+      company: activeCompany,
       companyId: activeCompany.id,
       workItemId,
       sessionKey: existingRoom?.sessionKey ?? `room:${roomId}`,
-      title: requirementTeam.title,
+      title: preferredRoomTitle,
       memberIds: requirementTeam.memberIds,
       ownerAgentId:
+        existingRoom?.ownerActorId ??
+        existingRoom?.ownerAgentId ??
         requirementTeam.ownerAgentId ??
         persistedWorkItem?.ownerActorId ??
         effectiveOwnerAgentId ??
         targetAgentId ??
         null,
-      topicKey: requirementTeam.topicKey,
-      transcript: existingRoom?.transcript ?? [],
+      topicKey: existingRoom?.topicKey ?? persistedWorkItem?.topicKey ?? requirementTeam.topicKey,
       createdAt: existingRoom?.createdAt ?? persistedWorkItem?.startedAt ?? Date.now(),
       updatedAt: existingRoom?.updatedAt ?? Date.now(),
-    });
+    } as const;
+    const nextRoomRecord =
+      effectiveRequirementRoomSnapshots.length > 0
+        ? buildRequirementRoomRecordFromSnapshots({
+            ...roomBaseInput,
+            startedAt: persistedWorkItem?.startedAt ?? null,
+            seedTranscript: existingRoom?.transcript ?? [],
+            snapshots: effectiveRequirementRoomSnapshots,
+          })
+        : buildRequirementRoomRecord({
+            companyId: roomBaseInput.companyId,
+            workItemId: roomBaseInput.workItemId,
+            sessionKey: roomBaseInput.sessionKey,
+            title: roomBaseInput.title,
+            memberIds: roomBaseInput.memberIds,
+            ownerAgentId: roomBaseInput.ownerAgentId,
+            topicKey: roomBaseInput.topicKey,
+            transcript: existingRoom?.transcript ?? [],
+            createdAt: roomBaseInput.createdAt,
+            updatedAt: roomBaseInput.updatedAt,
+          });
     const nextRoomSignature = buildRequirementRoomRecordSignature(nextRoomRecord);
     const existingRoomSignature = buildRequirementRoomRecordSignature(existingRoom);
 
@@ -4698,17 +5677,62 @@ export function ChatPage() {
     groupWorkItemId,
     isFreshConversation,
     isRequirementBootstrapPending,
+    effectiveRequirementRoomSnapshots,
     persistedWorkItem?.id,
     persistedWorkItem?.ownerActorId,
+    persistedWorkItem?.topicKey,
     persistedWorkItem?.startedAt,
     requirementTeam,
     targetAgentId,
     upsertRoomRecord,
   ]);
+  useEffect(() => {
+    if (!conversationStateKey || !ceoReplyExplicitlyRequestsNewTask || isArchiveView) {
+      return;
+    }
+    setConversationCurrentWorkKey(conversationStateKey, null, null, null);
+  }, [
+    ceoReplyExplicitlyRequestsNewTask,
+    conversationStateKey,
+    isArchiveView,
+    setConversationCurrentWorkKey,
+  ]);
+  useEffect(() => {
+    if (!conversationStateKey || !persistedWorkItem || isArchiveView) {
+      return;
+    }
+    if (
+      !isGroup &&
+      isCeoSession &&
+      !doesWorkItemMatchCurrentConversation(persistedWorkItem) &&
+      previewConversationWorkItem
+    ) {
+      return;
+    }
+    setConversationCurrentWorkKey(
+      conversationStateKey,
+      persistedWorkItem.workKey,
+      persistedWorkItem.id,
+      persistedWorkItem.roundId,
+    );
+  }, [
+    conversationStateKey,
+    doesWorkItemMatchCurrentConversation,
+    isArchiveView,
+    isCeoSession,
+    isGroup,
+    persistedWorkItem,
+    previewConversationWorkItem,
+    setConversationCurrentWorkKey,
+  ]);
   const showRequirementTeamEntry = Boolean(
-    requirementTeam && !isGroup && !isRequirementBootstrapPending && !isFreshConversation,
+    (linkedRequirementRoom || requirementTeam) && !isGroup && !isRequirementBootstrapPending && !isFreshConversation,
   );
   const teamGroupRoute = useMemo(() => {
+    if (linkedRequirementRoom) {
+      return buildRequirementRoomHrefFromRecord(linkedRequirementRoom);
+    }
+
     if (!activeCompany || !requirementTeam || requirementTeam.memberIds.length < 2) {
       return null;
     }
@@ -4718,11 +5742,56 @@ export function ChatPage() {
       memberIds: requirementTeam.memberIds,
       topic: requirementTeam.title,
       topicKey: requirementTeam.topicKey,
-      workItemId: conversationMissionRecord?.id ?? persistedWorkItem?.id ?? groupWorkItemId ?? null,
+      workItemId: persistedWorkItem?.id ?? groupWorkItemId ?? conversationMissionRecord?.id ?? null,
       preferredInitiatorAgentId: targetAgentId,
       existingRooms: activeRoomRecords,
     });
-  }, [activeCompany, activeRoomRecords, conversationMissionRecord?.id, groupWorkItemId, persistedWorkItem?.id, requirementTeam, targetAgentId]);
+  }, [activeCompany, activeRoomRecords, conversationMissionRecord?.id, groupWorkItemId, linkedRequirementRoom, persistedWorkItem?.id, requirementTeam, targetAgentId]);
+  const currentConversationWorkItemId =
+    persistedWorkItem?.id ?? groupWorkItemId ?? conversationMissionRecord?.id ?? null;
+  const currentConversationTopicKey =
+    persistedWorkItem?.topicKey ?? groupTopicKey ?? conversationMissionRecord?.topicKey ?? requirementOverview?.topicKey ?? undefined;
+  const autoDispatchPlan = useMemo(
+    () =>
+      buildAutoDispatchPlan({
+        company: activeCompany,
+        dispatches: activeDispatches,
+        workItemId: currentConversationWorkItemId,
+        currentActorId: targetAgentId,
+        workTitle: effectiveHeadline,
+        ownerLabel: effectiveOwnerLabel,
+        summary: effectiveSummary,
+        actionHint: effectiveActionHint,
+        currentStep: displayPlanCurrentStep
+          ? {
+              id: displayPlanCurrentStep.id,
+              title: displayPlanCurrentStep.title,
+              assigneeAgentId: displayPlanCurrentStep.assigneeAgentId,
+              assigneeLabel: displayPlanCurrentStep.assigneeLabel,
+              detail: displayPlanCurrentStep.detail ?? null,
+            }
+          : null,
+        nextBatonAgentId: displayNextBatonAgentId,
+        nextBatonLabel: displayNextBatonLabel,
+        delegateToNextBaton:
+          shouldDispatchPublish ||
+          shouldDelegateToNextBaton(displayPlanCurrentStep?.title),
+      }),
+    [
+      activeCompany,
+      activeDispatches,
+      currentConversationWorkItemId,
+      displayNextBatonAgentId,
+      displayNextBatonLabel,
+      displayPlanCurrentStep,
+      effectiveActionHint,
+      effectiveHeadline,
+      effectiveOwnerLabel,
+      effectiveSummary,
+      shouldDispatchPublish,
+      targetAgentId,
+    ],
+  );
   const canShowSessionHistory =
     !isGroup &&
     Boolean(
@@ -4733,7 +5802,7 @@ export function ChatPage() {
     );
   const archiveSectionNotice =
     historyRoundItems.length > 0 && archiveHistoryNotice
-      ? `当前已显示产品侧归档轮次。${archiveHistoryNotice}`
+      ? `当前已显示已归档轮次。${archiveHistoryNotice}`
       : archiveHistoryNotice;
 
   const buildTeamAdjustmentAction = useCallback(
@@ -4752,6 +5821,149 @@ export function ChatPage() {
       }) satisfies FocusActionButton,
     [effectiveHeadline, effectiveOwnerAgentId, effectiveOwnerLabel, effectiveSummary, requirementTeam?.title, requirementTeam?.topicKey],
   );
+
+  useEffect(() => {
+    if (
+      !autoDispatchPlan ||
+      !activeCompany ||
+      !targetAgentId ||
+      !isCeoSession ||
+      isGroup ||
+      isArchiveView ||
+      isFreshConversation ||
+      isRequirementBootstrapPending ||
+      routeCompanyConflictMessage
+    ) {
+      return;
+    }
+
+    if (autoDispatchInFlightRef.current.has(autoDispatchPlan.dispatchId)) {
+      return;
+    }
+
+    autoDispatchInFlightRef.current.add(autoDispatchPlan.dispatchId);
+    void (async () => {
+      const startedAt = Date.now();
+      try {
+        const ack = await sendTurnToCompanyActor({
+          backend: gateway,
+          manifest: providerManifest,
+          company: activeCompany,
+          actorId: autoDispatchPlan.targetAgentId,
+          message: autoDispatchPlan.message,
+          timeoutMs: 300_000,
+          targetActorIds: [autoDispatchPlan.targetAgentId],
+        });
+        upsertDispatchRecord({
+          id: autoDispatchPlan.dispatchId,
+          workItemId: currentConversationWorkItemId ?? "work:unknown",
+          roomId: null,
+          title: autoDispatchPlan.title,
+          summary: autoDispatchPlan.summary,
+          fromActorId: targetAgentId,
+          targetActorIds: [autoDispatchPlan.targetAgentId],
+          status: "sent",
+          sourceMessageId: autoDispatchPlan.sourceStepId,
+          providerRunId: ack.runId,
+          topicKey: currentConversationTopicKey,
+          createdAt: startedAt,
+          updatedAt: startedAt,
+        });
+        await gateway.appendCompanyEvent(
+          createCompanyEvent({
+            companyId: activeCompany.id,
+            kind: "dispatch_sent",
+            dispatchId: autoDispatchPlan.dispatchId,
+            workItemId: currentConversationWorkItemId ?? "work:unknown",
+            topicKey: currentConversationTopicKey ?? undefined,
+            fromActorId: targetAgentId ?? "unknown",
+            targetActorId: autoDispatchPlan.targetAgentId,
+            sessionKey: `agent:${autoDispatchPlan.targetAgentId}:main`,
+            providerRunId: ack.runId,
+            createdAt: startedAt,
+            payload: {
+              title: autoDispatchPlan.title,
+              message: autoDispatchPlan.message,
+              sourceStepId: autoDispatchPlan.sourceStepId,
+            },
+          }),
+        );
+        appendLocalProgressEvent({
+          id: `auto-dispatch:${autoDispatchPlan.dispatchId}`,
+          timestamp: startedAt,
+          actorLabel: "系统",
+          actorAgentId: autoDispatchPlan.targetAgentId,
+          title: `已自动派单给 ${autoDispatchPlan.targetLabel}`,
+          summary: `已把当前主线的第一棒真实发给 ${autoDispatchPlan.targetLabel}，后续会按回执继续推进。`,
+          detail: autoDispatchPlan.summary,
+          tone: "indigo",
+          category: "receipt",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        upsertDispatchRecord({
+          id: autoDispatchPlan.dispatchId,
+          workItemId: currentConversationWorkItemId ?? "work:unknown",
+          roomId: null,
+          title: autoDispatchPlan.title,
+          summary: autoDispatchPlan.summary,
+          fromActorId: targetAgentId,
+          targetActorIds: [autoDispatchPlan.targetAgentId],
+          status: "blocked",
+          sourceMessageId: autoDispatchPlan.sourceStepId,
+          topicKey: currentConversationTopicKey,
+          createdAt: startedAt,
+          updatedAt: startedAt,
+        });
+        await gateway.appendCompanyEvent(
+          createCompanyEvent({
+            companyId: activeCompany.id,
+            kind: "dispatch_blocked",
+            dispatchId: autoDispatchPlan.dispatchId,
+            workItemId: currentConversationWorkItemId ?? "work:unknown",
+            topicKey: currentConversationTopicKey ?? undefined,
+            fromActorId: targetAgentId ?? "unknown",
+            targetActorId: autoDispatchPlan.targetAgentId,
+            createdAt: startedAt,
+            payload: {
+              title: autoDispatchPlan.title,
+              message: autoDispatchPlan.message,
+              sourceStepId: autoDispatchPlan.sourceStepId,
+              error: message,
+            },
+          }),
+        );
+        appendLocalProgressEvent({
+          id: `auto-dispatch-failed:${autoDispatchPlan.dispatchId}`,
+          timestamp: startedAt,
+          actorLabel: "系统",
+          actorAgentId: autoDispatchPlan.targetAgentId,
+          title: `自动派单失败：${autoDispatchPlan.targetLabel}`,
+          summary: message,
+          detail: autoDispatchPlan.summary,
+          tone: "rose",
+          category: "receipt",
+        });
+      } finally {
+        autoDispatchInFlightRef.current.delete(autoDispatchPlan.dispatchId);
+      }
+    })();
+  }, [
+    activeCompany,
+    appendLocalProgressEvent,
+    autoDispatchPlan,
+    currentConversationTopicKey,
+    currentConversationWorkItemId,
+    isArchiveView,
+    isCeoSession,
+    isFreshConversation,
+    isGroup,
+    isRequirementBootstrapPending,
+    providerManifest,
+    routeCompanyConflictMessage,
+    targetAgentId,
+    upsertDispatchRecord,
+  ]);
 
   const handleCopyTakeoverPack = async () => {
     if (!takeoverPack) {
@@ -4869,7 +6081,7 @@ export function ChatPage() {
 
   const handleFocusAction = async (action: FocusActionButton) => {
     if (action.kind === "navigate" && action.href) {
-      navigate(action.href);
+      navigate(appendCompanyScopeToChatRoute(action.href, activeCompany?.id));
       return;
     }
 
@@ -4886,13 +6098,16 @@ export function ChatPage() {
     if (!action.message) {
       return;
     }
+    if (routeCompanyConflictMessage) {
+      toast.error("无法发送", routeCompanyConflictMessage);
+      return;
+    }
 
     setRunningFocusActionId(action.id);
     setIsSummaryOpen(true);
     try {
       const actionStartedAt = Date.now();
-      const actionWorkItemId =
-        conversationMissionRecord?.id ?? persistedWorkItem?.id ?? groupWorkItemId ?? null;
+      const actionWorkItemId = currentConversationWorkItemId;
       const runtimeTargetAgentId = action.targetAgentId ?? targetAgentId ?? null;
       let resolvedKey = sessionKey;
       let providerRunId: string | undefined;
@@ -4918,8 +6133,9 @@ export function ChatPage() {
         throw new Error("未找到可发送的目标会话");
       }
       if (actionWorkItemId && runtimeTargetAgentId) {
+        const dispatchId = `dispatch:${actionWorkItemId}:${providerRunId}`;
         upsertDispatchRecord({
-          id: `dispatch:${actionWorkItemId}:${providerRunId}`,
+          id: dispatchId,
           workItemId: actionWorkItemId,
           roomId: null,
           title: action.label,
@@ -4928,10 +6144,31 @@ export function ChatPage() {
           targetActorIds: [runtimeTargetAgentId],
           status: "sent",
           providerRunId,
-          topicKey: conversationMissionRecord?.topicKey ?? persistedWorkItem?.topicKey ?? groupTopicKey ?? undefined,
+          topicKey: currentConversationTopicKey,
           createdAt: actionStartedAt,
           updatedAt: actionStartedAt,
         });
+        if (activeCompany) {
+          await gateway.appendCompanyEvent(
+            createCompanyEvent({
+              companyId: activeCompany.id,
+              kind: "dispatch_sent",
+              dispatchId,
+              workItemId: actionWorkItemId,
+              topicKey: currentConversationTopicKey ?? undefined,
+              fromActorId: targetAgentId ?? "unknown",
+              targetActorId: runtimeTargetAgentId,
+              sessionKey: `agent:${runtimeTargetAgentId}:main`,
+              providerRunId,
+              createdAt: actionStartedAt,
+              payload: {
+                title: action.label,
+                message: action.message,
+                summary: action.description,
+              },
+            }),
+          );
+        }
       }
       const targetLabel =
         runtimeTargetAgentId && activeCompany
@@ -5051,6 +6288,7 @@ export function ChatPage() {
     setIsSummaryOpen(false);
     setIsTechnicalSummaryOpen(false);
     setSummaryPanelView("owner");
+    setIsHistoryMenuOpen(false);
   }, [sessionKey]);
 
   useEffect(() => {
@@ -5196,7 +6434,12 @@ export function ChatPage() {
 
   useEffect(() => {
     async function initChat() {
-      if (!agentId || !connected) {
+      if (!agentId || !connected || routeCompanyConflictMessage || !companyRouteReady) {
+        if (routeCompanyConflictMessage) {
+          setLoading(false);
+          setMessages([]);
+          setSessionKey(null);
+        }
         return;
       }
       try {
@@ -5213,8 +6456,10 @@ export function ChatPage() {
           if (isArchiveView && archiveId) {
             if (activeArchivedRound) {
               setMessages((previous) => {
-                const nextMessages = limitChatMessages(
-                  activeArchivedRound.messages.map(roundSnapshotToChatMessage).map(normalizeMessage),
+                const nextMessages = sanitizeVisibleChatFlow(
+                  activeArchivedRound.messages
+                    .map(roundSnapshotToChatMessage)
+                    .filter((message): message is ChatMessage => Boolean(message)),
                 );
                 return areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages;
               });
@@ -5223,24 +6468,37 @@ export function ChatPage() {
             } else if (historyAgentId) {
               const archive = await gateway.getSessionArchive(historyAgentId, archiveId, 200);
               setMessages((previous) => {
-                const nextMessages = limitChatMessages((archive.messages || []).map(normalizeMessage));
+                const nextMessages = sanitizeVisibleChatFlow(archive.messages || []);
                 return areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages;
               });
               setIsGenerating(false);
               updateStreamText(null);
             }
           } else if (isGroup) {
-            const existingRoom = activeRequirementRoom ?? null;
+            const existingRoom = effectiveRequirementRoom ?? null;
             if (existingRoom) {
               const nextMessages = convertRequirementRoomRecordToChatMessages(existingRoom);
               setMessages((previous) =>
                 areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages,
               );
             }
-            if (
-              (!existingRoom || existingRoom.transcript.length === 0) &&
-              requirementRoomSessions.length > 0
-            ) {
+            const roomBaseInput = {
+              company: activeCompany,
+              companyId: activeCompany?.id,
+              workItemId: groupWorkItemId,
+              sessionKey: actualKey,
+              title: groupTitle,
+              memberIds: requirementRoomTargetAgentIds,
+              ownerAgentId:
+                existingRoom?.ownerActorId ??
+                existingRoom?.ownerAgentId ??
+                effectiveOwnerAgentId ??
+                targetAgentId ??
+                null,
+              topicKey: groupTopicKey ?? null,
+              startedAt: persistedWorkItem?.startedAt ?? null,
+            } as const;
+            if (requirementRoomSessions.length > 0) {
               const histories = await Promise.all(
                 requirementRoomSessions.map(async (roomSession) => {
                   try {
@@ -5259,24 +6517,19 @@ export function ChatPage() {
                   }
                 }),
               );
-              const roomRecord = mergeRequirementRoomRecordFromSessions({
-                company: activeCompany,
+              let roomRecord = mergeRequirementRoomRecordFromSessions({
+                ...roomBaseInput,
                 room: existingRoom,
-                companyId: activeCompany?.id,
-                workItemId: groupWorkItemId,
-                sessionKey: actualKey,
-                title: groupTitle,
-                memberIds: requirementRoomTargetAgentIds,
-                ownerAgentId:
-                  existingRoom?.ownerActorId ??
-                  existingRoom?.ownerAgentId ??
-                  effectiveOwnerAgentId ??
-                  targetAgentId ??
-                  null,
-                topicKey: groupTopicKey ?? null,
                 sessions: histories,
                 providerId,
               });
+              if (effectiveRequirementRoomSnapshots.length > 0) {
+                roomRecord = mergeRequirementRoomRecordFromSnapshots({
+                  ...roomBaseInput,
+                  room: roomRecord,
+                  snapshots: effectiveRequirementRoomSnapshots,
+                });
+              }
               const roomRecordSignature = buildRequirementRoomRecordSignature(roomRecord);
               const existingRoomSignature = buildRequirementRoomRecordSignature(existingRoom);
               if (
@@ -5298,11 +6551,41 @@ export function ChatPage() {
               setMessages((previous) =>
                 areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages,
               );
+            } else if (effectiveRequirementRoomSnapshots.length > 0) {
+              const roomRecord = mergeRequirementRoomRecordFromSnapshots({
+                ...roomBaseInput,
+                room: existingRoom,
+                snapshots: effectiveRequirementRoomSnapshots,
+              });
+              const roomRecordSignature = buildRequirementRoomRecordSignature(roomRecord);
+              const existingRoomSignature = buildRequirementRoomRecordSignature(existingRoom);
+              if (
+                roomRecordSignature !== lastSyncedRoomSignatureRef.current &&
+                roomRecordSignature !== existingRoomSignature
+              ) {
+                lastSyncedRoomSignatureRef.current = roomRecordSignature;
+                upsertRoomRecord(roomRecord);
+              }
+              upsertRoomConversationBindings(
+                buildRoomConversationBindingsFromSessions({
+                  roomId: roomRecord.id,
+                  providerId,
+                  sessions: effectiveRequirementRoomSnapshots.map((snapshot) => ({
+                    sessionKey: snapshot.sessionKey,
+                    agentId: snapshot.agentId,
+                  })),
+                  updatedAt: roomRecord.updatedAt,
+                }),
+              );
+              const nextMessages = convertRequirementRoomRecordToChatMessages(roomRecord);
+              setMessages((previous) =>
+                areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages,
+              );
             }
           } else {
             const hist = await gateway.getChatHistory(actualKey, CHAT_HISTORY_FETCH_LIMIT);
             setMessages((previous) => {
-              const nextMessages = limitChatMessages((hist.messages || []).map(normalizeMessage));
+              const nextMessages = sanitizeVisibleChatFlow(hist.messages || []);
               return areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages;
             });
           }
@@ -5319,14 +6602,18 @@ export function ChatPage() {
     agentId,
     archiveId,
     activeArchivedRound,
+    companyRouteReady,
     connected,
+    routeCompanyConflictMessage,
     groupTopicKey,
     groupTitle,
     historyAgentId,
     isArchiveView,
     isGroup,
     providerId,
+    persistedWorkItem?.startedAt,
     requirementRoomSessions,
+    effectiveRequirementRoomSnapshots,
     requirementRoomTargetAgentIds,
     targetAgentId,
     effectiveGroupSessionKey,
@@ -5363,8 +6650,9 @@ export function ChatPage() {
 
       if (payload.state === "final") {
         const incoming = payload.message ? normalizeMessage(payload.message) : null;
+        const visibleIncoming = incoming ? buildVisibleChatMessage(incoming) : null;
         if (isGroup) {
-          const roomId = productRoomId ?? activeRequirementRoom?.id ?? null;
+          const roomId = productRoomId ?? effectiveRequirementRoom?.id ?? null;
           const payloadSourceActorId =
             incoming &&
             typeof incoming.provenance === "object" &&
@@ -5391,8 +6679,8 @@ export function ChatPage() {
                   agentId: agentKey,
                   roomId: roomId ?? undefined,
                   ownerAgentId:
-                    activeRequirementRoom?.ownerAgentId ??
-                    activeRequirementRoom?.ownerActorId ??
+                    effectiveRequirementRoom?.ownerAgentId ??
+                    effectiveRequirementRoom?.ownerActorId ??
                     targetAgentId,
                 })
               : null;
@@ -5409,7 +6697,7 @@ export function ChatPage() {
             ]);
             const dispatchUpdates = resolveDispatchReplyUpdates({
               dispatches: activeDispatches,
-              workItemId: groupWorkItemId ?? persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+              workItemId: currentConversationWorkItemId,
               roomId,
               actorId: agentKey,
               responseMessageId: roomMessage.id,
@@ -5422,19 +6710,19 @@ export function ChatPage() {
               {
                 sessionKey,
                 companyId: activeCompany?.id,
-                workItemId: groupWorkItemId ?? persistedWorkItem?.id ?? conversationMissionRecord?.id ?? undefined,
-                title: activeRequirementRoom?.title ?? groupTitle,
-                memberActorIds: activeRequirementRoom?.memberActorIds ?? requirementRoomTargetAgentIds,
-                memberIds: activeRequirementRoom?.memberIds ?? requirementRoomTargetAgentIds,
+                workItemId: currentConversationWorkItemId ?? undefined,
+                title: effectiveRequirementRoom?.title ?? groupTitle,
+                memberActorIds: effectiveRequirementRoom?.memberActorIds ?? requirementRoomTargetAgentIds,
+                memberIds: effectiveRequirementRoom?.memberIds ?? requirementRoomTargetAgentIds,
                 ownerActorId:
-                  activeRequirementRoom?.ownerActorId ??
-                  activeRequirementRoom?.ownerAgentId ??
+                  effectiveRequirementRoom?.ownerActorId ??
+                  effectiveRequirementRoom?.ownerAgentId ??
                   targetAgentId,
                 ownerAgentId:
-                  activeRequirementRoom?.ownerAgentId ??
-                  activeRequirementRoom?.ownerActorId ??
+                  effectiveRequirementRoom?.ownerAgentId ??
+                  effectiveRequirementRoom?.ownerActorId ??
                   targetAgentId,
-                topicKey: groupTopicKey ?? undefined,
+                topicKey: currentConversationTopicKey,
               },
             );
           }
@@ -5444,12 +6732,12 @@ export function ChatPage() {
           return;
         }
         setMessages((prev: ChatMessage[]) => {
-          if (incoming) {
+          if (visibleIncoming && shouldKeepVisibleChatMessage(visibleIncoming)) {
             // filter out previous stream artifacts or partial matches (basic dedup)
             const base = prev.filter(
-              (m) => !(m.role === incoming.role && m.timestamp === incoming.timestamp),
+              (m) => !(m.role === visibleIncoming.role && m.timestamp === visibleIncoming.timestamp),
             );
-            const newArr = [...base, incoming];
+            const newArr = [...base, visibleIncoming];
             return limitChatMessages(newArr) as ChatMessage[];
           }
 
@@ -5570,11 +6858,11 @@ export function ChatPage() {
   }, [
     activeCompany,
     activeDispatches,
-    activeRequirementRoom?.id,
-    activeRequirementRoom?.memberIds,
-    activeRequirementRoom?.ownerActorId,
-    activeRequirementRoom?.ownerAgentId,
-    activeRequirementRoom?.title,
+    effectiveRequirementRoom?.id,
+    effectiveRequirementRoom?.memberIds,
+    effectiveRequirementRoom?.ownerActorId,
+    effectiveRequirementRoom?.ownerAgentId,
+    effectiveRequirementRoom?.title,
     appendRoomMessages,
     conversationMissionRecord?.id,
     groupTitle,
@@ -5620,6 +6908,10 @@ export function ChatPage() {
     if ((!text && !hasAttachments) || !sessionKey || sending) {
       return false;
     }
+    if (routeCompanyConflictMessage) {
+      toast.error("无法发送", routeCompanyConflictMessage);
+      return false;
+    }
     if (text === "/new" && !hasAttachments) {
       if (isGroup) {
         toast.info("需求团队房间暂不支持 /new", "请在 CEO 或成员 1v1 会话里开启新会话。");
@@ -5654,8 +6946,8 @@ export function ChatPage() {
         });
         const defaultRoomTargetAgentId =
           displayNextBatonAgentId ??
-          activeRequirementRoom?.ownerActorId ??
-          activeRequirementRoom?.ownerAgentId ??
+          effectiveRequirementRoom?.ownerActorId ??
+          effectiveRequirementRoom?.ownerAgentId ??
           requirementTeam?.ownerAgentId ??
           requirementRoomTargetAgentIds[0] ??
           null;
@@ -5674,9 +6966,10 @@ export function ChatPage() {
         }
 
         roomAudienceAgentIds = [...new Set(targetAgentIds)];
+        const audienceAgentIds = roomAudienceAgentIds;
         const dispatchStartedAt = Date.now();
         const results = await Promise.allSettled(
-          roomAudienceAgentIds.map((agentId) =>
+          audienceAgentIds.map((agentId) =>
             sendTurnToCompanyActor({
               backend: gateway,
               manifest: providerManifest,
@@ -5686,7 +6979,7 @@ export function ChatPage() {
               kind: "direct",
               timeoutMs: 300_000,
               attachments: apiAttachments,
-              targetActorIds: roomAudienceAgentIds,
+              targetActorIds: audienceAgentIds,
             }),
           ),
         );
@@ -5696,8 +6989,8 @@ export function ChatPage() {
         const fulfilledDispatches = results
           .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof sendTurnToCompanyActor>>> => result.status === "fulfilled")
           .map((result) => result.value);
-        const roomId = productRoomId ?? activeRequirementRoom?.id ?? null;
-        const workItemId = groupWorkItemId ?? persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null;
+        const roomId = productRoomId ?? effectiveRequirementRoom?.id ?? null;
+        const workItemId = currentConversationWorkItemId;
         upsertRoomConversationBindings(
           fulfilledDispatches.map((dispatch) => ({
             roomId: roomId ?? "room:unknown",
@@ -5713,45 +7006,78 @@ export function ChatPage() {
             roomId: roomId ?? null,
             title: roomBroadcastMode
               ? `${groupTitle} · 群发派单`
-              : `需求团队派单 · ${roomAudienceAgentIds
+              : `需求团队派单 · ${audienceAgentIds
                   .map((agentId) => activeCompany?.employees.find((employee) => employee.agentId === agentId)?.nickname ?? agentId)
                   .join("、")}`,
             summary: text,
-            fromActorId: targetAgentId ?? activeRequirementRoom?.ownerActorId ?? null,
-            targetActorIds: roomAudienceAgentIds,
+            fromActorId: targetAgentId ?? effectiveRequirementRoom?.ownerActorId ?? null,
+            targetActorIds: audienceAgentIds,
             status: "sent",
             providerRunId: fulfilledDispatches[0]?.runId,
-            topicKey: groupTopicKey ?? conversationMissionRecord?.topicKey ?? persistedWorkItem?.topicKey ?? undefined,
+            topicKey: currentConversationTopicKey,
             createdAt: dispatchStartedAt,
             updatedAt: dispatchStartedAt,
           });
+          if (activeCompany) {
+            await Promise.all(
+              audienceAgentIds.map((agentId) =>
+                gateway.appendCompanyEvent(
+                  createCompanyEvent({
+                    companyId: activeCompany.id,
+                    kind: "dispatch_sent",
+                    dispatchId: `${dispatchId}:${agentId}`,
+                    workItemId,
+                    roomId: roomId ?? undefined,
+                    topicKey: currentConversationTopicKey ?? undefined,
+                    fromActorId:
+                      targetAgentId ??
+                      effectiveRequirementRoom?.ownerActorId ??
+                      "unknown",
+                    targetActorId: agentId,
+                    sessionKey: `agent:${agentId}:main`,
+                    providerRunId: fulfilledDispatches[0]?.runId,
+                    createdAt: dispatchStartedAt,
+                    payload: {
+                      title: roomBroadcastMode
+                        ? `${groupTitle} · 群发派单`
+                        : `需求团队派单 · ${audienceAgentIds
+                            .map((candidateId) => activeCompany?.employees.find((employee) => employee.agentId === candidateId)?.nickname ?? candidateId)
+                            .join("、")}`,
+                      message: text,
+                      handoff: true,
+                    },
+                  }),
+                ),
+              ),
+            );
+          }
         }
         appendRoomMessages(
           roomId ?? "room:unknown",
           [
             createOutgoingRequirementRoomMessage({
               roomId: roomId ?? undefined,
-              sessionKey: roomId ?? productRoomId ?? activeRequirementRoom?.id ?? "room:unknown",
+              sessionKey: roomId ?? productRoomId ?? effectiveRequirementRoom?.id ?? "room:unknown",
               text,
-              audienceAgentIds: roomAudienceAgentIds,
+              audienceAgentIds,
             }),
           ],
           {
-            sessionKey: activeRequirementRoom?.sessionKey ?? sessionKey ?? `room:${roomId ?? "unknown"}`,
+            sessionKey: effectiveRequirementRoom?.sessionKey ?? sessionKey ?? `room:${roomId ?? "unknown"}`,
             companyId: activeCompany?.id,
             workItemId: workItemId ?? undefined,
-            title: activeRequirementRoom?.title ?? groupTitle,
-            memberActorIds: activeRequirementRoom?.memberActorIds ?? requirementRoomTargetAgentIds,
-            memberIds: activeRequirementRoom?.memberIds ?? requirementRoomTargetAgentIds,
+            title: effectiveRequirementRoom?.title ?? groupTitle,
+            memberActorIds: effectiveRequirementRoom?.memberActorIds ?? requirementRoomTargetAgentIds,
+            memberIds: effectiveRequirementRoom?.memberIds ?? requirementRoomTargetAgentIds,
             ownerActorId:
-              activeRequirementRoom?.ownerActorId ??
-              activeRequirementRoom?.ownerAgentId ??
+              effectiveRequirementRoom?.ownerActorId ??
+              effectiveRequirementRoom?.ownerAgentId ??
               targetAgentId,
             ownerAgentId:
-              activeRequirementRoom?.ownerAgentId ??
-              activeRequirementRoom?.ownerActorId ??
+              effectiveRequirementRoom?.ownerAgentId ??
+              effectiveRequirementRoom?.ownerActorId ??
               targetAgentId,
-            topicKey: groupTopicKey ?? undefined,
+            topicKey: currentConversationTopicKey,
           },
         );
         setRoomBroadcastMode(false);
@@ -5810,17 +7136,16 @@ export function ChatPage() {
     }
     try {
       const archivedMessages = createRoundMessageSnapshots(messages);
-      const archivedWorkItemId =
-        conversationMissionRecord?.id ?? persistedWorkItem?.id ?? groupWorkItemId ?? null;
+      const archivedWorkItemId = currentConversationWorkItemId;
       const archivedRoomId =
         (isGroup
-          ? activeRequirementRoom?.id ??
+          ? effectiveRequirementRoom?.id ??
             (groupWorkItemId ? buildRoomRecordIdFromWorkItem(groupWorkItemId) : null)
           : null) ?? null;
       const archivedTitle =
         activeConversationMission?.title ||
         persistedWorkItem?.title ||
-        activeRequirementRoom?.title ||
+        effectiveRequirementRoom?.title ||
         `${emp?.nickname ?? "当前负责人"} 对话`;
       const archivedPreview = buildRoundPreview(archivedMessages);
       const nextRound =
@@ -5842,7 +7167,7 @@ export function ChatPage() {
                 emp?.nickname ??
                 conversationMissionRecord?.ownerLabel ??
                 persistedWorkItem?.ownerLabel ??
-                activeRequirementRoom?.ownerAgentId ??
+                effectiveRequirementRoom?.ownerAgentId ??
                 null,
               sourceSessionKey: sessionKey,
               sourceConversationId: sessionKey,
@@ -5855,6 +7180,9 @@ export function ChatPage() {
       await AgentOps.resetSession(sessionKey, reason);
       if (nextRound) {
         upsertRoundRecord(nextRound);
+      }
+      if (conversationStateKey) {
+        clearConversationState(conversationStateKey);
       }
       if (isArchiveView) {
         const nextSearchParams = new URLSearchParams(location.search);
@@ -5962,6 +7290,14 @@ export function ChatPage() {
     try {
       const localRound = productArchivedRounds.find((round) => round.id === historyArchiveId) ?? null;
       if (localRound) {
+        if (conversationStateKey && localRound.workItemId) {
+          setConversationCurrentWorkKey(
+            conversationStateKey,
+            deriveWorkKeyFromWorkItemId(localRound.workItemId),
+            localRound.workItemId,
+            localRound.id,
+          );
+        }
         if (localRound.providerArchiveId && supportsSessionArchiveRestore && historyAgentId) {
           const result = await gateway.restoreSessionArchive(
             historyAgentId,
@@ -6060,10 +7396,7 @@ export function ChatPage() {
       return text;
     };
 
-    const normalizeRenderableText = (text: string) =>
-      stripTruthInternalMonologue(stripChatControlMetadata(text))
-        .replace(/\bANNOUNCE_SKIP\b/g, "")
-        .trim();
+    const normalizeRenderableText = (text: string) => sanitizeVisibleMessageText(text);
 
     const renderRichOrPlainText = (text: string) => {
       if (!hasRichMarkdownSyntax(text)) {
@@ -6194,6 +7527,11 @@ export function ChatPage() {
   const displayItems = useMemo(
     () => buildChatDisplayItems(messages, { hideToolItems: true }),
     [messages],
+  );
+  const hiddenDisplayItemCount = Math.max(0, displayItems.length - displayWindowSize);
+  const visibleDisplayItems = useMemo(
+    () => (hiddenDisplayItemCount > 0 ? displayItems.slice(-displayWindowSize) : displayItems),
+    [displayItems, displayWindowSize, hiddenDisplayItemCount],
   );
 
   if (loading) {
@@ -6597,7 +7935,7 @@ export function ChatPage() {
             )}
           </div>
           {!isGroup && (historyLoading || canShowSessionHistory) ? (
-            <DropdownMenu>
+            <DropdownMenu open={isHistoryMenuOpen} onOpenChange={setIsHistoryMenuOpen}>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
@@ -6732,7 +8070,7 @@ export function ChatPage() {
                                 </span>
                                 <div className="flex items-center gap-1">
                                   <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-700">
-                                    {archive.source === "product" ? "产品轮次" : "同步镜像"}
+                                    {getHistoryRoundBadgeLabel(archive)}
                                   </span>
                                   {isCurrentArchive ? (
                                     <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">
@@ -6852,7 +8190,7 @@ export function ChatPage() {
 	                <div className="flex flex-wrap items-center gap-2">
                   {activeConversationMission || requirementOverview || isRequirementBootstrapPending ? (
                     <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
-                      {isGroup ? "房间状态" : isRequirementBootstrapPending ? "恢复中" : "本轮规划/任务"}
+                      {isGroup ? "需求团队房间" : isRequirementBootstrapPending ? "恢复中" : stableDisplayWorkItem ? "当前主线" : "本轮规划/任务"}
                     </span>
                   ) : (
 	                    <ExecutionStateBadge status={sessionExecution} />
@@ -7108,7 +8446,7 @@ export function ChatPage() {
                       localSlaFallbackAlertCount={localSlaFallbackAlerts.length}
                       onClearSession={() => void handleClearSession()}
                       onRunAction={(action) => void handleFocusAction(action)}
-                      onNavigateToChat={(agentId) => navigate(`/chat/${encodeURIComponent(agentId)}`)}
+                      onNavigateToChat={(agentId) => navigate(buildCompanyChatRoute(agentId, activeCompany?.id))}
                       onNavigateToTeamGroup={() => {
                         if (teamGroupRoute) {
                           navigate(teamGroupRoute);
@@ -7179,7 +8517,22 @@ export function ChatPage() {
         }}
         className="flex-1 overflow-y-auto p-3 md:p-6 space-y-6"
       >
-        {displayItems.map((item) => {
+        {hiddenDisplayItemCount > 0 ? (
+          <div className="flex justify-center pb-2">
+            <button
+              type="button"
+              onClick={() =>
+                setDisplayWindowSize((current) =>
+                  Math.min(current + CHAT_RENDER_WINDOW_STEP, displayItems.length),
+                )
+              }
+              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-900"
+            >
+              显示更早的 {Math.min(hiddenDisplayItemCount, CHAT_RENDER_WINDOW_STEP)} 条消息
+            </button>
+          </div>
+        ) : null}
+        {visibleDisplayItems.map((item) => {
           if (item.kind === "tool") {
             return (
               <div key={item.id} className="flex justify-center">
@@ -7306,7 +8659,7 @@ export function ChatPage() {
                                 {(!isCeoSession ? mentions : mentions.slice(0, 1)).map((m) => (
                                   <button
                                     key={m.agentId}
-                                    onClick={() => navigate(`/chat/${m.agentId}`)}
+                                    onClick={() => navigate(buildCompanyChatRoute(m.agentId, activeCompany?.id))}
                                     className="flex items-center gap-1.5 bg-white border border-indigo-100 hover:border-indigo-300 hover:bg-indigo-50 px-2 py-1.5 rounded-lg shadow-sm transition-all group/btn"
                                   >
                                     <Avatar className="w-5 h-5 shrink-0 border border-indigo-100">
@@ -7368,7 +8721,21 @@ export function ChatPage() {
         {displayItems.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground space-y-3 opacity-50">
             <Sparkles className="w-10 h-10" />
-            <p className="text-sm">作为老板，请下达您的第一项指示</p>
+            <p className="text-sm">
+              {isGroup &&
+              (
+                effectiveRequirementRoom?.transcript.some((message: RequirementRoomMessage) =>
+                  isVisibleRequirementRoomMessage(message),
+                ) ||
+                Boolean(effectiveRequirementRoom?.lastConclusionAt) ||
+                Boolean(effectiveRequirementRoom?.progress && effectiveRequirementRoom.progress !== "0 条可见消息") ||
+                Boolean(roomBoundWorkItem ?? persistedWorkItem)
+              )
+                ? (roomBoundWorkItem ?? persistedWorkItem)?.displaySummary ||
+                  (roomBoundWorkItem ?? persistedWorkItem)?.displayNextAction ||
+                  "这间需求团队房间已经绑定到当前主线任务，继续在这里 @成员推进即可。"
+                : "作为老板，请下达您的第一项指示"}
+            </p>
           </div>
         )}
         {streamText && (
