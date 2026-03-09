@@ -8,10 +8,12 @@ import type {
 } from "../company/types";
 import type { RequirementExecutionOverview } from "./requirement-overview";
 import {
+  applyWorkItemDisplayFields,
   buildRoomRecordIdFromWorkItem,
   buildWorkItemRecordFromMission,
   buildWorkItemRecordFromRequirementOverview,
   deriveWorkItemFlowFromDispatches,
+  resolveStableWorkItemTitle,
   touchWorkItemArtifacts,
   touchWorkItemDispatches,
 } from "./work-item";
@@ -89,6 +91,30 @@ function mergeWorkItemSteps(
   return [...merged.values()].sort((left, right) => left.updatedAt - right.updatedAt);
 }
 
+function areWorkItemsOnSameMainline(
+  existingWorkItem: WorkItemRecord | null | undefined,
+  candidate: WorkItemRecord | null | undefined,
+): boolean {
+  if (!existingWorkItem || !candidate) {
+    return false;
+  }
+  if (existingWorkItem.id === candidate.id) {
+    return true;
+  }
+  if (existingWorkItem.workKey && candidate.workKey && existingWorkItem.workKey === candidate.workKey) {
+    return true;
+  }
+  if (
+    existingWorkItem.kind === candidate.kind &&
+    existingWorkItem.topicKey &&
+    candidate.topicKey &&
+    existingWorkItem.topicKey === candidate.topicKey
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function resolveCompletedAt(
   status: WorkItemRecord["status"],
   mergedSteps: WorkStepRecord[],
@@ -99,6 +125,43 @@ function resolveCompletedAt(
     return existingCompletedAt ?? updatedAt ?? Date.now();
   }
   return null;
+}
+
+function deriveWorkItemFlowFromRoom(input: {
+  workItem: WorkItemRecord;
+  room: RequirementRoomRecord;
+  dispatches: DispatchRecord[];
+}): Pick<
+  WorkItemRecord,
+  "status" | "stageLabel" | "batonActorId" | "batonLabel" | "nextAction" | "summary" | "updatedAt"
+> | null {
+  const { workItem, room, dispatches } = input;
+  if (!room.lastConclusionAt) {
+    return null;
+  }
+
+  const latestDispatchAt =
+    dispatches.reduce((latest, dispatch) => Math.max(latest, dispatch.updatedAt), 0) || 0;
+  if (latestDispatchAt > room.lastConclusionAt) {
+    return null;
+  }
+
+  const ownerActorId = room.ownerActorId ?? workItem.ownerActorId ?? null;
+  const ownerLabel = workItem.ownerLabel || workItem.displayOwnerLabel || "负责人";
+  const roomProgress = room.progress?.trim();
+  const summary = roomProgress
+    ? `${roomProgress}，等待 ${ownerLabel} 收口。`
+    : `团队成员已经给出结论反馈，等待 ${ownerLabel} 收口。`;
+
+  return {
+    status: workItem.completedAt ? "completed" : "waiting_owner",
+    stageLabel: "团队回执已到齐",
+    batonActorId: ownerActorId,
+    batonLabel: ownerLabel,
+    nextAction: `${ownerLabel} 收口并决定下一步。`,
+    summary,
+    updatedAt: Math.max(workItem.updatedAt, room.lastConclusionAt),
+  };
 }
 
 type ReconcileWorkItemInput = {
@@ -112,6 +175,18 @@ type ReconcileWorkItemInput = {
   fallbackSessionKey?: string | null;
   fallbackRoomId?: string | null;
 };
+
+function extractRoundAnchor(roundId: string | null | undefined): string | null {
+  const normalized = roundId?.trim() ?? "";
+  if (!normalized) {
+    return null;
+  }
+  const separatorIndex = normalized.lastIndexOf("@");
+  if (separatorIndex < 0 || separatorIndex >= normalized.length - 1) {
+    return null;
+  }
+  return normalized.slice(separatorIndex + 1);
+}
 
 export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItemRecord | null {
   const { companyId, existingWorkItem, mission, overview, room } = input;
@@ -136,12 +211,48 @@ export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItem
   }
 
   const mergedSteps = mergeWorkItemSteps(existingWorkItem?.steps ?? [], candidate.steps ?? []);
+  const sameMainline = areWorkItemsOnSameMainline(existingWorkItem, candidate);
+  const stableTitle = sameMainline
+    ? resolveStableWorkItemTitle({
+        existingTitle: existingWorkItem?.title,
+        candidateTitle: candidate.title,
+        kind: candidate.kind,
+      })
+    : candidate.title;
+  const preserveStrategicIdentity = Boolean(
+    existingWorkItem &&
+      existingWorkItem.kind === "strategic" &&
+      candidate.kind === "strategic" &&
+      existingWorkItem.workKey &&
+      sameMainline,
+  );
+  const stableWorkKey = preserveStrategicIdentity
+    ? existingWorkItem?.workKey ?? candidate.workKey
+    : candidate.workKey;
+  const stableId = preserveStrategicIdentity
+    ? existingWorkItem?.id ?? candidate.id
+    : candidate.id;
+  const stableTopicKey = preserveStrategicIdentity
+    ? existingWorkItem?.topicKey ?? candidate.topicKey
+    : candidate.topicKey ?? existingWorkItem?.topicKey;
+  const resolvedRoundAnchor =
+    extractRoundAnchor(candidate.roundId) ??
+    extractRoundAnchor(existingWorkItem?.roundId) ??
+    String(Math.floor(candidate.updatedAt || candidate.startedAt || Date.now()));
+  const stableRoundId =
+    candidate.kind === "strategic"
+      ? `${stableWorkKey}@${resolvedRoundAnchor}`
+      : candidate.roundId ?? existingWorkItem?.roundId ?? `${stableWorkKey}@${resolvedRoundAnchor}`;
   const merged: WorkItemRecord = {
-    ...existingWorkItem,
+    ...(sameMainline ? existingWorkItem : null),
     ...candidate,
     companyId,
+    id: stableId,
+    workKey: stableWorkKey,
+    roundId: stableRoundId,
+    title: stableTitle,
     sessionKey: candidate.sessionKey ?? existingWorkItem?.sessionKey ?? input.fallbackSessionKey ?? undefined,
-    topicKey: candidate.topicKey ?? existingWorkItem?.topicKey,
+    topicKey: stableTopicKey,
     sourceActorId:
       candidate.sourceActorId ??
       existingWorkItem?.sourceActorId ??
@@ -174,7 +285,7 @@ export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItem
       candidate.roomId ??
       input.fallbackRoomId ??
       existingWorkItem?.roomId ??
-      buildRoomRecordIdFromWorkItem(candidate.id),
+      buildRoomRecordIdFromWorkItem(stableId),
     ownerActorId: candidate.ownerActorId ?? existingWorkItem?.ownerActorId ?? null,
     ownerLabel: candidate.ownerLabel || existingWorkItem?.ownerLabel || "当前负责人",
     batonActorId:
@@ -189,17 +300,17 @@ export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItem
       candidate.ownerLabel ||
       existingWorkItem?.ownerLabel ||
       "当前负责人",
-    startedAt: existingWorkItem?.startedAt ?? candidate.startedAt,
+    startedAt: sameMainline ? (existingWorkItem?.startedAt ?? candidate.startedAt) : candidate.startedAt,
     updatedAt: Math.max(
-      existingWorkItem?.updatedAt ?? 0,
+      sameMainline ? (existingWorkItem?.updatedAt ?? 0) : 0,
       candidate.updatedAt,
       room?.updatedAt ?? 0,
     ),
     summary: candidate.summary || existingWorkItem?.summary || candidate.goal,
     nextAction: candidate.nextAction || existingWorkItem?.nextAction || candidate.stageLabel,
     steps: mergedSteps,
-    artifactIds: existingWorkItem?.artifactIds ?? candidate.artifactIds ?? [],
-    dispatchIds: existingWorkItem?.dispatchIds ?? candidate.dispatchIds ?? [],
+    artifactIds: sameMainline ? (existingWorkItem?.artifactIds ?? candidate.artifactIds ?? []) : (candidate.artifactIds ?? []),
+    dispatchIds: sameMainline ? (existingWorkItem?.dispatchIds ?? candidate.dispatchIds ?? []) : (candidate.dispatchIds ?? []),
   };
 
   const matchedArtifacts = (input.artifacts ?? []).filter((artifact) =>
@@ -225,14 +336,28 @@ export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItem
     };
   }
 
+  if (room) {
+    const roomFlow = deriveWorkItemFlowFromRoom({
+      workItem: reconciled,
+      room,
+      dispatches: matchedDispatches,
+    });
+    if (roomFlow) {
+      reconciled = {
+        ...reconciled,
+        ...roomFlow,
+      };
+    }
+  }
+
   const resolvedCompletedAt = resolveCompletedAt(
     reconciled.status,
     reconciled.steps,
-    existingWorkItem?.completedAt ?? candidate.completedAt ?? null,
+    sameMainline ? (existingWorkItem?.completedAt ?? candidate.completedAt ?? null) : (candidate.completedAt ?? null),
     reconciled.updatedAt,
   );
-  return {
+  return applyWorkItemDisplayFields({
     ...reconciled,
     completedAt: resolvedCompletedAt,
-  };
+  });
 }

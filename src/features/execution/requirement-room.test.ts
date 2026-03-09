@@ -7,9 +7,13 @@ import {
   buildRoomConversationBindingsFromSessions,
   buildRequirementRoomHrefFromRecord,
   buildRequirementRoomRecordFromSessions,
+  buildRequirementRoomRecordFromSnapshots,
   buildRequirementRoomRoute,
   buildRequirementRoomSessions,
   convertRequirementRoomRecordToChatMessages,
+  createOutgoingRequirementRoomMessage,
+  isVisibleRequirementRoomMessage,
+  mergeRequirementRoomRecordFromSnapshots,
   mergeRequirementRoomRecordFromSessions,
   mergeRequirementRoomMessages,
   searchRequirementRoomMentionCandidates,
@@ -113,6 +117,27 @@ describe("requirement-room helpers", () => {
     });
 
     expect(route).toBe(existingHref);
+    expect(route).toBe("/chat/room%3Aagent%3Aco-ceo%3Agroup%3Amission-consistency-abc123");
+  });
+
+  it("keeps existing room href free of compatibility query params", () => {
+    const href = buildRequirementRoomHrefFromRecord({
+      id: "workitem:topic:mission:consistency-foundation",
+      sessionKey: "agent:co-ceo:group:mission-consistency-abc123",
+      title: "一致性底座与内部审阅系统执行方案",
+      topicKey: "mission:consistency-foundation",
+      workItemId: "topic:mission:consistency-foundation",
+      memberIds: ["co-ceo", "co-cto", "co-coo"],
+      memberActorIds: ["co-ceo", "co-cto", "co-coo"],
+      status: "active",
+      ownerAgentId: "co-ceo",
+      transcript: [],
+      createdAt: 1,
+      updatedAt: 2,
+    });
+
+    expect(href).toBe("/chat/room%3Aworkitem%3Atopic%3Amission%3Aconsistency-foundation");
+    expect(href).not.toContain("?");
   });
 
   it("resolves @ mentions against current requirement-team members", () => {
@@ -216,6 +241,64 @@ describe("requirement-room helpers", () => {
     expect(roomMessages[1]?.roomAgentId).toBe("co-emp-1");
   });
 
+  it("keeps human-readable member-side room messages while still hiding workflow noise", () => {
+    const company = createCompany();
+    const roomRecord = buildRequirementRoomRecordFromSessions({
+      company,
+      sessionKey: "agent:co-ceo:group:consistency-platform",
+      title: "一致性底座与内部审阅系统执行方案",
+      memberIds: ["co-ceo", "co-cto"],
+      ownerAgentId: "co-ceo",
+      sessions: [
+        {
+          sessionKey: "agent:co-cto:group:consistency-platform",
+          agentId: "co-cto",
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: "我建议先把一致性规则拆成规则层和校验层。" }],
+              timestamp: 1000,
+            } satisfies ChatMessage,
+            {
+              role: "user",
+              content: [{ type: "text", text: "需求团队房间《一致性底座》本轮已经收到回执。" }],
+              timestamp: 1010,
+            } satisfies ChatMessage,
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "我会先输出 CTO 版技术方案。" }],
+              timestamp: 1100,
+            } satisfies ChatMessage,
+          ],
+        },
+      ],
+    });
+
+    expect(roomRecord.transcript).toHaveLength(2);
+    expect(roomRecord.transcript[0]).toMatchObject({
+      source: "member_message",
+      senderAgentId: "co-cto",
+      text: "我建议先把一致性规则拆成规则层和校验层。",
+    });
+    expect(roomRecord.transcript[1]).toMatchObject({
+      source: "member_reply",
+      senderAgentId: "co-cto",
+      text: "我会先输出 CTO 版技术方案。",
+    });
+  });
+
+  it("marks outgoing room dispatches as owner dispatch", () => {
+    const message = createOutgoingRequirementRoomMessage({
+      roomId: "room:workitem:topic:mission:consistency-platform",
+      sessionKey: "room:workitem:topic:mission:consistency-platform",
+      text: "@CTO 请先输出一致性技术方案。",
+      audienceAgentIds: ["co-cto"],
+      timestamp: 1000,
+    });
+
+    expect(message.source).toBe("owner_dispatch");
+  });
+
   it("builds a canonical room record that keeps transcript entries stable", () => {
     const company = createCompany();
     const roomRecord = buildRequirementRoomRecordFromSessions({
@@ -283,6 +366,28 @@ describe("requirement-room helpers", () => {
     };
 
     expect(areRequirementRoomRecordsEquivalent(left, right)).toBe(true);
+  });
+
+  it("treats room headline/progress changes as semantic room changes", () => {
+    const left = buildRequirementRoomRecordFromSessions({
+      company: createCompany(),
+      companyId: "company-1",
+      workItemId: "topic:mission:consistency-foundation",
+      sessionKey: "room:workitem:topic:mission:consistency-foundation",
+      title: "一致性底座与内部审阅系统执行方案",
+      memberIds: ["co-ceo", "co-cto"],
+      ownerAgentId: "co-ceo",
+      topicKey: "mission:consistency-foundation",
+      sessions: [],
+    });
+    const right = {
+      ...left,
+      headline: "需求团队: 一致性底座与内部审阅系统执行方案",
+      progress: "2 条结论回传",
+      lastConclusionAt: 2_000,
+    };
+
+    expect(areRequirementRoomRecordsEquivalent(left, right)).toBe(false);
   });
 
   it("merges persisted room transcript back into the canonical room record on resync", () => {
@@ -442,5 +547,150 @@ describe("requirement-room helpers", () => {
         sessionKey: "agent:co-cto:group:mission-consistency-abc123",
       },
     ]);
+  });
+
+  it("hides system and mirror noise from the visible room chat flow", () => {
+    const roomRecord = buildRequirementRoomRecordFromSessions({
+      company: createCompany(),
+      companyId: "company-1",
+      workItemId: "mission:consistency-foundation",
+      sessionKey: "agent:co-ceo:group:mission-consistency-abc123",
+      title: "一致性底座与内部审阅系统执行方案",
+      memberIds: ["co-ceo", "co-cto"],
+      ownerAgentId: "co-ceo",
+      topicKey: "mission:consistency-foundation",
+      seedTranscript: [
+        {
+          id: "room:debug:1",
+          role: "assistant",
+          text: "任务追踪已同步到顶部“本次需求执行 / 协作生命周期”，正文里不再重复展开。",
+          timestamp: 900,
+          visibility: "debug",
+          source: "system",
+        },
+      ],
+      sessions: [
+        {
+          sessionKey: "agent:co-cto:group:mission-consistency-abc123",
+          agentId: "co-cto",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "我会先输出一致性底座方案，再回传给 CEO。" }],
+              timestamp: 1200,
+            } satisfies ChatMessage,
+          ],
+        },
+      ],
+    });
+
+    expect(roomRecord.transcript).toHaveLength(1);
+    expect(isVisibleRequirementRoomMessage(roomRecord.transcript[0])).toBe(true);
+    expect(convertRequirementRoomRecordToChatMessages(roomRecord)).toHaveLength(1);
+  });
+
+  it("hydrates a canonical room transcript from requirement snapshots when provider room sessions are missing", () => {
+    const company = createCompany();
+    const roomRecord = buildRequirementRoomRecordFromSnapshots({
+      company,
+      companyId: "company-1",
+      workItemId: "topic:mission:consistency-foundation",
+      sessionKey: "room:workitem:topic:mission:consistency-foundation",
+      title: "开发一致性底座与内部审阅系统",
+      memberIds: ["co-ceo", "co-cto", "co-emp-2"],
+      ownerAgentId: "co-ceo",
+      topicKey: "mission:consistency-foundation",
+      snapshots: [
+        {
+          agentId: "co-cto",
+          sessionKey: "agent:co-cto:main",
+          updatedAt: 2_000,
+          messages: [
+            {
+              role: "assistant",
+              text: "我先出一版一致性技术方案，包含规则层和校验层。",
+              timestamp: 1_500,
+            },
+          ],
+        },
+        {
+          agentId: "co-emp-2",
+          sessionKey: "agent:co-emp-2:main",
+          updatedAt: 2_500,
+          messages: [
+            {
+              role: "assistant",
+              text: "审校这边建议先做内部审阅页面，再补一致性检查。",
+              timestamp: 2_200,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(roomRecord.id).toBe("workitem:topic:mission:consistency-foundation");
+    expect(roomRecord.transcript.map((message) => message.text)).toEqual([
+      "我先出一版一致性技术方案，包含规则层和校验层。",
+      "审校这边建议先做内部审阅页面，再补一致性检查。",
+    ]);
+  });
+
+  it("merges snapshot replies into an existing room without reinitializing it", () => {
+    const company = createCompany();
+    const existingRoom = buildRequirementRoomRecordFromSessions({
+      company,
+      companyId: "company-1",
+      workItemId: "topic:mission:consistency-foundation",
+      sessionKey: "room:workitem:topic:mission:consistency-foundation",
+      title: "开发一致性底座与内部审阅系统",
+      memberIds: ["co-ceo", "co-cto"],
+      ownerAgentId: "co-ceo",
+      topicKey: "mission:consistency-foundation",
+      seedTranscript: [
+        {
+          id: "dispatch:1",
+          role: "user",
+          text: "@CTO 请先输出技术方案。",
+          timestamp: 1_000,
+          source: "owner_dispatch",
+          audienceAgentIds: ["co-cto"],
+        },
+      ],
+      sessions: [],
+    });
+
+    const mergedRoom = mergeRequirementRoomRecordFromSnapshots({
+      company,
+      room: existingRoom,
+      companyId: "company-1",
+      workItemId: "topic:mission:consistency-foundation",
+      sessionKey: "room:workitem:topic:mission:consistency-foundation",
+      title: existingRoom.title,
+      memberIds: existingRoom.memberIds,
+      ownerAgentId: "co-ceo",
+      topicKey: "mission:consistency-foundation",
+      snapshots: [
+        {
+          agentId: "co-cto",
+          sessionKey: "agent:co-cto:main",
+          updatedAt: 2_000,
+          messages: [
+            {
+              role: "assistant",
+              text: "我先出一版一致性技术方案，包含规则层和校验层。",
+              timestamp: 1_800,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(mergedRoom.transcript).toHaveLength(2);
+    expect(mergedRoom.transcript[0]?.text).toBe("@CTO 请先输出技术方案。");
+    expect(mergedRoom.transcript[1]).toMatchObject({
+      source: "member_reply",
+      senderAgentId: "co-cto",
+      text: "我先出一版一致性技术方案，包含规则层和校验层。",
+    });
   });
 });

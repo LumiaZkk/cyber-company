@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Company, WorkItemRecord } from "../company/types";
 import type { RequirementExecutionOverview } from "./requirement-overview";
 import { buildRequirementScope } from "./requirement-scope";
+import { applyWorkItemDisplayFields } from "./work-item";
 
 const company: Company = {
   id: "novel",
@@ -124,8 +125,11 @@ const overview: RequirementExecutionOverview = {
   ],
 };
 
-const workItem: WorkItemRecord = {
+const workItem: WorkItemRecord = applyWorkItemDisplayFields({
   id: "mission:consistency-platform",
+  workKey: "topic:mission:consistency-platform",
+  kind: "strategic",
+  roundId: "topic:mission:consistency-platform@5000",
   companyId: "novel",
   topicKey: "mission:consistency-platform",
   title: "一致性底座与内部审阅系统执行方案",
@@ -161,7 +165,7 @@ const workItem: WorkItemRecord = {
       updatedAt: 6_100,
     },
   ],
-};
+});
 
 describe("buildRequirementScope", () => {
   it("prefers WorkItem timing and participants when scoping requests and tasks", () => {

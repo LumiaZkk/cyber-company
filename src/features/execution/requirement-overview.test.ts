@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Company } from "../company/types";
+import { buildStableStrategicTopicKey } from "./work-item";
 import {
   buildRequirementExecutionOverview,
   createRequirementMessageSnapshots,
@@ -126,6 +127,51 @@ describe("requirement execution overview", () => {
     expect(overview?.participants.find((participant) => participant.agentId === "co-cto")?.stage).not.toContain("发布冻结待命");
   });
 
+  it("normalizes team-building and quality-improvement tracker missions into one stable bootstrap title", () => {
+    const snapshots: RequirementSessionSnapshot[] = [
+      {
+        agentId: "co-ceo",
+        sessionKey: "agent:co-ceo:main",
+        updatedAt: 500,
+        messages: createRequirementMessageSnapshots(
+          [
+            {
+              role: "assistant",
+              text:
+                "老板，**网文质量提升专项**已正式启动。\n\n## 📋 任务追踪\n- [x] 1. 招聘与组织架构优化 → @HR\n- [/] 2. 工具能力建设 → @CTO\n- [/] 3. 流程优化与数据追踪 → @COO\n- [x] 4. 创作质量标准制定 → @主编\n- [ ] 5. 审校流程优化 → @审校",
+              timestamp: 200,
+            },
+          ],
+        ),
+      },
+      {
+        agentId: "co-hr",
+        sessionKey: "agent:co-hr:main",
+        updatedAt: 520,
+        messages: createRequirementMessageSnapshots(
+          [{ role: "assistant", text: "招聘JD与兼任方案已交付。", timestamp: 260 }],
+        ),
+      },
+      {
+        agentId: "co-cto",
+        sessionKey: "agent:co-cto:main",
+        updatedAt: 530,
+        messages: createRequirementMessageSnapshots(
+          [{ role: "assistant", text: "一致性检查工具与模板开发进行中。", timestamp: 280 }],
+        ),
+      },
+    ];
+
+    const overview = buildRequirementExecutionOverview({
+      company,
+      sessionSnapshots: snapshots,
+      now: 600,
+    });
+
+    expect(overview?.title).toBe("从头开始搭建 AI 小说创作团队");
+    expect(overview?.topicKey).toMatch(/^mission:/);
+  });
+
   it("can rebuild a strategic ceo tracker from preferred mission hints even when the user ask already fell out of the snapshot window", () => {
     const snapshots: RequirementSessionSnapshot[] = [
       {
@@ -181,6 +227,43 @@ describe("requirement execution overview", () => {
     expect(overview?.currentOwnerAgentId).toBe("co-ceo");
     expect(overview?.currentStage).toContain("整合团队方案");
     expect(overview?.summary).toContain("CTO、COO 已回传");
+  });
+
+  it("lets a stronger team-bootstrap tracker replace an older preferred mission topic", () => {
+    const snapshots: RequirementSessionSnapshot[] = [
+      {
+        agentId: "co-ceo",
+        sessionKey: "agent:co-ceo:main",
+        updatedAt: 500,
+        messages: createRequirementMessageSnapshots(
+          [
+            {
+              role: "assistant",
+              text:
+                "老板，**网文质量提升专项**已正式启动。\n\n## 📋 任务追踪\n- [x] 1. 招聘与组织架构优化 → @HR\n- [/] 2. 工具能力建设 → @CTO\n- [/] 3. 流程优化与数据追踪 → @COO\n- [x] 4. 创作质量标准制定 → @主编\n- [ ] 5. 审校流程优化 → @审校",
+              timestamp: 200,
+            },
+          ],
+        ),
+      },
+    ];
+
+    const overview = buildRequirementExecutionOverview({
+      company,
+      preferredTopicKey: "mission:consistency-platform",
+      preferredTopicText:
+        "是不是应该让CTO出一份一致性的技术实现方案，还有作为小说公司，是不是应该实现一套小说阅读的系统，在页面上直接可以查看",
+      preferredTopicTimestamp: 100,
+      sessionSnapshots: snapshots,
+      now: 600,
+    });
+
+    expect(overview?.title).toBe("从头开始搭建 AI 小说创作团队");
+    expect(overview?.topicKey).toBe(
+      buildStableStrategicTopicKey({
+        title: "从头开始搭建 AI 小说创作团队",
+      }),
+    );
   });
 
   it("rejects malformed overview candidates that only contain generic titles or metadata fragments", () => {

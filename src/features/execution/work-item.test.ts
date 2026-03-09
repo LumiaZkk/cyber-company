@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { ConversationMissionRecord, RequirementRoomRecord } from "../company/types";
 import type { RequirementExecutionOverview } from "./requirement-overview";
 import {
+  applyWorkItemDisplayFields,
   buildRoomRecordIdFromWorkItem,
   buildRoundRecord,
   buildWorkItemRecordFromRequirementOverview,
   buildWorkItemRecordFromMission,
+  deriveWorkItemFlowFromDispatches,
   pickWorkItemRecord,
+  resolveStableWorkItemTitle,
 } from "./work-item";
 
 function createMission(overrides: Partial<ConversationMissionRecord> = {}): ConversationMissionRecord {
@@ -139,6 +142,8 @@ describe("work-item helpers", () => {
 
     expect(workItem.id).toBe("mission:rewrite-ch02");
     expect(workItem.roomId).toBe(buildRoomRecordIdFromWorkItem("mission:rewrite-ch02"));
+    expect(workItem.workKey).toBe("topic:chapter:02-rewrite");
+    expect(workItem.kind).toBe("execution");
     expect(workItem.sourceActorId).toBe("co-ceo");
     expect(workItem.sourceConversationId).toBe("agent:co-ceo:main");
     expect(workItem.ownerActorId).toBe("co-emp-1");
@@ -205,11 +210,22 @@ describe("work-item helpers", () => {
     });
   });
 
+  it("sanitizes round titles and previews when building product archives", () => {
+    const round = buildRoundRecord({
+      companyId: "company-1",
+      title: "[Sun 2026-03-08] 一致性方案讨论",
+      preview: "**Reviewing SOUL.md** 我是赛博公司 CEO，负责拆解、派单、验收、汇报。",
+    });
+
+    expect(round.title).toBe("一致性方案讨论");
+    expect(round.preview).toBe("我是赛博公司 CEO，负责拆解、派单、验收、汇报。");
+  });
+
   it("builds a work item directly from a requirement overview", () => {
     const workItem = buildWorkItemRecordFromRequirementOverview({
       companyId: "company-1",
       overview: createRequirementOverview(),
-      roomId: buildRoomRecordIdFromWorkItem("topic:mission:consistency-platform@5000"),
+      roomId: buildRoomRecordIdFromWorkItem("topic:mission:consistency-platform"),
       ownerSessionKey: "agent:co-ceo:main",
     });
 
@@ -222,13 +238,138 @@ describe("work-item helpers", () => {
       ownerActorId: "co-ceo",
       batonActorId: "co-ceo",
       status: "waiting_owner",
-      roomId: buildRoomRecordIdFromWorkItem("topic:mission:consistency-platform@5000"),
+      roomId: buildRoomRecordIdFromWorkItem("topic:mission:consistency-platform"),
       nextAction: "让 CEO 输出最终执行方案和优先级。",
     });
+    expect(workItem.workKey).toBe("topic:mission:consistency-platform");
+    expect(workItem.kind).toBe("strategic");
+    expect(workItem.roundId).toBe("topic:mission:consistency-platform@5000");
     expect(workItem.steps).toHaveLength(3);
     expect(workItem.steps[2]).toMatchObject({
       assigneeActorId: "co-ceo",
       status: "active",
     });
+  });
+
+  it("canonicalizes strategic mission records into topic-backed work item ids", () => {
+    const workItem = buildWorkItemRecordFromMission({
+      companyId: "company-1",
+      mission: createMission({
+        id: "session:agent:co-ceo:main@1",
+        topicKey: "mission:consistency-platform",
+        startedAt: 5_000,
+        title: "一致性底座与内部审阅系统执行方案",
+      }),
+    });
+
+    expect(workItem.id).toBe("topic:mission:consistency-platform");
+    expect(workItem.workKey).toBe("topic:mission:consistency-platform");
+    expect(workItem.roundId).toBe("topic:mission:consistency-platform@5000");
+    expect(workItem.sourceConversationId).toBe("agent:co-ceo:main");
+  });
+
+  it("prefers a newer answered dispatch over older open dispatches", () => {
+    const workItem = buildWorkItemRecordFromRequirementOverview({
+      companyId: "company-1",
+      overview: createRequirementOverview(),
+      ownerSessionKey: "agent:co-ceo:main",
+    });
+
+    const flow = deriveWorkItemFlowFromDispatches(workItem, [
+      {
+        id: "dispatch-open",
+        workItemId: workItem.id,
+        title: "请 CTO 输出方案",
+        summary: "CTO 正在处理当前派单。",
+        targetActorIds: ["co-cto"],
+        status: "pending",
+        updatedAt: 5_100,
+      } as never,
+      {
+        id: "dispatch-answered",
+        workItemId: workItem.id,
+        title: "CTO 已回传方案",
+        summary: "CTO 已交付结果",
+        targetActorIds: ["co-cto"],
+        status: "answered",
+        updatedAt: 5_300,
+      } as never,
+    ]);
+
+    expect(flow).toMatchObject({
+      status: "waiting_owner",
+      batonActorId: "co-ceo",
+      batonLabel: "CEO",
+      nextAction: "负责人收口并决定下一步。",
+      summary: "co-cto 已回传结果，等待负责人收口。",
+    });
+  });
+
+  it("keeps a strategic work item title stable while only display fields change across rounds", () => {
+    const base = buildWorkItemRecordFromRequirementOverview({
+      companyId: "company-1",
+      overview: createRequirementOverview(),
+      ownerSessionKey: "agent:co-ceo:main",
+    });
+
+    const updated = applyWorkItemDisplayFields({
+      ...base,
+      stageLabel: "等待 CTO / COO 回传",
+      summary: "CTO 和 COO 已回传，等待 CEO 汇总输出。",
+      nextAction: "让 CEO 输出最终执行方案和优先级。",
+      updatedAt: base.updatedAt + 500,
+    });
+
+    expect(updated.title).toBe("一致性底座与内部审阅系统执行方案");
+    expect(updated.headline).toBe("一致性底座与内部审阅系统执行方案");
+    expect(updated.displayStage).toBe("等待 CTO / COO 回传");
+    expect(updated.displayNextAction).toBe("让 CEO 输出最终执行方案和优先级。");
+  });
+
+  it("normalizes drifted strategic mission topic keys into one stable title-backed identity", () => {
+    const fromFirstOverview = buildWorkItemRecordFromRequirementOverview({
+      companyId: "company-1",
+      overview: createRequirementOverview({
+        topicKey: "mission:4p27it",
+        title: "开发一致性底座与内部审阅系统",
+      }),
+      ownerSessionKey: "agent:co-ceo:main",
+    });
+    const fromSecondOverview = buildWorkItemRecordFromRequirementOverview({
+      companyId: "company-1",
+      overview: createRequirementOverview({
+        topicKey: "mission:1ip8yl0",
+        title: "开发一致性底座与内部审阅系统",
+      }),
+      ownerSessionKey: "agent:co-ceo:main",
+    });
+
+    expect(fromFirstOverview.title).toBe("开发一致性底座与内部审阅系统");
+    expect(fromFirstOverview.topicKey).toBe(fromSecondOverview.topicKey);
+    expect(fromFirstOverview.id).toBe(fromSecondOverview.id);
+    expect(fromFirstOverview.workKey).toBe(fromSecondOverview.workKey);
+    expect(fromFirstOverview.topicKey).toMatch(/^mission:/);
+    expect(fromFirstOverview.topicKey).not.toBe("mission:4p27it");
+    expect(fromFirstOverview.topicKey).not.toBe("mission:1ip8yl0");
+  });
+
+  it("allows a stronger strategic bootstrap title to replace an older strategic title", () => {
+    expect(
+      resolveStableWorkItemTitle({
+        existingTitle: "一致性底座与内部审阅系统执行方案",
+        candidateTitle: "从头开始搭建 AI 小说创作团队",
+        kind: "strategic",
+      }),
+    ).toBe("从头开始搭建 AI 小说创作团队");
+  });
+
+  it("replaces an old chapter execution title when the current mainline is strategic", () => {
+    expect(
+      resolveStableWorkItemTitle({
+        existingTitle: "重新完成第 2 章",
+        candidateTitle: "从头开始搭建 AI 小说创作团队",
+        kind: "strategic",
+      }),
+    ).toBe("从头开始搭建 AI 小说创作团队");
   });
 });

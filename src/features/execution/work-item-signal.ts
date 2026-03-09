@@ -1,6 +1,11 @@
 import type { WorkItemRecord } from "../company/types";
 import type { RequirementExecutionOverview } from "./requirement-overview";
-import { getRequirementTopicKind } from "./requirement-kind";
+import { getRequirementTopicKind, isArtifactRequirementTopic, isStrategicRequirementTopic } from "./requirement-kind";
+import {
+  buildStableStrategicTopicKey,
+  isRoomBackedWorkItem,
+  matchesWorkItemSourceActor,
+} from "./work-item";
 
 const LOW_SIGNAL_TITLES = new Set(["当前需求", "当前战略任务", "当前任务", "本次需求"]);
 
@@ -73,6 +78,29 @@ function countMatches(value: string | null | undefined, patterns: RegExp[]): num
     return 0;
   }
   return patterns.reduce((count, pattern) => count + Number(pattern.test(normalized)), 0);
+}
+
+function normalizeTopicKey(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function hasRootSwitchCue(value: string | null | undefined): boolean {
+  const normalized = normalizeSignalText(value);
+  if (!normalized) {
+    return false;
+  }
+  return [
+    /从头开始/u,
+    /重新搭建/u,
+    /新立项/u,
+    /重新规划/u,
+    /旧任务.*作废/u,
+    /全部作废/u,
+    /先别管旧任务/u,
+    /搭建.*团队/u,
+    /启动.*专项/u,
+    /全新方案/u,
+  ].some((pattern) => pattern.test(normalized));
 }
 
 const STRATEGIC_PATTERNS = [
@@ -210,4 +238,90 @@ export function isReliableWorkItemRecord(
     return false;
   }
   return true;
+}
+
+export function isCanonicalProductWorkItemRecord(
+  workItem: WorkItemRecord | null | undefined,
+  sourceActorId?: string | null,
+): workItem is WorkItemRecord {
+  if (!isReliableWorkItemRecord(workItem)) {
+    return false;
+  }
+  if (isArtifactRequirementTopic(workItem.topicKey)) {
+    return false;
+  }
+  if (isRoomBackedWorkItem(workItem)) {
+    return true;
+  }
+  return sourceActorId ? matchesWorkItemSourceActor(workItem, sourceActorId) : true;
+}
+
+export function shouldReplaceLockedStrategicWorkItem(input: {
+  lockedWorkItem: WorkItemRecord | null | undefined;
+  latestHintText?: string | null;
+  latestHintTopicKey?: string | null;
+  overview?: RequirementExecutionOverview | null;
+}): boolean {
+  const lockedWorkItem = input.lockedWorkItem;
+  if (!lockedWorkItem || !isStrategicRequirementTopic(lockedWorkItem.topicKey)) {
+    return false;
+  }
+
+  const lockedTopicKey = normalizeTopicKey(lockedWorkItem.topicKey);
+  const overview = input.overview;
+  if (overview && isReliableRequirementOverview(overview)) {
+    const overviewTopicKey = normalizeTopicKey(overview.topicKey);
+    if (overviewTopicKey && lockedTopicKey && overviewTopicKey !== lockedTopicKey) {
+      return true;
+    }
+  }
+
+  const hintedStrategicTopicKey = normalizeTopicKey(
+    buildStableStrategicTopicKey({
+      topicKey: input.latestHintTopicKey,
+      title: input.latestHintText,
+    }),
+  );
+  if (
+    hintedStrategicTopicKey &&
+    lockedTopicKey &&
+    hintedStrategicTopicKey !== lockedTopicKey &&
+    hasRootSwitchCue(input.latestHintText)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function shouldPreferReliableStrategicOverview(input: {
+  stableWorkItem: WorkItemRecord | null | undefined;
+  latestHintText?: string | null;
+  latestHintTopicKey?: string | null;
+  overview?: RequirementExecutionOverview | null;
+}): boolean {
+  const stableWorkItem = input.stableWorkItem;
+  const overview = input.overview;
+  if (!stableWorkItem || !overview || !isReliableRequirementOverview(overview)) {
+    return false;
+  }
+  if (!isStrategicRequirementTopic(overview.topicKey)) {
+    return false;
+  }
+
+  if (stableWorkItem.kind === "strategic") {
+    return shouldReplaceLockedStrategicWorkItem({
+      lockedWorkItem: stableWorkItem,
+      latestHintText: input.latestHintText,
+      latestHintTopicKey: input.latestHintTopicKey,
+      overview,
+    });
+  }
+
+  const stableTopicKind = getRequirementTopicKind(stableWorkItem.topicKey);
+  if (stableTopicKind === "chapter" || stableWorkItem.kind === "execution") {
+    return true;
+  }
+
+  return false;
 }

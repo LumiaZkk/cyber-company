@@ -29,6 +29,9 @@ function normalizeMissionId(input: {
   roomId?: string | null;
   startedAt?: number | null;
 }): string {
+  if (input.topicKey?.trim() && !input.topicKey.trim().startsWith("chapter:")) {
+    return `topic:${input.topicKey.trim()}`;
+  }
   const roundSuffix =
     typeof input.startedAt === "number" && Number.isFinite(input.startedAt) && input.startedAt > 0
       ? `@${Math.floor(input.startedAt)}`

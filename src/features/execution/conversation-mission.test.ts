@@ -25,7 +25,7 @@ describe("conversation mission helpers", () => {
       planSteps: [],
     });
 
-    expect(mission.id).toBe("topic:mission:consistency-plan@123");
+    expect(mission.id).toBe("topic:mission:consistency-plan");
   });
 
   it("prefers current topic/round over stale session matches", () => {

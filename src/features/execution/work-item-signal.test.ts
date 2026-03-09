@@ -4,7 +4,10 @@ import type { RequirementExecutionOverview } from "./requirement-overview";
 import {
   isReliableRequirementOverview,
   isReliableWorkItemRecord,
+  shouldPreferReliableStrategicOverview,
+  shouldReplaceLockedStrategicWorkItem,
 } from "./work-item-signal";
+import { applyWorkItemDisplayFields } from "./work-item";
 
 function createStrategicOverview(
   overrides: Partial<RequirementExecutionOverview> = {},
@@ -27,8 +30,11 @@ function createStrategicOverview(
 function createWorkItem(
   overrides: Partial<WorkItemRecord> = {},
 ): WorkItemRecord {
-  return {
-    id: "topic:mission:consistency-platform@1000",
+  return applyWorkItemDisplayFields({
+    id: "topic:mission:consistency-platform",
+    workKey: "topic:mission:consistency-platform",
+    kind: "strategic",
+    roundId: "topic:mission:consistency-platform@1000",
     companyId: "novel-studio-001",
     sessionKey: "agent:co-ceo:main",
     topicKey: "mission:consistency-platform",
@@ -45,7 +51,7 @@ function createWorkItem(
     ownerLabel: "CEO",
     batonActorId: "co-ceo",
     batonLabel: "CEO",
-    roomId: "workitem:topic:mission:consistency-platform@1000",
+    roomId: "workitem:topic:mission:consistency-platform",
     artifactIds: [],
     dispatchIds: [],
     startedAt: 1_000,
@@ -55,7 +61,7 @@ function createWorkItem(
     nextAction: "让 CEO 输出最终执行方案和优先级。",
     steps: [],
     ...overrides,
-  };
+  });
 }
 
 describe("work-item signal guards", () => {
@@ -87,5 +93,58 @@ describe("work-item signal guards", () => {
     });
 
     expect(isReliableWorkItemRecord(workItem)).toBe(false);
+  });
+
+  it("releases a locked strategic work item when a newer strategic overview points to a different mission", () => {
+    const lockedWorkItem = createWorkItem({
+      topicKey: "mission:consistency-platform",
+      title: "一致性底座与内部审阅系统执行方案",
+    });
+    const overview = createStrategicOverview({
+      topicKey: "mission:novel-team-bootstrap",
+      title: "从头开始搭建 AI 小说创作团队",
+      summary: "HR、CTO、COO 正在围绕团队搭建和流程治理回传结果。",
+      currentStage: "CEO 汇总团队搭建方案",
+      nextAction: "让 CEO 收口组织方案并确认下一步。",
+    });
+
+    expect(
+      shouldReplaceLockedStrategicWorkItem({
+        lockedWorkItem,
+        latestHintText: "从头开始搭建 AI 小说创作团队",
+        latestHintTopicKey: null,
+        overview,
+      }),
+    ).toBe(true);
+  });
+
+  it("prefers a reliable strategic overview over a stale execution work item", () => {
+    const staleExecutionWorkItem = createWorkItem({
+      id: "topic:chapter:2",
+      workKey: "topic:chapter:2",
+      kind: "execution",
+      roundId: "topic:chapter:2@1000",
+      topicKey: "chapter:2",
+      title: "重新完成第 2 章",
+      stageLabel: "团队回执已到齐",
+      summary: "等待 CEO 收口。",
+      nextAction: "让 CEO 收口并决定下一步。",
+    });
+    const overview = createStrategicOverview({
+      topicKey: "mission:novel-team-bootstrap",
+      title: "从头开始搭建 AI 小说创作团队",
+      summary: "HR、CTO、主编正在围绕团队搭建和质量底座回传结果。",
+      currentStage: "CEO 汇总团队搭建方案",
+      nextAction: "让 CEO 收口组织方案并确认下一步。",
+    });
+
+    expect(
+      shouldPreferReliableStrategicOverview({
+        stableWorkItem: staleExecutionWorkItem,
+        latestHintText: "从头开始搭建 AI 小说创作团队",
+        latestHintTopicKey: null,
+        overview,
+      }),
+    ).toBe(true);
   });
 });

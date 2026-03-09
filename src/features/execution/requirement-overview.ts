@@ -9,6 +9,7 @@ import {
 import { formatAgentLabel, formatAgentRole } from "./focus-summary";
 import { isArtifactRequirementTopic } from "./requirement-kind";
 import { isInternalAssistantMonologueText, isSyntheticWorkflowPromptText, stripTruthInternalMonologue } from "./message-truth";
+import { buildStableStrategicTopicKey } from "./work-item";
 import { isReliableRequirementOverview } from "./work-item-signal";
 
 export type RequirementParticipantTone =
@@ -112,6 +113,35 @@ type TrackedDelegationSeed = {
   assistantText: string;
   steps: TrackedDelegationStep[];
 };
+
+function prefersTitleDerivedStrategicTopicKey(input: {
+  preferredTopicKey?: string | null;
+  title?: string | null;
+  texts: Array<string | null | undefined>;
+}): boolean {
+  const preferredTopicKey = input.preferredTopicKey?.trim() ?? "";
+  if (!preferredTopicKey.startsWith("mission:")) {
+    return false;
+  }
+
+  const titleDerivedTopicKey = buildStableStrategicTopicKey({
+    title: input.title,
+  });
+  if (!titleDerivedTopicKey || titleDerivedTopicKey === preferredTopicKey) {
+    return false;
+  }
+
+  const corpus = input.texts
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+  const normalizedTitle = input.title?.trim() ?? "";
+  const hasTeamBootstrapSignals =
+    /从头开始搭建\s*AI\s*小说创作团队|从头开始搭建小说创作团队|创作团队|组织架构|招聘JD|兼任方案|世界观架构师|伏笔管理员|去AI味专员|招聘|岗位|搭建.*团队|团队搭建|班底|质量提升专项|质量提升/i.test(
+      `${normalizedTitle}\n${corpus}`,
+    ) && /小说|网文|创作/i.test(`${normalizedTitle}\n${corpus}`);
+
+  return hasTeamBootstrapSignals;
+}
 
 function inferHandoffTopic(handoff: HandoffRecord): string | null {
   return (
@@ -281,7 +311,7 @@ function isRestartInstruction(text: string): boolean {
 }
 
 function isStrategicInstruction(text: string): boolean {
-  return /方案|系统|工具|实现|规划|优先级|业务流程|技术架构|阅读/i.test(text);
+  return /方案|系统|工具|实现|规划|优先级|业务流程|技术架构|阅读|团队|创作团队|组织|组织架构|招聘|岗位|搭建|班底|专项|质量提升|兼任方案|招聘JD|世界观架构师|伏笔管理员|去AI味专员/i.test(text);
 }
 
 function collectInstructionCandidates(
@@ -425,22 +455,38 @@ function findLatestTrackedDelegationSeed(
         ? options.preferredTopicKey
         : null;
     const fallbackTopicText = options?.preferredTopicText?.trim() || null;
-    if (!latestUser && !fallbackTopicKey) {
+    const strategicTexts = [
+      latestUser?.text ?? fallbackTopicText,
+      assistantMessage.text,
+      ...steps.map((step) => step.title),
+    ];
+    const title = deriveStrategicRequirementTitle(strategicTexts);
+    const preferredTopicKey = prefersTitleDerivedStrategicTopicKey({
+      preferredTopicKey: fallbackTopicKey,
+      title,
+      texts: strategicTexts,
+    })
+      ? null
+      : fallbackTopicKey;
+    const stableTopicKey = buildStableStrategicTopicKey({
+      topicKey:
+        preferredTopicKey ??
+        inferMissionTopicKey([
+          latestUser?.text ?? fallbackTopicText,
+          assistantMessage.text,
+          ...steps.map((step) => step.title),
+        ]),
+      title,
+    });
+    if (!stableTopicKey) {
       continue;
     }
 
     return {
-      title: deriveStrategicRequirementTitle([
-        latestUser?.text ?? fallbackTopicText,
-        assistantMessage.text,
-        ...steps.map((step) => step.title),
-      ]),
-      topicKey:
-        fallbackTopicKey ??
-        inferMissionTopicKey([latestUser?.text ?? fallbackTopicText]) ??
-        `mission:${assistantMessage.timestamp}`,
+      title,
+      topicKey: stableTopicKey,
       startedAt: latestUser?.timestamp ?? options?.preferredTopicTimestamp ?? assistantMessage.timestamp,
-      userText: latestUser?.text ?? fallbackTopicText ?? assistantMessage.text,
+      userText: latestUser?.text ?? fallbackTopicText ?? title,
       assistantText: assistantMessage.text,
       steps,
     };
@@ -740,6 +786,15 @@ function deriveStrategicRequirementTitle(texts: Array<string | null | undefined>
   const hasConsistency = /一致性|约束驱动|规则层|校验器|validator|rules\.yaml/i.test(corpus);
   const hasReader = /阅读系统|阅读预览|审阅|审稿|内部阅读|阅读页/i.test(corpus);
   const hasExecution = /开工任务单|执行方案|立项|MVP|里程碑|验收/i.test(corpus);
+  const hasExplicitTeamBootstrap = /从头开始搭建\s*AI\s*小说创作团队|从头开始搭建小说创作团队|从头开始.*创作团队/i.test(corpus);
+  const hasTeamBootstrapSignals =
+    /创作团队|组织架构|招聘JD|兼任方案|世界观架构师|伏笔管理员|去AI味专员|招聘|岗位|搭建.*团队|团队搭建|班底|质量提升专项|质量提升/i.test(
+      corpus,
+    ) && /小说|网文|创作/i.test(corpus);
+
+  if (hasExplicitTeamBootstrap || hasTeamBootstrapSignals) {
+    return "从头开始搭建 AI 小说创作团队";
+  }
 
   if (hasConsistency && hasReader) {
     return hasExecution ? "一致性底座与内部审阅系统执行方案" : "一致性底座与内部审阅系统";

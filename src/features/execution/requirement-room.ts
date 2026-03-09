@@ -5,7 +5,15 @@ import type {
   RequirementRoomRecord,
 } from "../company/types";
 import type { ChatMessage } from "../backend";
+import type { RequirementSessionSnapshot } from "./requirement-overview";
 import { buildRoomRecordIdFromWorkItem } from "./work-item";
+import { appendCompanyScopeToChatRoute } from "../../lib/chat-routes";
+import {
+  isInternalAssistantMonologueText,
+  isSyntheticWorkflowPromptText,
+  isTruthMirrorNoiseText,
+  normalizeTruthText,
+} from "./message-truth";
 
 export type RequirementRoomSession = {
   agentId: string;
@@ -51,6 +59,17 @@ function normalizeChatBlockType(type?: string): string {
   return type
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
+}
+
+function normalizeSnapshotChatRole(role: string): ChatMessage["role"] {
+  switch (role) {
+    case "assistant":
+    case "system":
+    case "toolResult":
+      return role;
+    default:
+      return "user";
+  }
 }
 
 function getChatBlocks(content: unknown): Array<Record<string, unknown>> {
@@ -121,6 +140,41 @@ function normalizeRequirementRoomText(text: string): string {
     .trim();
 }
 
+export function isVisibleRequirementRoomMessage(
+  message: RequirementRoomMessage | null | undefined,
+): message is RequirementRoomMessage {
+  if (!message) {
+    return false;
+  }
+  if ((message.visibility ?? "public") !== "public") {
+    return false;
+  }
+  if (message.source === "system") {
+    return false;
+  }
+
+  const normalizedText = normalizeTruthText(message.text ?? "");
+  const hasRenderableImage =
+    Array.isArray(message.content) &&
+    getChatBlocks(message.content).some(
+      (block) => normalizeChatBlockType(String(block.type ?? "")) === "image",
+    );
+
+  if (!normalizedText) {
+    return hasRenderableImage;
+  }
+
+  if (
+    isTruthMirrorNoiseText(normalizedText) ||
+    isSyntheticWorkflowPromptText(normalizedText) ||
+    isInternalAssistantMonologueText(message.text ?? "")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function dedupeAgentIds(agentIds: Array<string | null | undefined>): string[] {
   return [...new Set(agentIds.map((agentId) => agentId?.trim()).filter((agentId): agentId is string => Boolean(agentId)))];
 }
@@ -142,6 +196,43 @@ function normalizeRoomTitle(value: string | null | undefined): string {
 
 function buildRoomMemberSignature(memberIds: string[]): string {
   return sortRequirementRoomMemberIds(memberIds).join(",");
+}
+
+function buildRequirementRoomState(input: {
+  title: string;
+  ownerAgentId?: string | null;
+  transcript: RequirementRoomMessage[];
+}): Pick<RequirementRoomRecord, "headline" | "status" | "progress" | "lastConclusionAt"> {
+  const visibleTranscript = input.transcript.filter((message) => isVisibleRequirementRoomMessage(message));
+  const assistantReplies = visibleTranscript.filter((message) => message.role === "assistant");
+  const userMessages = visibleTranscript.filter((message) => message.role === "user");
+  const latestConclusionAt =
+    assistantReplies.reduce((latest, message) => Math.max(latest, message.timestamp), 0) || null;
+
+  if (visibleTranscript.length === 0) {
+    return {
+      headline: input.title.trim() || "需求团队",
+      status: "active",
+      progress: "0 条可见消息",
+      lastConclusionAt: null,
+    };
+  }
+
+  if (assistantReplies.length > 0) {
+    return {
+      headline: input.title.trim() || "需求团队",
+      status: "active",
+      progress: `${assistantReplies.length} 条结论回传`,
+      lastConclusionAt: latestConclusionAt,
+    };
+  }
+
+  return {
+    headline: input.title.trim() || "需求团队",
+    status: "active",
+    progress: `${userMessages.length} 条房间消息`,
+    lastConclusionAt: null,
+  };
 }
 
 function buildStableGroupSuffix(topic: string, memberIds: string[]): string {
@@ -264,24 +355,17 @@ export function buildRequirementRoomRoute(input: {
     params.set("wi", input.workItemId.trim());
   }
 
-  return `/chat/${encodeURIComponent(`room:${roomId}`)}?${params.toString()}`;
+  return appendCompanyScopeToChatRoute(
+    `/chat/${encodeURIComponent(`room:${roomId}`)}?${params.toString()}`,
+    input.company.id,
+  );
 }
 
 export function buildRequirementRoomHrefFromRecord(room: RequirementRoomRecord): string {
-  const params = new URLSearchParams();
-  const memberIds = dedupeAgentIds(room.memberIds);
-  if (memberIds.length > 0) {
-    params.set("m", memberIds.join(","));
-  }
-  params.set("title", room.title.trim() || "需求团队");
-  const topicKey = normalizeRoomTopicKey(room.topicKey);
-  if (topicKey) {
-    params.set("tk", topicKey);
-  }
-  if (room.workItemId?.trim()) {
-    params.set("wi", room.workItemId.trim());
-  }
-  return `/chat/${encodeURIComponent(`room:${room.id}`)}?${params.toString()}`;
+  return appendCompanyScopeToChatRoute(
+    `/chat/${encodeURIComponent(`room:${room.id}`)}`,
+    room.companyId,
+  );
 }
 
 export function buildRequirementRoomSessions(input: {
@@ -458,10 +542,16 @@ export function annotateRequirementRoomMessage(input: {
   }
 
   if (normalized.role === "user") {
-    // 成员 session 里的 user 消息通常只是房间派发指令的落地回声，不是成员自己的结论。
-    // 房间真相源应该保留 owner 发出的房间消息，以及成员 assistant 的回传结果。
     if (input.ownerAgentId && input.agentId !== input.ownerAgentId) {
-      return null;
+      // 默认仍然过滤成员侧的派单镜像，但保留真正的人类可读成员文本发言。
+      if (
+        !normalizedText ||
+        isSyntheticWorkflowPromptText(normalizedText) ||
+        isTruthMirrorNoiseText(normalizedText) ||
+        isInternalAssistantMonologueText(normalizedText)
+      ) {
+        return null;
+      }
     }
     roomMessage.roomAudienceAgentIds = [input.agentId];
   }
@@ -511,7 +601,7 @@ function toRequirementRoomMessage(input: {
     id: buildRoomMessageId({
       role: annotated.role === "assistant" ? "assistant" : "user",
       sessionKey: input.sessionKey,
-      agentId: annotated.role === "assistant" ? input.agentId : null,
+      agentId: annotated.role === "assistant" || input.agentId !== input.ownerAgentId ? input.agentId : null,
       timestamp,
       text,
       audienceAgentIds,
@@ -522,10 +612,24 @@ function toRequirementRoomMessage(input: {
     content: getRenderableMessageContent(annotated),
     timestamp,
     visibility: "public",
-    source: annotated.role === "assistant" ? "member_reply" : "user",
-    senderAgentId: annotated.role === "assistant" ? input.agentId : undefined,
-    senderLabel: annotated.role === "assistant" ? senderEmployee?.nickname : undefined,
-    senderRole: annotated.role === "assistant" ? senderEmployee?.role : undefined,
+    source:
+      annotated.role === "assistant"
+        ? "member_reply"
+        : input.ownerAgentId && input.agentId !== input.ownerAgentId
+          ? "member_message"
+          : "user",
+    senderAgentId:
+      annotated.role === "assistant" || (input.ownerAgentId && input.agentId !== input.ownerAgentId)
+        ? input.agentId
+        : undefined,
+    senderLabel:
+      annotated.role === "assistant" || (input.ownerAgentId && input.agentId !== input.ownerAgentId)
+        ? senderEmployee?.nickname
+        : undefined,
+    senderRole:
+      annotated.role === "assistant" || (input.ownerAgentId && input.agentId !== input.ownerAgentId)
+        ? senderEmployee?.role
+        : undefined,
     targetActorIds: audienceAgentIds,
     audienceAgentIds,
     sourceSessionKey: input.sessionKey,
@@ -542,7 +646,9 @@ function mergeRoomAudience(messages: RequirementRoomMessage[]): string[] {
 export function mergeRequirementRoomTranscript(
   messages: RequirementRoomMessage[],
 ): RequirementRoomMessage[] {
-  const sorted = [...messages].sort((left, right) => left.timestamp - right.timestamp);
+  const sorted = [...messages]
+    .filter((message) => isVisibleRequirementRoomMessage(message))
+    .sort((left, right) => left.timestamp - right.timestamp);
   const result: RequirementRoomMessage[] = [];
 
   for (const message of sorted) {
@@ -597,19 +703,29 @@ export function buildRequirementRoomRecord(input: {
   const workItemId = input.workItemId?.trim() || undefined;
   const roomId = workItemId ? buildRoomRecordIdFromWorkItem(workItemId) : input.sessionKey;
   const memberIds = sortRequirementRoomMemberIds(input.memberIds);
+  const transcript = mergeRequirementRoomTranscript(input.transcript ?? []);
+  const state = buildRequirementRoomState({
+    title: input.title,
+    ownerAgentId: input.ownerAgentId,
+    transcript,
+  });
   return {
     id: roomId,
     companyId: input.companyId,
     workItemId,
     sessionKey: input.sessionKey,
     title: input.title.trim() || "需求团队",
+    headline: state.headline,
     topicKey: normalizeRoomTopicKey(input.topicKey) ?? undefined,
     ownerActorId: input.ownerAgentId ?? null,
+    batonActorId: null,
     memberActorIds: memberIds,
-    status: "active",
+    status: state.status,
+    progress: state.progress,
+    lastConclusionAt: state.lastConclusionAt,
     memberIds,
     ownerAgentId: input.ownerAgentId ?? null,
-    transcript: mergeRequirementRoomTranscript(input.transcript ?? []),
+    transcript,
     createdAt: input.createdAt ?? now,
     updatedAt: now,
     lastSourceSyncAt: input.lastSourceSyncAt,
@@ -664,6 +780,71 @@ export function buildRequirementRoomRecordFromSessions(input: {
     updatedAt: effectiveUpdatedAt,
     lastSourceSyncAt: latestTimestamp || undefined,
     providerId: input.providerId,
+  });
+}
+
+export function buildRequirementRoomRecordFromSnapshots(input: {
+  company: Company | null | undefined;
+  companyId?: string;
+  workItemId?: string | null;
+  sessionKey: string;
+  title: string;
+  memberIds: string[];
+  ownerAgentId?: string | null;
+  topicKey?: string | null;
+  startedAt?: number | null;
+  seedTranscript?: RequirementRoomMessage[];
+  snapshots: RequirementSessionSnapshot[];
+}): RequirementRoomRecord {
+  const transcript = mergeRequirementRoomTranscript([
+    ...(input.seedTranscript ?? []),
+    ...input.snapshots.flatMap((snapshot) =>
+      snapshot.messages
+        .filter((message) => {
+          if (typeof input.startedAt === "number" && input.startedAt > 0) {
+            return message.timestamp >= input.startedAt - 60_000;
+          }
+          return true;
+        })
+        .map((message) =>
+          toRequirementRoomMessage({
+            message: {
+              role: normalizeSnapshotChatRole(message.role),
+              text: message.text,
+              content: [{ type: "text", text: message.text }],
+              timestamp: message.timestamp,
+            } satisfies ChatMessage,
+            sessionKey: snapshot.sessionKey,
+            agentId: snapshot.agentId,
+            roomId: input.workItemId?.trim()
+              ? buildRoomRecordIdFromWorkItem(input.workItemId.trim())
+              : input.sessionKey,
+            company: input.company,
+            ownerAgentId: input.ownerAgentId,
+          }),
+        )
+        .filter((message): message is RequirementRoomMessage => Boolean(message)),
+    ),
+  ]);
+
+  const latestTimestamp = Math.max(
+    ...input.snapshots.map((snapshot) => snapshot.updatedAt),
+    ...transcript.map((message) => message.timestamp),
+    0,
+  );
+  const effectiveUpdatedAt = latestTimestamp || Date.now();
+
+  return buildRequirementRoomRecord({
+    companyId: input.companyId ?? input.company?.id,
+    workItemId: input.workItemId,
+    sessionKey: input.sessionKey,
+    title: input.title,
+    memberIds: input.memberIds,
+    ownerAgentId: input.ownerAgentId,
+    topicKey: input.topicKey,
+    transcript,
+    updatedAt: effectiveUpdatedAt,
+    lastSourceSyncAt: latestTimestamp || undefined,
   });
 }
 
@@ -732,6 +913,79 @@ export function mergeRequirementRoomRecordFromSessions(input: {
   });
 }
 
+export function mergeRequirementRoomRecordFromSnapshots(input: {
+  company: Company | null | undefined;
+  room: RequirementRoomRecord | null | undefined;
+  companyId?: string;
+  workItemId?: string | null;
+  sessionKey: string;
+  title: string;
+  memberIds: string[];
+  ownerAgentId?: string | null;
+  topicKey?: string | null;
+  startedAt?: number | null;
+  snapshots: RequirementSessionSnapshot[];
+}): RequirementRoomRecord {
+  const existingRoom = input.room ?? null;
+  const syncFloor = Math.max(0, (existingRoom?.lastSourceSyncAt ?? 0) - 5_000);
+  const incomingMessages = input.snapshots.flatMap((snapshot) =>
+    snapshot.messages
+      .filter((message) => {
+        if (typeof input.startedAt === "number" && input.startedAt > 0 && message.timestamp < input.startedAt - 60_000) {
+          return false;
+        }
+        return message.timestamp <= 0 || message.timestamp >= syncFloor;
+      })
+      .map((message) =>
+        toRequirementRoomMessage({
+          message: {
+            role: normalizeSnapshotChatRole(message.role),
+            text: message.text,
+            content: [{ type: "text", text: message.text }],
+            timestamp: message.timestamp,
+          } satisfies ChatMessage,
+          sessionKey: snapshot.sessionKey,
+          agentId: snapshot.agentId,
+          roomId:
+            existingRoom?.workItemId ?? input.workItemId
+              ? buildRoomRecordIdFromWorkItem((existingRoom?.workItemId ?? input.workItemId)!.trim())
+              : input.sessionKey,
+          company: input.company,
+          ownerAgentId: existingRoom?.ownerAgentId ?? input.ownerAgentId,
+        }),
+      )
+      .filter((message): message is RequirementRoomMessage => Boolean(message)),
+  );
+  const transcript = mergeRequirementRoomTranscript([
+    ...(existingRoom?.transcript ?? []),
+    ...incomingMessages,
+  ]);
+  const latestSourceTimestamp = Math.max(
+    existingRoom?.lastSourceSyncAt ?? 0,
+    ...input.snapshots.map((snapshot) => snapshot.updatedAt),
+    ...incomingMessages.map((message) => message.timestamp),
+  );
+  const updatedAt = Math.max(
+    existingRoom?.updatedAt ?? Date.now(),
+    ...transcript.map((message) => message.timestamp),
+    latestSourceTimestamp,
+  );
+
+  return buildRequirementRoomRecord({
+    companyId: input.companyId ?? input.company?.id ?? existingRoom?.companyId,
+    workItemId: existingRoom?.workItemId ?? input.workItemId,
+    sessionKey: input.sessionKey,
+    title: existingRoom?.title ?? input.title,
+    memberIds: dedupeAgentIds([...(existingRoom?.memberIds ?? []), ...input.memberIds]),
+    ownerAgentId: existingRoom?.ownerAgentId ?? input.ownerAgentId,
+    topicKey: existingRoom?.topicKey ?? input.topicKey,
+    transcript,
+    createdAt: existingRoom?.createdAt,
+    updatedAt,
+    lastSourceSyncAt: latestSourceTimestamp || existingRoom?.lastSourceSyncAt,
+  });
+}
+
 export function buildRoomConversationBindingsFromSessions(input: {
   roomId: string;
   providerId?: string | null;
@@ -793,7 +1047,7 @@ export function createOutgoingRequirementRoomMessage(input: {
     content: [{ type: "text", text: input.text }],
     timestamp,
     visibility: "public",
-    source: "user",
+    source: "owner_dispatch",
     targetActorIds: dedupeAgentIds(input.audienceAgentIds),
     audienceAgentIds: dedupeAgentIds(input.audienceAgentIds),
     sourceSessionKey: input.sessionKey,
@@ -821,15 +1075,17 @@ export function convertRequirementRoomRecordToChatMessages(
     return [];
   }
 
-  return room.transcript.map((message) => ({
-    role: message.role,
-    text: message.text,
-    content: message.content,
-    timestamp: message.timestamp,
-    roomAgentId: message.senderAgentId,
-    roomAudienceAgentIds: message.audienceAgentIds,
-    roomSessionKey: room.id,
-  }));
+  return room.transcript
+    .filter((message) => isVisibleRequirementRoomMessage(message))
+    .map((message) => ({
+      role: message.role,
+      text: message.text,
+      content: message.content,
+      timestamp: message.timestamp,
+      roomAgentId: message.senderAgentId,
+      roomAudienceAgentIds: message.audienceAgentIds,
+      roomSessionKey: room.id,
+    }));
 }
 
 function buildRoomMessageSignature(message: RequirementRoomMessage): string {
@@ -849,11 +1105,12 @@ function buildRoomMessageSignature(message: RequirementRoomMessage): string {
 }
 
 function buildRoomTranscriptSignature(transcript: RequirementRoomMessage[]): string {
-  if (transcript.length === 0) {
+  const visibleTranscript = transcript.filter((message) => isVisibleRequirementRoomMessage(message));
+  if (visibleTranscript.length === 0) {
     return "0";
   }
-  const tail = transcript.slice(-24).map(buildRoomMessageSignature).join("||");
-  return `${transcript.length}:${tail}`;
+  const tail = visibleTranscript.slice(-24).map(buildRoomMessageSignature).join("||");
+  return `${visibleTranscript.length}:${tail}`;
 }
 
 export function buildRequirementRoomRecordSignature(
@@ -868,9 +1125,13 @@ export function buildRequirementRoomRecordSignature(
     room.companyId ?? "",
     room.workItemId ?? "",
     room.title,
+    room.headline ?? "",
     room.topicKey ?? "",
     room.ownerActorId ?? room.ownerAgentId ?? "",
+    room.batonActorId ?? "",
     room.status ?? "active",
+    room.progress ?? "",
+    room.lastConclusionAt ?? "",
     buildRoomMemberSignature(room.memberActorIds ?? room.memberIds),
     buildRoomTranscriptSignature(room.transcript),
   ].join("::");
