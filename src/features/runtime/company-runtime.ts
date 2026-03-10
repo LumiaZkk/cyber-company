@@ -6,6 +6,16 @@ type WorkspaceFilesByAgent = Record<
   { workspace: string; files: Array<Record<string, unknown>> }
 >;
 
+export type LiveChatSessionState = {
+  sessionKey: string;
+  agentId?: string | null;
+  runId?: string | null;
+  streamText?: string | null;
+  isGenerating: boolean;
+  startedAt: number;
+  updatedAt: number;
+};
+
 export type CompanyRuntimeSnapshot = {
   companyId: string;
   agents?: AgentListEntry[];
@@ -13,6 +23,7 @@ export type CompanyRuntimeSnapshot = {
   cronJobs?: CronJob[];
   usageCost?: number | null;
   companySessionSnapshots?: RequirementSessionSnapshot[];
+  liveChatSessions?: Record<string, LiveChatSessionState>;
   workspaceFilesByAgent?: WorkspaceFilesByAgent;
   ceoHistoryByActor?: Record<string, ChatMessage[]>;
   updatedAt: number;
@@ -52,6 +63,7 @@ export function writeCompanyRuntimeSnapshot(
     usageCost: patch.usageCost ?? current?.usageCost ?? null,
     companySessionSnapshots:
       patch.companySessionSnapshots ?? current?.companySessionSnapshots,
+    liveChatSessions: patch.liveChatSessions ?? current?.liveChatSessions,
     workspaceFilesByAgent:
       patch.workspaceFilesByAgent ?? current?.workspaceFilesByAgent,
     ceoHistoryByActor: patch.ceoHistoryByActor ?? current?.ceoHistoryByActor,
@@ -67,4 +79,55 @@ export function clearCompanyRuntimeSnapshot(companyId: string | null | undefined
     return;
   }
   companyRuntimeSnapshots.delete(key);
+}
+
+export function readLiveChatSession(
+  companyId: string | null | undefined,
+  sessionKey: string | null | undefined,
+): LiveChatSessionState | null {
+  const normalizedSessionKey = sessionKey?.trim();
+  if (!normalizedSessionKey) {
+    return null;
+  }
+  return readCompanyRuntimeSnapshot(companyId)?.liveChatSessions?.[normalizedSessionKey] ?? null;
+}
+
+export function upsertLiveChatSession(
+  companyId: string | null | undefined,
+  sessionKey: string | null | undefined,
+  state: LiveChatSessionState,
+): CompanyRuntimeSnapshot | null {
+  const normalizedSessionKey = sessionKey?.trim();
+  if (!normalizedSessionKey) {
+    return null;
+  }
+  const currentSessions = readCompanyRuntimeSnapshot(companyId)?.liveChatSessions ?? {};
+  return writeCompanyRuntimeSnapshot(companyId, {
+    liveChatSessions: {
+      ...currentSessions,
+      [normalizedSessionKey]: {
+        ...state,
+        sessionKey: normalizedSessionKey,
+      },
+    },
+  });
+}
+
+export function clearLiveChatSession(
+  companyId: string | null | undefined,
+  sessionKey: string | null | undefined,
+): CompanyRuntimeSnapshot | null {
+  const normalizedSessionKey = sessionKey?.trim();
+  if (!normalizedSessionKey) {
+    return null;
+  }
+  const currentSessions = readCompanyRuntimeSnapshot(companyId)?.liveChatSessions;
+  if (!currentSessions || !(normalizedSessionKey in currentSessions)) {
+    return readCompanyRuntimeSnapshot(companyId);
+  }
+  const nextSessions = { ...currentSessions };
+  delete nextSessions[normalizedSessionKey];
+  return writeCompanyRuntimeSnapshot(companyId, {
+    liveChatSessions: nextSessions,
+  });
 }

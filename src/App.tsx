@@ -15,13 +15,20 @@ import { ApprovalModalHost } from "./components/system/approval-modal-host";
 import { GatewayNotificationHost } from "./components/system/gateway-notification-host";
 import { GatewayStatusBanner } from "./components/system/gateway-status-banner";
 import { ToastHost } from "./components/ui/toast-host";
+import { gateway, type ChatMessage } from "./features/backend";
 import { peekCachedCompanyConfig } from "./features/company/persistence";
 import { useCompanyStore } from "./features/company/store";
 import type { Company } from "./features/company/types";
+import {
+  clearLiveChatSession,
+  readLiveChatSession,
+  upsertLiveChatSession,
+} from "./features/runtime/company-runtime";
 import { getCompanyWorkspaceApps } from "./features/company/workspace-apps";
 import { useGatewayStore } from "./features/gateway/store";
 import { OrgAutopilot } from "./features/org/org-autopilot";
 import { toast } from "./features/ui/toast-store";
+import { resolveSessionActorId } from "./lib/sessions";
 import { AutomationPage } from "./pages/AutomationPage";
 import { BoardPage } from "./pages/BoardPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -79,6 +86,56 @@ function ThemeSwitcher() {
   );
 }
 
+type RuntimeChatEventPayload = {
+  runId?: string;
+  sessionKey?: string;
+  state?: "delta" | "final" | "aborted" | "error";
+  message?: ChatMessage;
+};
+
+function extractChatEventText(message: ChatMessage | undefined): string | null {
+  if (!message) {
+    return null;
+  }
+  if (typeof message.text === "string" && message.text.trim().length > 0) {
+    return message.text.trim();
+  }
+  if (typeof message.content === "string" && message.content.trim().length > 0) {
+    return message.content.trim();
+  }
+  if (!Array.isArray(message.content)) {
+    return null;
+  }
+  const text = message.content
+    .map((block) => {
+      if (typeof block === "string") {
+        return block;
+      }
+      if (!block || typeof block !== "object") {
+        return "";
+      }
+      const record = block as Record<string, unknown>;
+      return record.type === "text" && typeof record.text === "string" ? record.text : "";
+    })
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : null;
+}
+
+function parseRuntimeChatEventPayload(payload: unknown): RuntimeChatEventPayload | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidate = payload as RuntimeChatEventPayload;
+  if (typeof candidate.sessionKey !== "string" || typeof candidate.state !== "string") {
+    return null;
+  }
+  if (!["delta", "final", "aborted", "error"].includes(candidate.state)) {
+    return null;
+  }
+  return candidate;
+}
+
 export default function App() {
   const location = useLocation();
   const {
@@ -124,6 +181,55 @@ export default function App() {
       lastStableCompanyRef.current = activeCompany;
     }
   }, [activeCompany]);
+
+  useEffect(() => {
+    if (!activeCompany || !connected) {
+      return;
+    }
+
+    const companyAgentIds = new Set(activeCompany.employees.map((employee) => employee.agentId));
+    const unsubscribe = gateway.subscribe("chat", (rawPayload) => {
+      const payload = parseRuntimeChatEventPayload(rawPayload);
+      const sessionKey = payload?.sessionKey?.trim();
+      if (!payload || !sessionKey) {
+        return;
+      }
+
+      const actorId = resolveSessionActorId(sessionKey);
+      if (!actorId || !companyAgentIds.has(actorId)) {
+        return;
+      }
+
+      if (payload.state === "delta") {
+        const deltaText = extractChatEventText(payload.message);
+        if (!deltaText) {
+          return;
+        }
+
+        const existing = readLiveChatSession(activeCompany.id, sessionKey);
+        if (existing?.streamText && existing.streamText.length > deltaText.length) {
+          return;
+        }
+
+        upsertLiveChatSession(activeCompany.id, sessionKey, {
+          sessionKey,
+          agentId: actorId,
+          runId: payload.runId ?? existing?.runId ?? null,
+          streamText: deltaText,
+          isGenerating: true,
+          startedAt: existing?.startedAt ?? Date.now(),
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+
+      if (payload.state === "final" || payload.state === "aborted" || payload.state === "error") {
+        clearLiveChatSession(activeCompany.id, sessionKey);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [activeCompany, connected]);
 
   useEffect(() => {
     // Avoid racing cached-config fallback against the initial auto-reconnect boot.

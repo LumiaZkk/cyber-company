@@ -347,6 +347,12 @@ async function cleanupRemoteCompanyAgentResources(
       }
     }),
   );
+  try {
+    await gateway.removeAgentConfigEntries(agentIds);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    failures.push(`provider-config: ${message}`);
+  }
   if (failures.length > 0) {
     throw new Error(`Failed to delete company agents: ${failures.join("; ")}`);
   }

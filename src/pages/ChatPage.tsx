@@ -104,7 +104,10 @@ import {
 } from "../features/execution/message-truth";
 import { buildHistoryRoundItems, getHistoryRoundBadgeLabel } from "../features/company/round-history";
 import {
+  clearLiveChatSession,
+  readLiveChatSession,
   readCompanyRuntimeSnapshot,
+  upsertLiveChatSession,
   writeCompanyRuntimeSnapshot,
 } from "../features/runtime/company-runtime";
 import { resolveExecutionState } from "../features/execution/state";
@@ -2392,6 +2395,7 @@ export function ChatPage() {
   const [streamText, setStreamText] = useState<string | null>(null);
   const streamTextRef = useRef<string | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
+  const pendingGenerationStartedAtRef = useRef<number | null>(null);
   const companySessionSnapshotsRef = useRef<RequirementSessionSnapshot[]>([]);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -2412,10 +2416,37 @@ export function ChatPage() {
 
   const endRef = useRef<HTMLDivElement>(null);
 
-  const updateStreamText = (value: string | null) => {
+  const updateStreamText = useCallback((value: string | null) => {
     streamTextRef.current = value;
     setStreamText(value);
-  };
+  }, []);
+
+  const clearGeneratingState = useCallback((options?: { preserveRuntime?: boolean }) => {
+    activeRunIdRef.current = null;
+    pendingGenerationStartedAtRef.current = null;
+    if (activeCompany?.id && sessionKey && !options?.preserveRuntime) {
+      clearLiveChatSession(activeCompany.id, sessionKey);
+    }
+    updateStreamText(null);
+    setIsGenerating(false);
+  }, [activeCompany?.id, sessionKey, updateStreamText]);
+
+  const restoreGeneratingState = useCallback(
+    (
+      liveSession: {
+        runId?: string | null;
+        startedAt: number;
+        streamText?: string | null;
+        isGenerating: boolean;
+      } | null,
+    ) => {
+      activeRunIdRef.current = liveSession?.runId ?? null;
+      pendingGenerationStartedAtRef.current = liveSession?.startedAt ?? null;
+      updateStreamText(liveSession?.streamText ?? null);
+      setIsGenerating(Boolean(liveSession?.isGenerating));
+    },
+    [updateStreamText],
+  );
 
   const isNearBottom = useCallback((element: HTMLElement | null): boolean => {
     if (!element) {
@@ -2888,6 +2919,26 @@ export function ChatPage() {
     [messages],
   );
   const previewTimestamp = latestMessageTimestamp || 1;
+
+  useEffect(() => {
+    if (!isGenerating) {
+      return;
+    }
+
+    const pendingSince = pendingGenerationStartedAtRef.current;
+    if (!pendingSince) {
+      return;
+    }
+
+    const hasCompletedReply = messages.some((message) => {
+      const timestamp = typeof message.timestamp === "number" ? message.timestamp : 0;
+      return timestamp >= pendingSince && (message.role === "assistant" || message.role === "system");
+    });
+
+    if (hasCompletedReply) {
+      clearGeneratingState();
+    }
+  }, [clearGeneratingState, isGenerating, messages]);
 
   const sessionExecution = useMemo(
     () =>
@@ -6529,16 +6580,14 @@ export function ChatPage() {
                 );
                 return areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages;
               });
-              setIsGenerating(false);
-              updateStreamText(null);
+              clearGeneratingState({ preserveRuntime: true });
             } else if (historyAgentId) {
               const archive = await gateway.getSessionArchive(historyAgentId, archiveId, 200);
               setMessages((previous) => {
                 const nextMessages = sanitizeVisibleChatFlow(archive.messages || []);
                 return areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages;
               });
-              setIsGenerating(false);
-              updateStreamText(null);
+              clearGeneratingState({ preserveRuntime: true });
             }
           } else if (isGroup) {
             const existingRoom = effectiveRequirementRoom ?? null;
@@ -6655,6 +6704,9 @@ export function ChatPage() {
               return areRequirementRoomChatMessagesEqual(previous, nextMessages) ? previous : nextMessages;
             });
           }
+          if (!isArchiveView && !isGroup) {
+            restoreGeneratingState(readLiveChatSession(activeCompany?.id, actualKey));
+          }
         }
       } catch (err) {
         console.error("Failed to init chat:", err);
@@ -6668,6 +6720,7 @@ export function ChatPage() {
     agentId,
     archiveId,
     activeArchivedRound,
+    clearGeneratingState,
     companyRouteReady,
     connected,
     routeCompanyConflictMessage,
@@ -6683,6 +6736,7 @@ export function ChatPage() {
     requirementRoomTargetAgentIds,
     targetAgentId,
     effectiveGroupSessionKey,
+    restoreGeneratingState,
     upsertRoomRecord,
     upsertRoomConversationBindings,
   ]);
@@ -6793,9 +6847,7 @@ export function ChatPage() {
               },
             );
           }
-          activeRunIdRef.current = null;
-          updateStreamText(null);
-          setIsGenerating(false);
+          clearGeneratingState();
           return;
         }
         setMessages((prev: ChatMessage[]) => {
@@ -6821,9 +6873,7 @@ export function ChatPage() {
 
           return prev;
         });
-        activeRunIdRef.current = null;
-        updateStreamText(null);
-        setIsGenerating(false);
+        clearGeneratingState();
 
         // === System-level Task Tracker sync ===
         const finalText = incoming ? extractTextFromMessage(incoming) : streamTextRef.current;
@@ -6869,9 +6919,7 @@ export function ChatPage() {
 
       if (payload.state === "aborted") {
         if (isGroup) {
-          activeRunIdRef.current = null;
-          updateStreamText(null);
-          setIsGenerating(false);
+          clearGeneratingState();
           return;
         }
         if (payload.runId && activeRunIdRef.current && payload.runId !== activeRunIdRef.current) {
@@ -6891,17 +6939,13 @@ export function ChatPage() {
           }
           return prev;
         });
-        activeRunIdRef.current = null;
-        updateStreamText(null);
-        setIsGenerating(false);
+        clearGeneratingState();
         return;
       }
 
       if (payload.state === "error") {
         if (isGroup) {
-          activeRunIdRef.current = null;
-          updateStreamText(null);
-          setIsGenerating(false);
+          clearGeneratingState();
           toast.error("团队房间消息失败", payload.errorMessage ?? "请重试或改为直接联系成员。");
           return;
         }
@@ -6915,9 +6959,7 @@ export function ChatPage() {
             timestamp: Date.now(),
           },
         ].slice(-CHAT_UI_MESSAGE_LIMIT));
-        activeRunIdRef.current = null;
-        updateStreamText(null);
-        setIsGenerating(false);
+        clearGeneratingState();
       }
     });
 
@@ -6942,6 +6984,8 @@ export function ChatPage() {
     requirementRoomSessionKeys,
     requirementRoomTargetAgentIds,
     sessionKey,
+    clearGeneratingState,
+    updateStreamText,
     upsertRoomConversationBindings,
     upsertDispatchRecord,
   ]);
@@ -6987,10 +7031,12 @@ export function ChatPage() {
     }
 
     const currentAttachments = [...attachments];
+    const generationStartedAt = Date.now();
     setAttachments([]);
     setSending(true);
     setIsGenerating(true);
     markScrollIntent("follow");
+    pendingGenerationStartedAtRef.current = generationStartedAt;
     activeRunIdRef.current = null;
     updateStreamText(null);
 
@@ -7001,6 +7047,43 @@ export function ChatPage() {
           content: att.dataUrl.split(",")[1] || "", // Remove 'data:image/jpeg;base64,' prefix
         }))
       : undefined;
+
+    const contentBlocks: Array<{ type: string; text?: string; source?: unknown }> = [];
+    if (text) {
+      contentBlocks.push({ type: "text", text });
+    }
+    if (hasAttachments) {
+      currentAttachments.forEach((att) => {
+        contentBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: att.mimeType, data: att.dataUrl },
+        });
+      });
+    }
+
+    if (!isGroup) {
+      setMessages((prev: ChatMessage[]) =>
+        [
+          ...prev,
+          {
+            role: "user" as const,
+            content: contentBlocks,
+            timestamp: generationStartedAt,
+          },
+        ].slice(-20) as ChatMessage[],
+      );
+      if (activeCompany?.id) {
+        upsertLiveChatSession(activeCompany.id, sessionKey, {
+          sessionKey,
+          agentId: targetAgentId,
+          runId: null,
+          streamText: null,
+          isGenerating: true,
+          startedAt: generationStartedAt,
+          updatedAt: generationStartedAt,
+        });
+      }
+    }
 
     try {
       let roomAudienceAgentIds: string[] | undefined;
@@ -7027,7 +7110,7 @@ export function ChatPage() {
 
         if (targetAgentIds.length === 0) {
           toast.warning("没有匹配到团队成员", "请用 @agentId、@昵称 或 @角色 指向团队成员。");
-          setIsGenerating(false);
+          clearGeneratingState();
           return false;
         }
 
@@ -7153,42 +7236,23 @@ export function ChatPage() {
           attachments: apiAttachments,
         });
         activeRunIdRef.current = ack?.runId || null;
-      }
-
-      // Build optimistic content display block
-      const contentBlocks: Array<{ type: string; text?: string; source?: unknown }> = [];
-      if (text) {
-        contentBlocks.push({ type: "text", text });
-      }
-      if (hasAttachments) {
-        currentAttachments.forEach((att) => {
-          contentBlocks.push({
-            type: "image",
-            source: { type: "base64", media_type: att.mimeType, data: att.dataUrl },
+        if (activeCompany?.id) {
+          upsertLiveChatSession(activeCompany.id, sessionKey, {
+            sessionKey,
+            agentId: targetAgentId,
+            runId: ack?.runId ?? null,
+            streamText: streamTextRef.current ?? null,
+            isGenerating: true,
+            startedAt: generationStartedAt,
+            updatedAt: Date.now(),
           });
-        });
-      }
-
-      // Optimistic append
-      if (!isGroup) {
-        setMessages((prev: ChatMessage[]) => {
-          const newArr: ChatMessage[] = [
-            ...prev,
-            {
-              role: "user" as const,
-              content: contentBlocks,
-              timestamp: Date.now(),
-              ...(roomAudienceAgentIds ? { roomAudienceAgentIds } : {}),
-            },
-          ];
-          return newArr.slice(-20) as ChatMessage[];
-        });
+        }
       }
     } catch (err: unknown) {
       console.error("Failed to send message", err);
       const errMsg = err instanceof Error ? err.message : "无法即时联络目标成员";
       toast.error("指令发送失败", errMsg);
-      setIsGenerating(false);
+      clearGeneratingState();
       return false;
     } finally {
       setSending(false);
@@ -7261,8 +7325,7 @@ export function ChatPage() {
       setActionWatches([]);
       setIsSummaryOpen(false);
       setIsTechnicalSummaryOpen(false);
-      setIsGenerating(false);
-      updateStreamText(null);
+      clearGeneratingState();
       setHistoryRefreshNonce((value) => value + 1);
       return true;
     } catch (err) {
@@ -7377,8 +7440,7 @@ export function ChatPage() {
             setActionWatches([]);
             setIsSummaryOpen(false);
             setIsTechnicalSummaryOpen(false);
-            setIsGenerating(false);
-            updateStreamText(null);
+            clearGeneratingState();
             setHistoryRefreshNonce((value) => value + 1);
             navigateToCurrentConversation();
             toast.success("归档已恢复为当前会话", "你可以继续在这条会话上接着聊。");
@@ -7400,6 +7462,7 @@ export function ChatPage() {
           setIsSummaryOpen(false);
           setIsTechnicalSummaryOpen(false);
           setIsGenerating(true);
+          pendingGenerationStartedAtRef.current = Date.now();
           updateStreamText(null);
           setHistoryRefreshNonce((value) => value + 1);
           navigateToCurrentConversation();
@@ -7414,8 +7477,7 @@ export function ChatPage() {
           setActionWatches([]);
           setIsSummaryOpen(false);
           setIsTechnicalSummaryOpen(false);
-          setIsGenerating(false);
-          updateStreamText(null);
+          clearGeneratingState();
           setHistoryRefreshNonce((value) => value + 1);
           navigateToCurrentConversation();
           toast.success("归档已恢复为当前会话", "你可以继续在这条会话上接着聊。");

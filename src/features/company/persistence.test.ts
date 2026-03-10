@@ -147,6 +147,9 @@ describe("company persistence", () => {
       removedSessions: 1,
       removedCronJobs: 1,
     }));
+    const removeAgentConfigEntries = vi.spyOn(gateway, "removeAgentConfigEntries").mockResolvedValue({
+      updated: 2,
+    });
 
     const result = await deleteCompanyCascade(createConfig(), "company-1");
 
@@ -166,6 +169,7 @@ describe("company persistence", () => {
     expect(readCompanyRuntimeSnapshot("company-1")).toBeNull();
     expect(deleteAgent).toHaveBeenCalledWith("old-ceo", { deleteFiles: true, purgeState: true });
     expect(deleteAgent).toHaveBeenCalledWith("old-hr", { deleteFiles: true, purgeState: true });
+    expect(removeAgentConfigEntries).toHaveBeenCalledWith(["old-ceo", "old-hr"]);
     expect(setAgentFile.mock.calls).toEqual(
       expect.arrayContaining([
         ["new-ceo", "company-config.json", expect.stringContaining('"company-2"')],
@@ -213,6 +217,9 @@ describe("company persistence", () => {
       ok: true,
       agentId,
     }));
+    const removeAgentConfigEntries = vi.spyOn(gateway, "removeAgentConfigEntries").mockResolvedValue({
+      updated: 2,
+    });
 
     const result = await deleteCompanyCascade(config, "company-1");
 
@@ -223,6 +230,7 @@ describe("company persistence", () => {
     expect(getConfigOwnerAgentId()).toBeNull();
     expect(deleteAgent).toHaveBeenCalledWith("solo-ceo", { deleteFiles: true, purgeState: true });
     expect(deleteAgent).toHaveBeenCalledWith("solo-hr", { deleteFiles: true, purgeState: true });
+    expect(removeAgentConfigEntries).toHaveBeenCalledWith(["solo-ceo", "solo-hr"]);
     expect(setAgentFile.mock.calls).toEqual(
       expect.arrayContaining([
         ["solo-ceo", "company-config.json", expect.stringContaining('"companies": []')],
