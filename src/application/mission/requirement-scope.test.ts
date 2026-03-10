@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Company, WorkItemRecord } from "../../domain";
-import type { RequirementExecutionOverview } from "../../application/mission/requirement-overview";
-import { buildRequirementScope } from "../../application/mission/requirement-scope";
-import { applyWorkItemDisplayFields } from "../../application/mission/work-item";
+import type { RequirementExecutionOverview } from "./requirement-overview";
+import { buildRequirementScope } from "./requirement-scope";
+import { applyWorkItemDisplayFields } from "./work-item";
 
 const company: Company = {
   id: "novel",

@@ -1,4 +1,6 @@
-# DDD Refactor Completed
+# Archived DDD Refactor Log
+
+> Archived on 2026-03-10. 这份文档描述的是 DDD 收口完成时的阶段性结果。当前代码结构请以 `docs/engineering-onboarding.md` 为准。
 
 本次重构已经完成，当前前端结构从“页面直接驱动业务 + mega store + feature 混层”收敛到了更明确的分层模型。
 

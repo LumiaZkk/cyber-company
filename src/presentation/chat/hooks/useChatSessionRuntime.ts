@@ -17,7 +17,7 @@ import type {
 } from "../../../domain/delegation/types";
 import type { RoundRecord, TrackedTask } from "../../../domain/mission/types";
 import type { Company } from "../../../domain/org/types";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 import {
   buildVisibleChatMessage,
   CHAT_UI_MESSAGE_LIMIT,

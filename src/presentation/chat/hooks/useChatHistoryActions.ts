@@ -4,7 +4,7 @@ import { buildProductRoundRestorePrompt } from "../../../application/mission/his
 import { gateway, type GatewaySessionArchiveRow, type GatewaySessionRow } from "../../../application/gateway";
 import { AgentOps } from "../../../application/org/employee-ops";
 import type { RoundRecord } from "../../../domain/mission/types";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 import { deriveWorkKeyFromWorkItemId } from "../../../application/mission/work-item";
 
 export function useChatHistoryActions(input: {

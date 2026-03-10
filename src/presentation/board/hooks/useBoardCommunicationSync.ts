@@ -5,7 +5,7 @@ import type { RequirementSessionSnapshot } from "../../../domain/mission/require
 import type { ArtifactRecord } from "../../../domain/artifact/types";
 import type { DispatchRecord } from "../../../domain/delegation/types";
 import type { Company } from "../../../domain/org/types";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 import { resolveSessionActorId } from "../../../lib/sessions";
 
 function extractChatSyncSessionKey(payload: unknown): string | null {

@@ -12,7 +12,7 @@ import {
 import type { DirectoryEmployeeRow } from "../../application/org/directory-query";
 import type { HireConfig } from "../../components/ui/immersive-hire-dialog";
 import type { Department } from "../../domain/org/types";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import {
   EmployeeDirectoryBody,
   EmployeeDirectoryDialogs,

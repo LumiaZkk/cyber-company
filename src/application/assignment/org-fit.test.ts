@@ -5,7 +5,7 @@ import {
   autoCalibrateOrganization,
   buildOrgAdvisorSnapshot,
   isOrgAutopilotEnabled,
-} from "../../application/assignment/org-fit";
+} from "./org-fit";
 
 function buildCompany(params: {
   employees: EmployeeRef[];

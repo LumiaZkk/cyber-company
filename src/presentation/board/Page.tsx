@@ -8,7 +8,7 @@ import {
 } from "../../application/mission/board-requirement-surface";
 import { buildBoardTaskSurface } from "../../application/mission/board-task-surface";
 import { gateway, useGatewayStore } from "../../application/gateway";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import { resolveConversationPresentation } from "../../lib/chat-routes";
 import {
   resolveSessionActorId,

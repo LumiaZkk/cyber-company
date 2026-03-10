@@ -20,7 +20,7 @@ import { useGatewayStore } from "./application/gateway";
 import { peekCachedCompanyConfig } from "./infrastructure/company/persistence/persistence";
 import { getCompanyWorkspaceApps } from "./application/company/workspace-apps";
 import { OrgAutopilotHost } from "./presentation/org/OrgAutopilotHost";
-import { toast } from "./features/ui/toast-store";
+import { toast } from "./components/system/toast-store";
 import { AutomationPage } from "./pages/AutomationPage";
 import { BoardPage } from "./pages/BoardPage";
 import { ChatPage } from "./pages/ChatPage";

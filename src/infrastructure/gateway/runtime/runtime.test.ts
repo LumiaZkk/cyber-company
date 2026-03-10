@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Company } from "../../domain";
-import { buildProviderManifest } from "../../infrastructure/gateway/runtime/bootstrap";
-import { resolveCompanyActorConversation, sendTurnToCompanyActor } from "../../infrastructure/gateway/runtime/runtime";
+import type { Company } from "../../../domain";
+import { buildProviderManifest } from "./bootstrap";
+import { resolveCompanyActorConversation, sendTurnToCompanyActor } from "./runtime";
 import {
   createBackendCapabilities,
   type ActorRef,
   type BackendCore,
   type ConversationKind,
   type ConversationRef,
-} from "../../infrastructure/gateway/runtime/types";
+} from "./types";
 
 function createCompany(): Company {
   return {

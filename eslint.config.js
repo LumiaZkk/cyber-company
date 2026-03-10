@@ -30,6 +30,7 @@ export default defineConfig([
         'error',
         {
           patterns: [
+            '**/features/**',
             '**/features/company/types',
             '**/features/company/legacy-types',
           ],

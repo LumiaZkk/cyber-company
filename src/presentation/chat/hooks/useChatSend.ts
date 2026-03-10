@@ -8,7 +8,7 @@ import type {
   RoomConversationBindingRecord,
 } from "../../../domain/delegation/types";
 import type { Company } from "../../../domain/org/types";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 import { limitChatMessages } from "../view-models/messages";
 
 export function useChatSend(input: {

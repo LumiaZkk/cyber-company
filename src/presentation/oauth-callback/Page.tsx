@@ -5,7 +5,7 @@ import { useGatewayStore } from "../../application/gateway";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/card";
 import { gateway } from "../../application/gateway";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 
 type CallbackPhase = "connecting" | "authorizing" | "success" | "error";
 

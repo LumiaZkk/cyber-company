@@ -3,7 +3,7 @@ import { autoCalibrateOrganization, isOrgAutopilotEnabled } from "../../applicat
 import { useGatewayStore } from "../../application/gateway";
 import { useOrgApp, useOrgQuery } from "../../application/org";
 import type { Company } from "../../domain/org/types";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 
 function buildOrgFingerprint(company: Company): string {
   return JSON.stringify({

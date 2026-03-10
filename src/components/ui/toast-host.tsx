@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useToastStore, type ToastTone } from "../../features/ui/toast-store";
+import { useToastStore, type ToastTone } from "../system/toast-store";
 
 const toneClassMap: Record<ToastTone, string> = {
   success: "border-emerald-300 bg-emerald-50 text-emerald-800",

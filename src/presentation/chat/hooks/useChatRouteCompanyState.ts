@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import type { Location, NavigateFunction } from "react-router-dom";
 import { useChatRouteContext } from "../route/useChatRouteContext";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 import {
   appendCompanyScopeToChatRoute,
   findCompaniesByAgentId,

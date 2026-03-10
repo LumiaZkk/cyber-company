@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildProviderManifest } from "../../infrastructure/gateway/runtime/bootstrap";
-import { createBackendCapabilities } from "../../infrastructure/gateway/runtime/types";
+import { buildProviderManifest } from "./bootstrap";
+import { createBackendCapabilities } from "./types";
 import {
   buildVirtualActorDispatchPrompt,
   buildVirtualActorProfiles,
   buildVirtualConversationRef,
   providerNeedsVirtualActors,
   toVirtualActorRef,
-} from "../../infrastructure/gateway/runtime/virtual-actor";
+} from "./virtual-actor";
 
 describe("virtual actor runtime helpers", () => {
   it("builds stable virtual actor profiles for company employees", () => {

@@ -6,9 +6,9 @@ import type {
   RequirementRoomRecord,
   WorkItemRecord,
 } from "../../domain";
-import type { RequirementExecutionOverview } from "../../application/mission/requirement-overview";
-import { applyWorkItemDisplayFields, buildRoomRecordIdFromWorkItem } from "../../application/mission/work-item";
-import { reconcileWorkItemRecord } from "../../application/mission/work-item-reconciler";
+import type { RequirementExecutionOverview } from "./requirement-overview";
+import { applyWorkItemDisplayFields, buildRoomRecordIdFromWorkItem } from "./work-item";
+import { reconcileWorkItemRecord } from "./work-item-reconciler";
 
 function createMission(overrides: Partial<ConversationMissionRecord> = {}): ConversationMissionRecord {
   return {

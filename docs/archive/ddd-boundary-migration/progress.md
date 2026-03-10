@@ -1,5 +1,7 @@
 # Progress Log
 
+> Archived on 2026-03-10. 这是 DDD 收口阶段的历史执行日志，不再作为当前仓库入口说明。当前结构请看 `docs/engineering-onboarding.md`。
+
 ## Session: 2026-03-09
 
 ### Phase 1: Gateway / Provider 收口

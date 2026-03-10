@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Company } from "../../domain";
-import type { ChatMessage } from "../../application/gateway";
+import type { ChatMessage } from "../gateway";
 import {
   areRequirementRoomChatMessagesEqual,
   areRequirementRoomRecordsEquivalent,
@@ -19,7 +19,7 @@ import {
   searchRequirementRoomMentionCandidates,
   sortRequirementRoomMemberIds,
   resolveRequirementRoomMentionTargets,
-} from "../../application/delegation/room-routing";
+} from "./room-routing";
 
 function createCompany(): Company {
   return {

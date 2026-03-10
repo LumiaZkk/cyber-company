@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Building2, Plus, Sparkles, ChevronRight, CheckCircle2 } from "lucide-react";
 import { useCompanyCreateApp } from "../../application/company/create-company";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 
 export function CompanyCreatePresentationPage() {
   const navigate = useNavigate();

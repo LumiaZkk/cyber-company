@@ -7,7 +7,7 @@ import {
   useWorkspaceViewModel,
   type WorkspaceWorkbenchTool,
 } from "../../application/workspace";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import { usePageVisibility } from "../../lib/use-page-visibility";
 import { Card, CardDescription, CardHeader, CardTitle } from "../../components/ui/card";
 import { WorkspacePageContent } from "./components/WorkspacePageContent";

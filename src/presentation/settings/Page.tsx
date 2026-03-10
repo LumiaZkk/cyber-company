@@ -3,7 +3,7 @@ import {
   useGatewaySettingsCommands,
   useGatewaySettingsQuery,
 } from "../../application/gateway/settings";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import {
   SettingsAdvancedSection,
   SettingsDialogs,

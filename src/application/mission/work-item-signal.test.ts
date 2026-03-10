@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { WorkItemRecord } from "../../domain";
-import type { RequirementExecutionOverview } from "../../application/mission/requirement-overview";
+import type { RequirementExecutionOverview } from "./requirement-overview";
 import {
   isReliableRequirementOverview,
   isReliableWorkItemRecord,
   shouldPreferReliableStrategicOverview,
   shouldReplaceLockedStrategicWorkItem,
-} from "../../application/mission/work-item-signal";
-import { applyWorkItemDisplayFields } from "../../application/mission/work-item";
+} from "./work-item-signal";
+import { applyWorkItemDisplayFields } from "./work-item";
 
 function createStrategicOverview(
   overrides: Partial<RequirementExecutionOverview> = {},

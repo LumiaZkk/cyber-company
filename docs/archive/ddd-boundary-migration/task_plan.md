@@ -1,5 +1,7 @@
 # Task Plan: DDD 收口重构
 
+> Archived on 2026-03-10. 这是 DDD 收口阶段的历史计划，不再作为当前仓库入口说明。当前结构请看 `docs/engineering-onboarding.md`。
+
 ## Goal
 继续完成前端 DDD 收口：不仅清掉旧 `features/backend|gateway|execution|org` 入口，还要把剩余的请求、交接、SLA、洞察、runtime snapshot、meta-agent 等职责迁回领域边界，并继续把巨石 presentation 页面里的业务聚合抽出。
 

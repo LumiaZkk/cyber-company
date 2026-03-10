@@ -1,77 +1,90 @@
 # Contributing to Cyber Company
 
-Thanks for your interest in Cyber Company.
+Cyber Company 是一个建立在 OpenClaw 之上的运营控制台。改动代码前，先确认你改的是哪一层，而不是先找“以前放哪”。
 
-This project is an opinionated control plane on top of OpenClaw. The main goal is to help a single operator run a small AI team that can complete real work with less manual coordination.
-
-## Local setup
+## Local Setup
 
 ### Prerequisites
 
 - Node.js 22+
-- A running OpenClaw Gateway
+- 可访问的 OpenClaw Gateway
 
-### Install and run
+### Install and Run
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open `http://localhost:5173`.
-
-## Useful commands
+## 常用命令
 
 ```bash
 npm run dev
 npm run build
-npm run lint
+npm run lint -- --max-warnings=0
+npm test
 ```
 
-## Good contribution areas
+## 工程结构
 
-- reliability fixes for long-running workflows
-- request / handoff visibility and recovery
-- company templates and blueprint workflows
-- operational UX for CEO / board / chat surfaces
-- documentation for setup, architecture, and real use cases
+- `src/pages`
+  路由入口，只做 screen 挂载。
+- `src/presentation`
+  页面 screen、页面级 hooks、view-models、UI 组装。
+- `src/application`
+  面向页面的 command/query façade、业务编排、跨模块读模型。
+- `src/domain`
+  纯领域类型、规则、事件语义。
+- `src/infrastructure`
+  Gateway、runtime、持久化、事件日志等适配层。
+- `src/components`
+  通用 UI 与 system host。
+- `src/lib`
+  小型工具，不放新的主业务流。
 
-## Project boundaries
+## 改动应该放哪
 
-Keep the app-layer boundary clear:
+- 你在改路由跳转、screen 装配、页面交互：
+  放 `src/pages` 或 `src/presentation`
+- 你在改页面消费的业务 surface、读模型、命令 façade：
+  放 `src/application`
+- 你在改纯规则、领域对象、状态语义、事件意义：
+  放 `src/domain`
+- 你在改 Gateway、runtime store、持久化、provider 适配：
+  放 `src/infrastructure`
+- 你在改 toast、banner、approval modal 这类系统 UI：
+  放 `src/components/system`
 
-- OpenClaw is the execution and transport layer
-- Cyber Company is the company model, control plane, and operator UX
+## 边界规则
 
-When possible, model workflow state explicitly in the app instead of hiding it inside chat prose.
+- 不要新增 `src/features/*`
+- `pages` 不直接碰 `domain` 或 `infrastructure`
+- `presentation` 不直接 import `infrastructure`
+- `domain` 不依赖 `application`、`presentation`、`infrastructure`
+- 需要确认边界时，以 ESLint restricted-imports 和 `docs/engineering-onboarding.md` 为准
 
-## Reporting bugs
+## 推荐阅读顺序
 
-Please include:
+1. `docs/engineering-onboarding.md`
+2. `src/App.tsx`
+3. 对应路由的 `src/pages/*`
+4. 对应 screen 的 `src/presentation/*`
+5. 对应 façade 的 `src/application/*`
 
-- what you expected to happen
-- what actually happened
-- reproduction steps
-- browser and platform details
-- relevant screenshots or console output
+## 历史材料
 
-If the issue depends on gateway behavior, include the OpenClaw version and a minimal scenario.
+`docs/archive/ddd-boundary-migration/` 下是 2026-03 DDD 收口时的计划、进度和发现，保留用于回溯，不作为当前开发入口。
 
-## Security and secrets
+## 报告问题时请带上
 
-- never commit real gateway tokens
-- never commit personal or production configuration values
-- use obviously fake placeholders in examples and docs
+- 预期行为
+- 实际行为
+- 最小复现步骤
+- 浏览器和平台信息
+- 控制台输出或截图
+- 如果依赖 Gateway 行为，再补充 OpenClaw 版本和最小场景
 
-## Architecture pointers
+## Secrets
 
-- `src/features/company/` for company config and persistence
-- `src/features/requests/` for request inference, health, and reconciliation
-- `src/features/handoffs/` for handoff state
-- `src/features/execution/` for lifecycle and bottleneck summaries
-- `src/features/gateway/` for gateway integration
-- `docs/cyber-company-prd.md` for current product framing
-
-## Scope guidance
-
-Please keep changes focused. Small, well-explained pull requests are much easier to review than broad rewrites.
+- 不要提交真实 token、真实配置或个人数据
+- 示例里一律使用明显的占位值

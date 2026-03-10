@@ -5,7 +5,7 @@ import { formatAgentLabel } from "../../../application/governance/focus-summary"
 import type { FocusProgressEvent } from "../../../application/governance/chat-progress";
 import type { DispatchRecord } from "../../../domain/delegation/types";
 import type { Company } from "../../../domain/org/types";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 import type { FocusActionButton, FocusActionWatch } from "../view-models/focus";
 
 export function useChatFocusAction(input: {

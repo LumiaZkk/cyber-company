@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { buildAutomationScenario } from "../../application/company/automation-recommendations";
 import { gateway, type CronJob, type CronListResult } from "../../application/gateway";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 
 import { formatTime } from "../../lib/utils";
 

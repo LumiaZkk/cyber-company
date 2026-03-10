@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Company } from "../../domain";
-import { appendRequirementRoomMessages, buildRequirementRoomRecord } from "../../application/delegation/room-routing";
-import { buildProviderManifest } from "../../infrastructure/gateway/runtime/bootstrap";
-import { sendTurnToCompanyActor } from "../../infrastructure/gateway/runtime/runtime";
+import type { Company } from "../../../domain";
+import { appendRequirementRoomMessages, buildRequirementRoomRecord } from "../../../application/delegation/room-routing";
+import { buildProviderManifest } from "./bootstrap";
+import { sendTurnToCompanyActor } from "./runtime";
 import {
   createBackendCapabilities,
   type ActorRef,
   type BackendCore,
   type ConversationKind,
   type ConversationRef,
-} from "../../infrastructure/gateway/runtime/types";
+} from "./types";
 
 function createCompany(): Company {
   return {

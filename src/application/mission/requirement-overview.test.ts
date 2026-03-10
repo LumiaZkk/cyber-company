@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Company } from "../../domain";
-import { buildStableStrategicTopicKey } from "../../application/mission/work-item";
-import { buildRequirementExecutionOverview } from "../../application/mission/requirement-overview";
+import { buildStableStrategicTopicKey } from "./work-item";
+import { buildRequirementExecutionOverview } from "./requirement-overview";
 import {
   createRequirementMessageSnapshots,
   type RequirementSessionSnapshot,

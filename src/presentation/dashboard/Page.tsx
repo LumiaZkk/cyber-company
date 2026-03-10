@@ -2,7 +2,7 @@ import { BarChart, Activity, Zap, HardDrive, DollarSign, Users, CheckCircle2, Al
 import { useDashboardViewModel } from "../../application/dashboard";
 import { Badge } from "../../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/card";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 
 export function DashboardPresentationPage() {
   const { activeCompany, persistRetrospective, surface } = useDashboardViewModel();

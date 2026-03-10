@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAgentBackendFromCore } from "../../infrastructure/gateway/runtime/core-adapter";
+import { createAgentBackendFromCore } from "./core-adapter";
 import {
   createBackendCapabilities,
   type ActorRef,
   type BackendCore,
   type ConversationKind,
   type ConversationRef,
-} from "../../infrastructure/gateway/runtime/types";
+} from "./types";
 
 function createCore(providerId = "minimal"): BackendCore {
   return {

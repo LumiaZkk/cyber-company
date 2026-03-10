@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { FocusProgressEvent } from "../../../application/governance/chat-progress";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 
 export function useChatCoordinationActions(input: {
   takeoverPack: { operatorNote: string } | null;

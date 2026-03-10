@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { gateway, useGatewayStore } from '../../application/gateway';
-import { toast } from '../../features/ui/toast-store';
+import { toast } from './toast-store';
 
 export function GatewayNotificationHost() {
   const connected = useGatewayStore((s) => s.connected);

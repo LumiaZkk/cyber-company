@@ -28,7 +28,7 @@ import {
   sendTurnToCompanyActor,
 } from "../../application/gateway";
 import { useGatewayStore } from "../../application/gateway";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import { useCeoRuntimeState } from "./hooks/useCeoRuntimeState";
 import { usePageVisibility } from "../../lib/use-page-visibility";
 import { formatTime, getAvatarUrl } from "../../lib/utils";

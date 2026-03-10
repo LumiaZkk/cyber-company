@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useGatewayStore } from "../../application/gateway";
 import { useCompanyShellCommands, useCompanyShellQuery } from "../../application/company/shell";
 import { ActionFormDialog } from "../../components/ui/action-form-dialog";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import { Plus, ArrowRight, Loader, Trash2 } from "lucide-react";
 import type { Company } from "../../domain/org/types";
 

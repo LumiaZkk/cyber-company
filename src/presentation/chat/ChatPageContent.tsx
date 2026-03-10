@@ -44,7 +44,7 @@ import {
 } from "../../application/gateway";
 import { useGatewayStore } from "../../application/gateway";
 import { AgentOps } from "../../application/org/employee-ops";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "../../components/system/toast-store";
 import {
   appendCompanyScopeToChatRoute,
   buildCompanyChatRoute,

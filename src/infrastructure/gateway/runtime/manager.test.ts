@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { BackendManager } from "../../infrastructure/gateway/runtime/manager";
-import type { BackendProviderDefinition } from "../../infrastructure/gateway/runtime/providers";
+import { BackendManager } from "./manager";
+import type { BackendProviderDefinition } from "./providers";
 import {
   createBackendCapabilities,
   type AgentBackend,
   type ActorRef,
   type BackendCapabilities,
   type ConversationRef,
-} from "../../infrastructure/gateway/runtime/types";
+} from "./types";
 
 type StubBackend = AgentBackend & {
   requestSpy: ReturnType<typeof vi.fn>;

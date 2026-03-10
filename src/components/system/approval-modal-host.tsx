@@ -4,14 +4,14 @@ import {
   parseExecApprovalRequested,
   parseExecApprovalResolved,
   useApprovalStore,
-} from "../../features/approvals/store";
+} from "./approval-store";
 import {
   isApprovalAudioReady,
   playApprovalArrivalTone,
   setupApprovalAudioUnlock,
-} from "../../features/approvals/sound";
+} from "./approval-sound";
 import { AgentOps, type ApprovalDecision } from "../../lib/agent-ops";
-import { toast } from "../../features/ui/toast-store";
+import { toast } from "./toast-store";
 
 type GatewayEventEnvelope = {
   event: string;

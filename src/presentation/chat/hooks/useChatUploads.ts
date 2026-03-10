@@ -1,7 +1,7 @@
 import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 import { syncTextReferenceFileToAgents } from "../../../application/artifact/chat-upload";
 import type { ChatSendAttachment } from "../../../application/delegation/chat-send";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 
 export function useChatUploads(input: {
   isGroup: boolean;

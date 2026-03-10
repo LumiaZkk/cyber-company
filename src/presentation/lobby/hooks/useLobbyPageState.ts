@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { HireConfig } from "../../../components/ui/immersive-hire-dialog";
-import { toast } from "../../../features/ui/toast-store";
+import { toast } from "../../../components/system/toast-store";
 
 type LobbyCommands = {
   buildBlueprintText: () => string;

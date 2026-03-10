@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationMissionRecord, RequirementRoomRecord } from "../../domain";
-import type { RequirementExecutionOverview } from "../../application/mission/requirement-overview";
+import type { RequirementExecutionOverview } from "./requirement-overview";
 import {
   applyWorkItemDisplayFields,
   buildRoomRecordIdFromWorkItem,
@@ -10,7 +10,7 @@ import {
   deriveWorkItemFlowFromDispatches,
   pickWorkItemRecord,
   resolveStableWorkItemTitle,
-} from "../../application/mission/work-item";
+} from "./work-item";
 
 function createMission(overrides: Partial<ConversationMissionRecord> = {}): ConversationMissionRecord {
   return {

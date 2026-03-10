@@ -722,13 +722,13 @@ Development goal:
 
 Proposed module changes:
 
-- `src/features/gateway/openclaw-gateway-client.ts`
+- `src/infrastructure/gateway/openclaw/browser-client.ts`
   - preserve structured connect failure information from request errors and close reasons
   - stop collapsing everything into plain `"connect failed"`
-- `src/features/gateway/store.ts`
+- `src/infrastructure/gateway/store.ts`
   - add `connectErrorType`, `connectErrorMessage`, and `connectErrorDebug`
   - keep reconnect phase and typed error separate
-- `src/pages/ConnectPage.tsx`
+- `src/presentation/connect/Page.tsx`
   - replace the generic troubleshooting list with per-error guidance blocks
   - render a reconnect-failed state distinct from first-connect failure
 
@@ -743,7 +743,7 @@ Suggested new types:
 
 Implementation notes:
 
-- Create a small normalization helper, for example `src/features/gateway/connect-errors.ts`.
+- Create a small normalization helper, for example `src/infrastructure/gateway/connect-errors.ts`.
 - Match both gateway error codes and message patterns because the live gateway currently leaks important failures through both paths.
 - Keep the raw gateway code/message only in debug detail or console output.
 
@@ -767,10 +767,10 @@ Development goal:
 
 Proposed module changes:
 
-- `src/features/company/persistence.ts`
+- `src/infrastructure/company/persistence/persistence.ts`
   - add a dedicated local-storage key for persisted active company selection
   - add helpers to read, write, and validate the active company ID
-- `src/features/company/store.ts`
+- `src/application/company/shell.ts`
   - introduce a bootstrap phase such as `idle | restoring | ready | missing`
   - restore active company from persisted selection before exposing route-ready state
   - update persisted active company on switch
@@ -809,13 +809,13 @@ Development goal:
 
 Proposed module changes:
 
-- `src/features/gateway/client.ts`
+- `src/infrastructure/gateway/openclaw/client.ts`
   - adapt `getUsageCost()` to accept both direct payload and wrapped payload shapes
   - return a single `CostUsageSummary` contract
-- `src/pages/DashboardPage.tsx`
+- `src/presentation/dashboard/Page.tsx`
   - replace raw `--` placeholder behavior with explicit `loading`, `loaded`, `empty`, and `error` rendering
   - display the last successful refresh time
-- `src/pages/CompanyLobby.tsx`
+- `src/presentation/lobby/Page.tsx`
   - reuse the stabilized usage response instead of assuming happy-path totals
 
 Implementation notes:
@@ -843,15 +843,15 @@ Development goal:
 
 Proposed module changes:
 
-- new shared resolver module, for example `src/features/operations/execution-state.ts`
+- new shared resolver module, for example `src/application/mission/execution-state.ts`
   - define the normalized state enum
   - expose `resolveExecutionState()` and summary helpers
-- `src/pages/CompanyLobby.tsx`
+- `src/presentation/lobby/Page.tsx`
   - replace simple `running | idle | stopped` employee status with normalized states where evidence exists
   - compress the unified stream into blocker-oriented summaries
-- `src/pages/BoardPage.tsx`
+- `src/presentation/board/Page.tsx`
   - attach normalized execution state to tracked tasks and session cards
-- `src/pages/ChatPage.tsx`
+- `src/presentation/chat/ChatPageContent.tsx`
   - render current execution state near the conversation header and latest run context
 
 Implementation notes:
@@ -885,13 +885,13 @@ Development goal:
 
 Proposed module changes:
 
-- new helper module, for example `src/features/operations/manual-takeover.ts`
+- new helper module, for example `src/application/delegation/takeover-pack.ts`
   - build a takeover pack from session metadata, normalized execution state, and recent chat evidence
-- `src/pages/ChatPage.tsx`
+- `src/presentation/chat/ChatPageContent.tsx`
   - add a visible takeover panel or action when the current run reaches `manual_takeover_required`
-- `src/pages/BoardPage.tsx`
+- `src/presentation/board/Page.tsx`
   - expose takeover actions from blocked tasks
-- `src/pages/CompanyLobby.tsx`
+- `src/presentation/lobby/Page.tsx`
   - surface takeover-required items in the top activity slice
 
 Suggested takeover pack shape:

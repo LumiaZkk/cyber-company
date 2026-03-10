@@ -8,7 +8,7 @@ import type { Company } from "../domain/org/types";
 import { readCompanyRuntimeCommands } from "../infrastructure/company/runtime/commands";
 import { readCompanyRuntimeState } from "../infrastructure/company/runtime/selectors";
 import { CONFIG_PROMPTS, resolveMetaAgentId, type MetaTarget } from "./chat-as-config";
-import { toast } from "../features/ui/toast-store";
+import { toast } from "../components/system/toast-store";
 import { resolveLocalServiceOrigin } from "./utils";
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
