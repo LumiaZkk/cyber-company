@@ -997,6 +997,64 @@ type ChatComposerProps = {
   onSend: (draft: string) => Promise<boolean>;
 };
 
+function areChatAttachmentsEqual(left: ChatAttachment[], right: ChatAttachment[]) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every(
+    (attachment, index) =>
+      attachment.mimeType === right[index]?.mimeType &&
+      attachment.dataUrl === right[index]?.dataUrl,
+  );
+}
+
+function areMentionCandidatesEqual(
+  left: RequirementRoomMentionCandidate[],
+  right: RequirementRoomMentionCandidate[],
+) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every(
+    (candidate, index) =>
+      candidate.agentId === right[index]?.agentId &&
+      candidate.label === right[index]?.label &&
+      candidate.role === right[index]?.role,
+  );
+}
+
+function isSamePrefill(
+  left: { id: number; text: string } | null | undefined,
+  right: { id: number; text: string } | null | undefined,
+) {
+  return left?.id === right?.id && left?.text === right?.text;
+}
+
+function areChatComposerPropsEqual(left: ChatComposerProps, right: ChatComposerProps) {
+  return (
+    left.sessionIdentityKey === right.sessionIdentityKey &&
+    left.placeholder === right.placeholder &&
+    left.sending === right.sending &&
+    left.uploadingFile === right.uploadingFile &&
+    left.broadcastMode === right.broadcastMode &&
+    left.showBroadcastToggle === right.showBroadcastToggle &&
+    areChatAttachmentsEqual(left.attachments, right.attachments) &&
+    areMentionCandidatesEqual(left.mentionCandidates ?? [], right.mentionCandidates ?? []) &&
+    isSamePrefill(left.prefill, right.prefill) &&
+    left.onBroadcastModeChange === right.onBroadcastModeChange &&
+    left.onRemoveAttachment === right.onRemoveAttachment &&
+    left.onPickFile === right.onPickFile &&
+    left.onPasteImage === right.onPasteImage &&
+    left.onSend === right.onSend
+  );
+}
+
 const ChatComposer = memo(function ChatComposer({
   sessionIdentityKey,
   placeholder,
@@ -1320,6 +1378,18 @@ const ChatComposer = memo(function ChatComposer({
         ) : null}
       </div>
     </>
+  );
+}, areChatComposerPropsEqual);
+
+const GeneratingBadge = memo(function GeneratingBadge() {
+  return (
+    <div className="absolute -top-10 left-4 z-20 flex -translate-y-2 items-center gap-2 rounded-t-xl rounded-r-xl border border-slate-200/60 bg-white/90 px-4 py-2 pb-1 text-xs shadow-sm backdrop-blur">
+      <span className="relative flex h-2 w-2">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-75"></span>
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-500"></span>
+      </span>
+      <span>正在生成中...</span>
+    </div>
   );
 });
 
@@ -2266,7 +2336,6 @@ export function ChatPage() {
   const activeConversationStates = useCompanyStore((state) => state.activeConversationStates);
   const activeWorkItems = useCompanyStore((state) => state.activeWorkItems);
   const activeRoundRecords = useCompanyStore((state) => state.activeRoundRecords);
-  const activeArtifacts = useCompanyStore((state) => state.activeArtifacts);
   const activeDispatches = useCompanyStore((state) => state.activeDispatches);
   const activeRoomBindings = useCompanyStore((state) => state.activeRoomBindings);
   const updateCompany = useCompanyStore((state) => state.updateCompany);
@@ -3888,12 +3957,13 @@ export function ChatPage() {
         setCompanySessionSnapshots([]);
         return null;
       }
+      const runtimeSnapshot = useCompanyStore.getState();
       const { companyPatch, dispatches, sessionSnapshots, summary } =
         await syncCompanyCommunicationState({
           company: activeCompany,
           previousSnapshots: companySessionSnapshotsRef.current,
-          activeArtifacts,
-          activeDispatches,
+          activeArtifacts: runtimeSnapshot.activeArtifacts,
+          activeDispatches: runtimeSnapshot.activeDispatches,
           force: options?.force,
         });
       setCompanySessionSnapshots(sessionSnapshots);
@@ -3909,7 +3979,7 @@ export function ChatPage() {
       }
       return summary;
     },
-    [activeArtifacts, activeCompany, activeDispatches, replaceDispatchRecords, updateCompany],
+    [activeCompany, replaceDispatchRecords, updateCompany],
   );
 
   const sessionProgressEvents = useMemo(
@@ -5527,14 +5597,15 @@ export function ChatPage() {
     if (!shouldPersistConversationTruth || !activeCompany || !conversationMissionRecord) {
       return;
     }
+    const runtimeSnapshot = useCompanyStore.getState();
     const workItemRecord = reconcileWorkItemRecord({
       companyId: activeCompany.id,
       existingWorkItem: persistedWorkItem,
       mission: conversationMissionRecord,
       overview: requirementOverview,
       room: effectiveRequirementRoom,
-      artifacts: activeArtifacts,
-      dispatches: activeDispatches,
+      artifacts: runtimeSnapshot.activeArtifacts,
+      dispatches: runtimeSnapshot.activeDispatches,
       fallbackSessionKey: sessionKey,
       fallbackRoomId: productRoomId,
     });
@@ -5550,15 +5621,10 @@ export function ChatPage() {
       }
     }
   }, [
-    activeArtifacts,
     activeCompany,
     effectiveRequirementRoom,
-    activeDispatches,
     conversationStateKey,
     conversationMissionRecord,
-    groupWorkItemId,
-    isGroup,
-    linkedRequirementRoom,
     persistedWorkItem,
     productRoomId,
     requirementOverview,
@@ -6695,8 +6761,9 @@ export function ChatPage() {
                 updatedAt: roomMessage.timestamp,
               },
             ]);
+            const currentDispatches = useCompanyStore.getState().activeDispatches;
             const dispatchUpdates = resolveDispatchReplyUpdates({
-              dispatches: activeDispatches,
+              dispatches: currentDispatches,
               workItemId: currentConversationWorkItemId,
               roomId,
               actorId: agentKey,
@@ -6857,7 +6924,6 @@ export function ChatPage() {
     return () => unsubscribe();
   }, [
     activeCompany,
-    activeDispatches,
     effectiveRequirementRoom?.id,
     effectiveRequirementRoom?.memberIds,
     effectiveRequirementRoom?.ownerActorId,
@@ -8679,6 +8745,7 @@ export function ChatPage() {
                                   <button
                                     type="button"
                                     onClick={() => {
+                                      const currentRoomRecords = useCompanyStore.getState().activeRoomRecords;
                                       const groupRoute = buildGroupChatRoute({
                                         company: activeCompany,
                                         memberIds: mentions.map((member) => member.agentId),
@@ -8694,7 +8761,7 @@ export function ChatPage() {
                                           groupWorkItemId ??
                                           null,
                                         preferredInitiatorAgentId: targetAgentId,
-                                        existingRooms: activeRoomRecords,
+                                        existingRooms: currentRoomRecords,
                                       });
                                       if (groupRoute) {
                                         navigate(groupRoute);
@@ -8786,15 +8853,7 @@ export function ChatPage() {
       {/* Input */}
       {!isArchiveView ? (
       <footer className="shrink-0 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:p-4 bg-white border-t relative">
-        {isGenerating && (
-          <div className="absolute -top-10 left-4 bg-white/90 backdrop-blur pb-1 px-4 py-2 border border-slate-200/60 shadow-sm rounded-t-xl rounded-r-xl text-xs -translate-y-2 z-20 flex items-center gap-2">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
-            </span>
-            <span>正在生成中...</span>
-          </div>
-        )}
+        {isGenerating ? <GeneratingBadge /> : null}
         <input
           type="file"
           ref={fileInputRef}
