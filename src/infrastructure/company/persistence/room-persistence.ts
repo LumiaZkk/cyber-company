@@ -9,8 +9,8 @@ import {
   normalizeProductWorkItemIdentity,
 } from "../../../application/mission/work-item";
 
-const ROOM_CACHE_PREFIX = "cyber_company_room_records:";
 const ROOM_LIMIT = 24;
+const roomCache = new Map<string, RequirementRoomRecord[]>();
 
 function mergeNormalizedRequirementRoomRecords(
   rooms: RequirementRoomRecord[],
@@ -76,41 +76,6 @@ function buildRequirementRoomSemanticId(room: RequirementRoomRecord): string {
   return `title:${normalizedTitle}|members:${memberKey}`;
 }
 
-function isRequirementRoomMessage(value: unknown): value is RequirementRoomRecord["transcript"][number] {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Partial<RequirementRoomRecord["transcript"][number]>;
-  return (
-    typeof candidate.id === "string" &&
-    (candidate.role === "user" || candidate.role === "assistant") &&
-    typeof candidate.timestamp === "number"
-  );
-}
-
-function isRequirementRoomRecord(value: unknown): value is RequirementRoomRecord {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Partial<RequirementRoomRecord>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.sessionKey === "string" &&
-    typeof candidate.title === "string" &&
-    Array.isArray(candidate.memberIds) &&
-    Array.isArray(candidate.transcript) &&
-    candidate.transcript.every(isRequirementRoomMessage) &&
-    typeof candidate.createdAt === "number" &&
-    typeof candidate.updatedAt === "number"
-  );
-}
-
-function getRoomCacheKey(companyId: string) {
-  return `${ROOM_CACHE_PREFIX}${companyId.trim()}`;
-}
-
 export function normalizeRequirementRoomRecordForCompany(
   room: RequirementRoomRecord,
   companyId: string,
@@ -172,21 +137,7 @@ export function loadRequirementRoomRecords(companyId: string | null | undefined)
   if (!companyId) {
     return [];
   }
-
-  const raw = localStorage.getItem(getRoomCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeRequirementRoomRecords(companyId, parsed.filter(isRequirementRoomRecord));
-  } catch {
-    return [];
-  }
+  return roomCache.get(companyId) ?? [];
 }
 
 export function persistRequirementRoomRecords(
@@ -198,12 +149,12 @@ export function persistRequirementRoomRecords(
   }
 
   const trimmed = sanitizeRequirementRoomRecords(companyId, [...rooms]).slice(0, ROOM_LIMIT);
-  localStorage.setItem(getRoomCacheKey(companyId), JSON.stringify(trimmed));
+  roomCache.set(companyId, trimmed);
 }
 
 export function clearRequirementRoomRecords(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getRoomCacheKey(companyId));
+  roomCache.delete(companyId);
 }

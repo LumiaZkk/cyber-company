@@ -1,7 +1,7 @@
-import { getDefaultGatewayUrl } from "../../../lib/utils";
 import { createAgentBackendFromCore } from "./core-adapter";
-import { openClawBackend } from "../openclaw/adapter";
+import { authorityBackend } from "../authority/adapter";
 import type { AgentBackend, BackendCore } from "./types";
+import { DEFAULT_AUTHORITY_URL } from "../../authority/contract";
 
 export type BackendProviderMeta = {
   id: string;
@@ -31,21 +31,21 @@ export function createBackendProviderFromCore(
 
 export const backendProviders: BackendProviderDefinition[] = [
   {
-    id: "openclaw",
-    label: "OpenClaw",
-    description: "通过 OpenClaw Gateway 连接多 Agent 运行时。",
-    urlLabel: "Gateway 地址",
+    id: "authority",
+    label: "Authority",
+    description: "连接本机 companion daemon，读取 SQLite 权威源并调度本地执行器。",
+    urlLabel: "Authority 地址",
     tokenLabel: "访问令牌",
     tokenOptional: true,
-    defaultUrl: getDefaultGatewayUrl(),
-    tokenPlaceholder: "本地启动时通常可以留空",
-    connectHint: "openclaw serve",
-    backend: openClawBackend,
+    defaultUrl: DEFAULT_AUTHORITY_URL,
+    tokenPlaceholder: "本机 authority 默认无需额外令牌",
+    connectHint: "npm run authority:dev",
+    backend: authorityBackend,
   },
 ];
 
 export function getDefaultBackendProviderId(): string {
-  return backendProviders[0]?.id ?? "openclaw";
+  return backendProviders[0]?.id ?? "authority";
 }
 
 export function getBackendProviderDefinition(providerId: string): BackendProviderDefinition {

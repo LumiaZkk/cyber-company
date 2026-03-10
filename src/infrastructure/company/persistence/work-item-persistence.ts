@@ -9,8 +9,8 @@ import {
   normalizeStrategicWorkItemId,
 } from "../../../application/mission/work-item";
 
-const WORK_ITEM_CACHE_PREFIX = "cyber_company_work_items:";
 const WORK_ITEM_LIMIT = 64;
+const workItemCache = new Map<string, WorkItemRecord[]>();
 
 function isWorkStepStatus(value: unknown): value is WorkStepRecord["status"] {
   return (
@@ -86,10 +86,6 @@ function isWorkItemRecord(value: unknown): value is WorkItemRecord {
     typeof candidate.summary === "string" &&
     typeof candidate.nextAction === "string"
   );
-}
-
-function getWorkItemCacheKey(companyId: string) {
-  return `${WORK_ITEM_CACHE_PREFIX}${companyId.trim()}`;
 }
 
 function buildStrategicDedupKey(record: WorkItemRecord): string | null {
@@ -263,21 +259,7 @@ export function loadWorkItemRecords(companyId: string | null | undefined): WorkI
   if (!companyId) {
     return [];
   }
-
-  const raw = localStorage.getItem(getWorkItemCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeWorkItemRecords(parsed.filter(isWorkItemRecord));
-  } catch {
-    return [];
-  }
+  return workItemCache.get(companyId) ?? [];
 }
 
 export function persistWorkItemRecords(
@@ -290,12 +272,12 @@ export function persistWorkItemRecords(
 
   const trimmed = sanitizeWorkItemRecords(records)
     .slice(0, WORK_ITEM_LIMIT);
-  localStorage.setItem(getWorkItemCacheKey(companyId), JSON.stringify(trimmed));
+  workItemCache.set(companyId, trimmed);
 }
 
 export function clearWorkItemRecords(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getWorkItemCacheKey(companyId));
+  workItemCache.delete(companyId);
 }

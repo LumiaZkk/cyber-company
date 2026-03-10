@@ -1,0 +1,5 @@
+{
+  "name": "@cyber-company/authority-daemon",
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,1369 @@
+import { createServer } from "node:http";
+import { mkdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import os from "node:os";
+import path from "node:path";
+import { WebSocket, WebSocketServer } from "ws";
+import { parseCompanyBlueprint } from "../../../src/application/company/blueprint";
+import { COMPANY_CONTEXT_FILE_NAME, CEO_OPERATIONS_FILE_NAME, buildCeoOperationsGuide, buildCompanyContextSnapshot } from "../../../src/application/company/agent-context";
+import { COMPANY_TEMPLATES } from "../../../src/application/company/templates";
+import type { CompanyEvent } from "../../../src/domain/delegation/events";
+import type { DispatchRecord, RequirementRoomRecord, RoomConversationBindingRecord } from "../../../src/domain/delegation/types";
+import type { ArtifactRecord } from "../../../src/domain/artifact/types";
+import type {
+  ConversationMissionRecord,
+  ConversationStateRecord,
+  RequirementAggregateRecord,
+  RequirementEvidenceEvent,
+  RoundRecord,
+  WorkItemRecord,
+} from "../../../src/domain/mission/types";
+import { generateCeoSoul, generateCooSoul, generateCtoSoul, generateHrSoul } from "../../../src/domain/org/meta-agent-souls";
+import type { Company, CyberCompanyConfig, Department, EmployeeRef, QuickPrompt } from "../../../src/domain/org/types";
+import type {
+  AuthorityAppendCompanyEventRequest,
+  AuthorityAppendRoomRequest,
+  AuthorityBootstrapSnapshot,
+  AuthorityChatSendRequest,
+  AuthorityChatSendResponse,
+  AuthorityCompanyEventsResponse,
+  AuthorityCompanyRuntimeSnapshot,
+  AuthorityCreateCompanyRequest,
+  AuthorityCreateCompanyResponse,
+  AuthorityDispatchUpsertRequest,
+  AuthorityEvent,
+  AuthorityExecutorStatus,
+  AuthorityHealthSnapshot,
+  AuthorityRequirementTransitionRequest,
+  AuthorityRuntimeSyncRequest,
+  AuthoritySessionHistoryResponse,
+  AuthoritySessionListResponse,
+  AuthoritySwitchCompanyRequest,
+} from "../../../src/infrastructure/authority/contract";
+
+type StoredChatMessage = {
+  role: "user" | "assistant" | "system" | "toolResult";
+  content?: unknown;
+  text?: string;
+  timestamp?: number;
+  [key: string]: unknown;
+};
+
+type RuntimeSliceTables =
+  | "missions"
+  | "conversation_states"
+  | "work_items"
+  | "requirement_aggregates"
+  | "requirement_evidence"
+  | "rooms"
+  | "rounds"
+  | "artifacts"
+  | "dispatches"
+  | "room_bindings";
+
+const AUTHORITY_PORT = Number.parseInt(process.env.CYBER_COMPANY_AUTHORITY_PORT ?? "18790", 10);
+const DATA_DIR = path.join(os.homedir(), ".cyber-company", "authority");
+const DB_PATH = path.join(DATA_DIR, "authority.sqlite");
+
+const EMPTY_RUNTIME = (companyId: string): AuthorityCompanyRuntimeSnapshot => ({
+  companyId,
+  activeRoomRecords: [],
+  activeMissionRecords: [],
+  activeConversationStates: [],
+  activeWorkItems: [],
+  activeRequirementAggregates: [],
+  activeRequirementEvidence: [],
+  primaryRequirementId: null,
+  activeRoundRecords: [],
+  activeArtifacts: [],
+  activeDispatches: [],
+  activeRoomBindings: [],
+  updatedAt: Date.now(),
+});
+
+const EXECUTOR_STATUS: AuthorityExecutorStatus = {
+  adapter: "single-executor-local",
+  state: "ready",
+  provider: "none",
+  note: "本机单执行器已启用，远程 provider 可选。",
+};
+
+function isPresent<T>(value: T | null | undefined | false): value is T {
+  return Boolean(value);
+}
+
+function slugify(input: string) {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+}
+
+function truncate(input: string, max = 80) {
+  return input.length <= max ? input : `${input.slice(0, max - 1)}…`;
+}
+
+function parseJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function sendJson(response: import("node:http").ServerResponse, status: number, payload: unknown) {
+  response.statusCode = status;
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(payload));
+}
+
+function sendError(response: import("node:http").ServerResponse, status: number, message: string) {
+  sendJson(response, status, { error: message });
+}
+
+function setCorsHeaders(response: import("node:http").ServerResponse) {
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+async function readJsonBody<T>(request: import("node:http").IncomingMessage): Promise<T> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) {
+    return {} as T;
+  }
+  return JSON.parse(raw) as T;
+}
+
+class AuthorityRepository {
+  private readonly db: DatabaseSync;
+  private readonly startedAt = Date.now();
+
+  constructor(private readonly dbPath: string) {
+    mkdirSync(DATA_DIR, { recursive: true });
+    this.db = new DatabaseSync(dbPath);
+    this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("PRAGMA foreign_keys = ON;");
+    this.initSchema();
+  }
+
+  getHealth(): AuthorityHealthSnapshot {
+    return {
+      ok: true,
+      executor: EXECUTOR_STATUS,
+      authority: {
+        dbPath: this.dbPath,
+        connected: true,
+        startedAt: this.startedAt,
+      },
+    };
+  }
+
+  private initSchema() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS companies (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        company_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS departments (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        lead_agent_id TEXT,
+        color TEXT,
+        sort_order INTEGER,
+        archived INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS employees (
+        agent_id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        nickname TEXT NOT NULL,
+        role TEXT NOT NULL,
+        is_meta INTEGER NOT NULL DEFAULT 0,
+        meta_role TEXT,
+        reports_to TEXT,
+        department_id TEXT,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS runtimes (
+        company_id TEXT PRIMARY KEY,
+        snapshot_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS conversations (
+        session_key TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        actor_id TEXT,
+        kind TEXT NOT NULL,
+        label TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS conversation_messages (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        role TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS agent_files (
+        agent_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS work_items (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS requirement_aggregates (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS requirement_evidence (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS rooms (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS room_bindings (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS dispatches (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS rounds (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS missions (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS event_log (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        company_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS executor_configs (
+        id TEXT PRIMARY KEY,
+        adapter TEXT NOT NULL,
+        config_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS executor_runs (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        payload_json TEXT NOT NULL
+      );
+    `);
+
+    const countRow = this.db.prepare("SELECT COUNT(*) as count FROM executor_configs").get() as
+      | { count?: number }
+      | undefined;
+    if (!countRow?.count) {
+      this.db.prepare(
+        "INSERT INTO executor_configs (id, adapter, config_json, updated_at) VALUES (?, ?, ?, ?)",
+      ).run(
+        "default",
+        EXECUTOR_STATUS.adapter,
+        JSON.stringify({ provider: EXECUTOR_STATUS.provider }),
+        Date.now(),
+      );
+    }
+  }
+
+  private readMetadata(key: string) {
+    const row = this.db.prepare("SELECT value FROM metadata WHERE key = ?").get(key) as
+      | { value?: string }
+      | undefined;
+    return row?.value ?? null;
+  }
+
+  private writeMetadata(key: string, value: string) {
+    this.db.prepare(`
+      INSERT INTO metadata (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
+  }
+
+  private getActiveCompanyId() {
+    return this.readMetadata("activeCompanyId");
+  }
+
+  private setActiveCompanyId(companyId: string | null) {
+    this.writeMetadata("activeCompanyId", companyId ?? "");
+  }
+
+  loadConfig(): CyberCompanyConfig | null {
+    const rows = this.db.prepare("SELECT company_json FROM companies ORDER BY created_at ASC").all() as Array<{
+      company_json: string;
+    }>;
+    if (rows.length === 0) {
+      return null;
+    }
+    const companies = rows
+      .map((row) => parseJson<Company | null>(row.company_json, null))
+      .filter(isPresent);
+    const activeCompanyId =
+      this.getActiveCompanyId() && companies.some((company) => company.id === this.getActiveCompanyId())
+        ? this.getActiveCompanyId()!
+        : companies[0]!.id;
+    return {
+      version: 1,
+      companies,
+      activeCompanyId,
+      preferences: { theme: "classic", locale: "zh-CN" },
+    };
+  }
+
+  private replaceCompanyTables(company: Company) {
+    this.db.prepare("DELETE FROM departments WHERE company_id = ?").run(company.id);
+    this.db.prepare("DELETE FROM employees WHERE company_id = ?").run(company.id);
+    for (const department of company.departments ?? []) {
+      this.db.prepare(`
+        INSERT INTO departments (id, company_id, name, lead_agent_id, color, sort_order, archived, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        department.id,
+        company.id,
+        department.name,
+        department.leadAgentId ?? null,
+        department.color ?? null,
+        department.order ?? null,
+        department.archived ? 1 : 0,
+        JSON.stringify(department),
+      );
+    }
+    for (const employee of company.employees) {
+      this.db.prepare(`
+        INSERT INTO employees (agent_id, company_id, nickname, role, is_meta, meta_role, reports_to, department_id, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        employee.agentId,
+        company.id,
+        employee.nickname,
+        employee.role,
+        employee.isMeta ? 1 : 0,
+        employee.metaRole ?? null,
+        employee.reportsTo ?? null,
+        employee.departmentId ?? null,
+        JSON.stringify(employee),
+      );
+    }
+  }
+
+  saveConfig(config: CyberCompanyConfig) {
+    const existingCompanyRows = this.db.prepare("SELECT id FROM companies").all() as Array<{ id: string }>;
+    const nextIds = new Set(config.companies.map((company) => company.id));
+    for (const row of existingCompanyRows) {
+      if (!nextIds.has(row.id)) {
+        this.deleteCompanyData(row.id);
+      }
+    }
+
+    for (const company of config.companies) {
+      this.db.prepare(`
+        INSERT INTO companies (id, name, company_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          company_json = excluded.company_json,
+          updated_at = excluded.updated_at
+      `).run(
+        company.id,
+        company.name,
+        JSON.stringify(company),
+        company.createdAt,
+        Date.now(),
+      );
+      this.replaceCompanyTables(company);
+      const currentRuntime = this.loadRuntime(company.id);
+      this.saveRuntime({
+        ...currentRuntime,
+        companyId: company.id,
+      });
+    }
+
+    this.setActiveCompanyId(config.companies.length > 0 ? config.activeCompanyId : null);
+    return this.getBootstrap();
+  }
+
+  private deleteCompanyData(companyId: string) {
+    const tables = [
+      "companies",
+      "departments",
+      "employees",
+      "runtimes",
+      "conversations",
+      "conversation_messages",
+      "work_items",
+      "requirement_aggregates",
+      "requirement_evidence",
+      "rooms",
+      "room_bindings",
+      "dispatches",
+      "rounds",
+      "artifacts",
+      "missions",
+      "event_log",
+    ] as const;
+    for (const table of tables) {
+      const column =
+        table === "companies"
+          ? "id"
+          : table === "conversations"
+            ? "company_id"
+            : table === "conversation_messages"
+              ? "company_id"
+              : "company_id";
+      this.db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(companyId);
+    }
+  }
+
+  deleteCompany(companyId: string) {
+    this.deleteCompanyData(companyId);
+    const config = this.loadConfig();
+    if (!config) {
+      this.setActiveCompanyId(null);
+      return null;
+    }
+    if (!config.companies.some((company) => company.id === config.activeCompanyId)) {
+      this.setActiveCompanyId(config.companies[0]?.id ?? null);
+    }
+    return this.getBootstrap();
+  }
+
+  getBootstrap(): AuthorityBootstrapSnapshot {
+    const config = this.loadConfig();
+    const activeCompany =
+      config?.companies.find((company) => company.id === config.activeCompanyId) ?? null;
+    const runtime = activeCompany ? this.loadRuntime(activeCompany.id) : null;
+    return {
+      config,
+      activeCompany,
+      runtime,
+      executor: EXECUTOR_STATUS,
+      authority: {
+        url: `http://127.0.0.1:${AUTHORITY_PORT}`,
+        dbPath: this.dbPath,
+        connected: true,
+      },
+    };
+  }
+
+  switchCompany(companyId: string) {
+    const config = this.loadConfig();
+    if (!config || !config.companies.some((company) => company.id === companyId)) {
+      throw new Error(`Unknown company: ${companyId}`);
+    }
+    this.setActiveCompanyId(companyId);
+    return this.getBootstrap();
+  }
+
+  loadRuntime(companyId: string): AuthorityCompanyRuntimeSnapshot {
+    const row = this.db.prepare("SELECT snapshot_json FROM runtimes WHERE company_id = ?").get(companyId) as
+      | { snapshot_json?: string }
+      | undefined;
+    if (row?.snapshot_json) {
+      return parseJson<AuthorityCompanyRuntimeSnapshot>(row.snapshot_json, EMPTY_RUNTIME(companyId));
+    }
+
+    const snapshot: AuthorityCompanyRuntimeSnapshot = {
+      companyId,
+      activeMissionRecords: this.readPayloadTable<ConversationMissionRecord>("missions", companyId),
+      activeConversationStates: this.readPayloadTable<ConversationStateRecord>("conversation_states", companyId),
+      activeWorkItems: this.readPayloadTable<WorkItemRecord>("work_items", companyId),
+      activeRequirementAggregates: this.readPayloadTable<RequirementAggregateRecord>("requirement_aggregates", companyId),
+      activeRequirementEvidence: this.readPayloadTable<RequirementEvidenceEvent>("requirement_evidence", companyId),
+      activeRoomRecords: this.readPayloadTable<RequirementRoomRecord>("rooms", companyId),
+      activeRoundRecords: this.readPayloadTable<RoundRecord>("rounds", companyId),
+      activeArtifacts: this.readPayloadTable<ArtifactRecord>("artifacts", companyId),
+      activeDispatches: this.readPayloadTable<DispatchRecord>("dispatches", companyId),
+      activeRoomBindings: this.readPayloadTable<RoomConversationBindingRecord>("room_bindings", companyId),
+      primaryRequirementId:
+        this.readPayloadTable<RequirementAggregateRecord>("requirement_aggregates", companyId).find(
+          (aggregate) => aggregate.primary,
+        )?.id ?? null,
+      updatedAt: Date.now(),
+    };
+    this.saveRuntime(snapshot);
+    return snapshot;
+  }
+
+  private readPayloadTable<T>(table: RuntimeSliceTables, companyId: string): T[] {
+    const rows = this.db.prepare(`SELECT payload_json FROM ${table} WHERE company_id = ? ORDER BY updated_at DESC`).all(companyId) as Array<{
+      payload_json: string;
+    }>;
+    return rows.map((row) => parseJson<T | null>(row.payload_json, null)).filter(isPresent);
+  }
+
+  private replacePayloadTable<T extends object>(table: RuntimeSliceTables, companyId: string, records: T[]) {
+    this.db.prepare(`DELETE FROM ${table} WHERE company_id = ?`).run(companyId);
+    for (const record of records) {
+      const recordMeta = record as { id?: string; updatedAt?: number };
+      const id =
+        typeof recordMeta.id === "string"
+          ? recordMeta.id
+          : table === "conversation_states"
+            ? (record as ConversationStateRecord).conversationId
+            : table === "room_bindings"
+              ? `${(record as RoomConversationBindingRecord).roomId}:${(record as RoomConversationBindingRecord).conversationId}`
+              : crypto.randomUUID();
+      const updatedAt =
+        typeof recordMeta.updatedAt === "number"
+          ? recordMeta.updatedAt
+          : Date.now();
+      this.db.prepare(`
+        INSERT INTO ${table} (id, company_id, updated_at, payload_json)
+        VALUES (?, ?, ?, ?)
+      `).run(id, companyId, updatedAt, JSON.stringify(record));
+    }
+  }
+
+  saveRuntime(snapshot: AuthorityCompanyRuntimeSnapshot) {
+    const normalized: AuthorityCompanyRuntimeSnapshot = {
+      ...snapshot,
+      updatedAt: Date.now(),
+    };
+    this.replacePayloadTable("missions", snapshot.companyId, normalized.activeMissionRecords);
+    this.replacePayloadTable("conversation_states", snapshot.companyId, normalized.activeConversationStates);
+    this.replacePayloadTable("work_items", snapshot.companyId, normalized.activeWorkItems);
+    this.replacePayloadTable("requirement_aggregates", snapshot.companyId, normalized.activeRequirementAggregates);
+    this.replacePayloadTable("requirement_evidence", snapshot.companyId, normalized.activeRequirementEvidence);
+    this.replacePayloadTable("rooms", snapshot.companyId, normalized.activeRoomRecords);
+    this.replacePayloadTable("rounds", snapshot.companyId, normalized.activeRoundRecords);
+    this.replacePayloadTable("artifacts", snapshot.companyId, normalized.activeArtifacts);
+    this.replacePayloadTable("dispatches", snapshot.companyId, normalized.activeDispatches);
+    this.replacePayloadTable("room_bindings", snapshot.companyId, normalized.activeRoomBindings);
+    this.db.prepare(`
+      INSERT INTO runtimes (company_id, snapshot_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(company_id) DO UPDATE SET
+        snapshot_json = excluded.snapshot_json,
+        updated_at = excluded.updated_at
+    `).run(snapshot.companyId, JSON.stringify(normalized), normalized.updatedAt);
+    return normalized;
+  }
+
+  listActors() {
+    const activeCompanyId = this.getActiveCompanyId();
+    const rows = activeCompanyId
+      ? (this.db.prepare("SELECT payload_json FROM employees WHERE company_id = ? ORDER BY is_meta DESC, nickname ASC").all(activeCompanyId) as Array<{
+          payload_json: string;
+        }>)
+      : (this.db.prepare("SELECT payload_json FROM employees ORDER BY nickname ASC").all() as Array<{
+          payload_json: string;
+        }>);
+    const employees = rows
+      .map((row) => parseJson<EmployeeRef | null>(row.payload_json, null))
+      .filter(isPresent);
+    return {
+      agents: employees.map((employee) => ({
+        id: employee.agentId,
+        name: employee.nickname,
+        identity: {
+          name: employee.role,
+        },
+      })),
+    };
+  }
+
+  private ensureConversationRow(companyId: string, actorId: string, sessionKey: string) {
+    const existing = this.db.prepare("SELECT session_key FROM conversations WHERE session_key = ?").get(sessionKey) as
+      | { session_key?: string }
+      | undefined;
+    if (existing?.session_key) {
+      return;
+    }
+    this.db.prepare(`
+      INSERT INTO conversations (session_key, company_id, actor_id, kind, label, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(sessionKey, companyId, actorId, "direct", actorId, Date.now());
+  }
+
+  private appendConversationMessage(companyId: string, sessionKey: string, message: StoredChatMessage) {
+    this.db.prepare(`
+      INSERT INTO conversation_messages (id, company_id, session_key, role, timestamp, payload_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      companyId,
+      sessionKey,
+      message.role,
+      message.timestamp ?? Date.now(),
+      JSON.stringify(message),
+    );
+    this.db.prepare(`
+      INSERT INTO conversations (session_key, company_id, actor_id, kind, label, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_key) DO UPDATE SET
+        updated_at = excluded.updated_at
+    `).run(sessionKey, companyId, sessionKey.split(":")[1] ?? null, "direct", sessionKey.split(":")[1] ?? null, message.timestamp ?? Date.now());
+  }
+
+  listSessions(companyId?: string | null, agentId?: string | null): AuthoritySessionListResponse {
+    const clauses: string[] = [];
+    const args: Array<string> = [];
+    if (companyId) {
+      clauses.push("company_id = ?");
+      args.push(companyId);
+    }
+    if (agentId) {
+      clauses.push("actor_id = ?");
+      args.push(agentId);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db.prepare(`
+      SELECT session_key, actor_id, kind, label, updated_at
+      FROM conversations
+      ${where}
+      ORDER BY updated_at DESC
+    `).all(...args) as Array<{
+      session_key: string;
+      actor_id?: string | null;
+      kind?: string | null;
+      label?: string | null;
+      updated_at?: number | null;
+    }>;
+    const latestPreviewStmt = this.db.prepare(`
+      SELECT payload_json
+      FROM conversation_messages
+      WHERE session_key = ?
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `);
+    const sessions = rows.map((row) => {
+      const previewRow = latestPreviewStmt.get(row.session_key) as { payload_json?: string } | undefined;
+      const latest = previewRow?.payload_json ? parseJson<StoredChatMessage>(previewRow.payload_json, { role: "system" }) : null;
+      const kind: "direct" | "group" = row.kind === "group" ? "group" : "direct";
+      return {
+        key: row.session_key,
+        actorId: row.actor_id ?? null,
+        kind,
+        label: row.label ?? row.actor_id ?? row.session_key,
+        displayName: row.label ?? row.actor_id ?? row.session_key,
+        derivedTitle: row.label ?? row.actor_id ?? row.session_key,
+        lastMessagePreview: truncate(typeof latest?.text === "string" ? latest.text : ""),
+        updatedAt: row.updated_at ?? Date.now(),
+      };
+    });
+    return {
+      ts: Date.now(),
+      path: this.dbPath,
+      count: sessions.length,
+      sessions,
+    };
+  }
+
+  getChatHistory(sessionKey: string, limit = 80): AuthoritySessionHistoryResponse {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+      FROM conversation_messages
+      WHERE session_key = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(sessionKey, limit) as Array<{ payload_json: string }>;
+    const messages = rows
+      .map((row) => parseJson<StoredChatMessage>(row.payload_json, { role: "system" }))
+      .reverse();
+    return {
+      sessionKey,
+      sessionId: sessionKey,
+      messages,
+    };
+  }
+
+  resetSession(sessionKey: string) {
+    this.db.prepare("DELETE FROM conversation_messages WHERE session_key = ?").run(sessionKey);
+    this.db.prepare("UPDATE conversations SET updated_at = ? WHERE session_key = ?").run(Date.now(), sessionKey);
+    return { ok: true as const, key: sessionKey };
+  }
+
+  deleteSession(sessionKey: string) {
+    this.db.prepare("DELETE FROM conversation_messages WHERE session_key = ?").run(sessionKey);
+    const deleted = this.db.prepare("DELETE FROM conversations WHERE session_key = ?").run(sessionKey).changes > 0;
+    return { ok: true, deleted };
+  }
+
+  listAgentFiles(agentId: string) {
+    const rows = this.db.prepare(`
+      SELECT name, content, updated_at
+      FROM agent_files
+      WHERE agent_id = ?
+      ORDER BY name ASC
+    `).all(agentId) as Array<{ name: string; content: string; updated_at: number }>;
+    return {
+      agentId,
+      workspace: `authority://${agentId}`,
+      files: rows.map((row) => ({
+        name: row.name,
+        path: `authority://${agentId}/${row.name}`,
+        missing: false,
+        size: row.content.length,
+        updatedAtMs: row.updated_at,
+        content: row.content,
+      })),
+    };
+  }
+
+  getAgentFile(agentId: string, name: string) {
+    const row = this.db.prepare(`
+      SELECT content, updated_at
+      FROM agent_files
+      WHERE agent_id = ? AND name = ?
+    `).get(agentId, name) as { content?: string; updated_at?: number } | undefined;
+    return {
+      agentId,
+      workspace: `authority://${agentId}`,
+      file: row
+        ? {
+            name,
+            path: `authority://${agentId}/${name}`,
+            missing: false,
+            size: row.content?.length ?? 0,
+            updatedAtMs: row.updated_at,
+            content: row.content,
+          }
+        : {
+            name,
+            path: `authority://${agentId}/${name}`,
+            missing: true,
+          },
+    };
+  }
+
+  setAgentFile(agentId: string, name: string, content: string) {
+    const updatedAt = Date.now();
+    this.db.prepare(`
+      INSERT INTO agent_files (agent_id, name, content, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(agent_id, name) DO UPDATE SET
+        content = excluded.content,
+        updated_at = excluded.updated_at
+    `).run(agentId, name, content, updatedAt);
+    return {
+      ok: true as const,
+      agentId,
+      workspace: `authority://${agentId}`,
+      file: {
+        name,
+        path: `authority://${agentId}/${name}`,
+        missing: false,
+        size: content.length,
+        updatedAtMs: updatedAt,
+        content,
+      },
+    };
+  }
+
+  appendCompanyEvent(event: CompanyEvent) {
+    this.db.prepare(`
+      INSERT INTO event_log (event_id, company_id, kind, timestamp, payload_json)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(event.eventId, event.companyId, event.kind, event.createdAt, JSON.stringify(event));
+    return { ok: true as const, event };
+  }
+
+  listCompanyEvents(companyId: string, cursor?: string | null, since?: number): AuthorityCompanyEventsResponse {
+    const clauses = ["company_id = ?"];
+    const args: Array<string | number> = [companyId];
+    if (cursor) {
+      clauses.push("seq > ?");
+      args.push(Number.parseInt(cursor, 10) || 0);
+    }
+    if (typeof since === "number") {
+      clauses.push("timestamp >= ?");
+      args.push(since);
+    }
+    const rows = this.db.prepare(`
+      SELECT seq, payload_json
+      FROM event_log
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY seq ASC
+      LIMIT 200
+    `).all(...args) as Array<{ seq: number; payload_json: string }>;
+    const events = rows
+      .map((row) => parseJson<CompanyEvent | null>(row.payload_json, null))
+      .filter(isPresent);
+    return {
+      companyId,
+      events,
+      nextCursor: rows.length > 0 ? String(rows[rows.length - 1]!.seq) : cursor ?? null,
+    };
+  }
+
+  transitionRequirement(input: AuthorityRequirementTransitionRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const nextAggregates = runtime.activeRequirementAggregates.map((aggregate) =>
+      aggregate.id === input.aggregateId
+        ? {
+            ...aggregate,
+            ...input.changes,
+            revision: aggregate.revision + 1,
+            updatedAt: input.timestamp ?? Date.now(),
+          }
+        : aggregate,
+    );
+    const nextRuntime = this.saveRuntime({
+      ...runtime,
+      activeRequirementAggregates: nextAggregates,
+      primaryRequirementId:
+        nextAggregates.find((aggregate) => aggregate.primary)?.id ?? runtime.primaryRequirementId,
+    });
+    return nextRuntime;
+  }
+
+  upsertRoom(input: AuthorityAppendRoomRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const nextRooms = [
+      input.room,
+      ...runtime.activeRoomRecords.filter((room) => room.id !== input.room.id),
+    ];
+    return this.saveRuntime({ ...runtime, activeRoomRecords: nextRooms });
+  }
+
+  upsertDispatch(input: AuthorityDispatchUpsertRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const nextDispatches = [
+      input.dispatch,
+      ...runtime.activeDispatches.filter((dispatch) => dispatch.id !== input.dispatch.id),
+    ];
+    return this.saveRuntime({ ...runtime, activeDispatches: nextDispatches });
+  }
+
+  private buildLocalReply(company: Company, actorId: string, message: string) {
+    const actor = company.employees.find((employee) => employee.agentId === actorId);
+    const clean = message.trim();
+    if (actor?.metaRole === "ceo") {
+      const strategyLine = /小说|番茄/i.test(clean)
+        ? "我会先按番茄小说的内容生产链拆成：题材定位、角色分工、产能节奏、发布与复盘。"
+        : "我会先把目标拆成团队结构、执行流程和首个可交付里程碑。";
+      return [
+        `我理解你的目标是：${truncate(clean, 120)}`,
+        strategyLine,
+        "第一步我会先收敛主线需求，明确这件事的负责人、阶段和下一步动作。",
+        "如果你认可，我接下来会把它整理成一条正式需求，并给出团队搭建与启动方案。",
+      ].join("\n\n");
+    }
+    const speaker = actor?.nickname ?? actorId;
+    return [
+      `${speaker} 已接到这条任务。`,
+      `我的理解是：${truncate(clean, 120)}`,
+      "我会先给出一版可执行的处理建议，并把关键阻塞点标出来。",
+    ].join("\n\n");
+  }
+
+  sendChat(input: AuthorityChatSendRequest): AuthorityChatSendResponse {
+    const config = this.loadConfig();
+    const company = config?.companies.find((entry) => entry.id === input.companyId);
+    if (!company) {
+      throw new Error(`Unknown company: ${input.companyId}`);
+    }
+    const sessionKey = input.sessionKey?.trim() || `agent:${input.actorId}:main`;
+    this.ensureConversationRow(input.companyId, input.actorId, sessionKey);
+    const now = Date.now();
+    this.appendConversationMessage(input.companyId, sessionKey, {
+      role: "user",
+      text: input.message,
+      content: [{ type: "text", text: input.message }],
+      timestamp: now,
+    });
+
+    const replyText = this.buildLocalReply(company, input.actorId, input.message);
+    const replyMessage: StoredChatMessage = {
+      role: "assistant",
+      text: replyText,
+      content: [{ type: "text", text: replyText }],
+      timestamp: now + 1,
+      provenance: {
+        sourceActorId: input.actorId,
+      },
+    };
+    this.appendConversationMessage(input.companyId, sessionKey, replyMessage);
+
+    const runId = crypto.randomUUID();
+    this.db.prepare(`
+      INSERT INTO executor_runs (id, company_id, actor_id, session_key, status, started_at, finished_at, payload_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      runId,
+      input.companyId,
+      input.actorId,
+      sessionKey,
+      "completed",
+      now,
+      now + 1,
+      JSON.stringify({
+        request: input.message,
+        response: replyText,
+      }),
+    );
+
+    return {
+      runId,
+      status: "started",
+      sessionKey,
+    };
+  }
+}
+
+function buildCompanyDefinition(input: AuthorityCreateCompanyRequest): {
+  company: Company;
+  agentFiles: Array<{ agentId: string; name: string; content: string }>;
+} {
+  const blueprint = input.blueprintText ? parseCompanyBlueprint(input.blueprintText) : null;
+  const template =
+    COMPANY_TEMPLATES.find((entry) => entry.id === (blueprint?.template ?? input.templateId)) ??
+    COMPANY_TEMPLATES.find((entry) => entry.id === "blank") ??
+    COMPANY_TEMPLATES[0];
+  const companyId = crypto.randomUUID();
+  const companyName = input.companyName.trim() || blueprint?.sourceCompanyName || "新公司";
+  const namespace = `${slugify(companyName)}-${companyId.slice(0, 6)}`;
+
+  const departments: Department[] = [
+    { id: crypto.randomUUID(), name: "管理中枢", leadAgentId: `${namespace}-ceo`, color: "slate", order: 0 },
+    { id: crypto.randomUUID(), name: "人力资源部", leadAgentId: `${namespace}-hr`, color: "rose", order: 1 },
+    { id: crypto.randomUUID(), name: "技术部", leadAgentId: `${namespace}-cto`, color: "indigo", order: 2 },
+    { id: crypto.randomUUID(), name: "运营部", leadAgentId: `${namespace}-coo`, color: "emerald", order: 3 },
+  ];
+  const deptByName = new Map(departments.map((department) => [department.name, department.id] as const));
+  const employees: EmployeeRef[] = [
+    {
+      agentId: `${namespace}-ceo`,
+      nickname: "CEO",
+      role: "Chief Executive Officer",
+      isMeta: true,
+      metaRole: "ceo",
+      departmentId: deptByName.get("管理中枢"),
+    },
+    {
+      agentId: `${namespace}-hr`,
+      nickname: "HR",
+      role: "Human Resources Director",
+      isMeta: true,
+      metaRole: "hr",
+      reportsTo: `${namespace}-ceo`,
+      departmentId: deptByName.get("人力资源部"),
+    },
+    {
+      agentId: `${namespace}-cto`,
+      nickname: "CTO",
+      role: "Chief Technology Officer",
+      isMeta: true,
+      metaRole: "cto",
+      reportsTo: `${namespace}-ceo`,
+      departmentId: deptByName.get("技术部"),
+    },
+    {
+      agentId: `${namespace}-coo`,
+      nickname: "COO",
+      role: "Chief Operating Officer",
+      isMeta: true,
+      metaRole: "coo",
+      reportsTo: `${namespace}-ceo`,
+      departmentId: deptByName.get("运营部"),
+    },
+  ];
+
+  const reportsToMap: Record<string, string> = {
+    ceo: `${namespace}-ceo`,
+    hr: `${namespace}-hr`,
+    cto: `${namespace}-cto`,
+    coo: `${namespace}-coo`,
+  };
+
+  if (blueprint) {
+    const blueprintIdMap = new Map<string, string>();
+    blueprintIdMap.set("meta:ceo", `${namespace}-ceo`);
+    blueprintIdMap.set("meta:hr", `${namespace}-hr`);
+    blueprintIdMap.set("meta:cto", `${namespace}-cto`);
+    blueprintIdMap.set("meta:coo", `${namespace}-coo`);
+
+    for (const employee of blueprint.employees.filter((entry) => !entry.isMeta)) {
+      const agentId = `${namespace}-${slugify(employee.nickname || employee.role)}-${employees.length}`;
+      blueprintIdMap.set(employee.blueprintId, agentId);
+      employees.push({
+        agentId,
+        nickname: employee.nickname,
+        role: employee.role,
+        isMeta: false,
+        reportsTo: employee.reportsToBlueprintId ? blueprintIdMap.get(employee.reportsToBlueprintId) ?? reportsToMap.ceo : reportsToMap.ceo,
+        departmentId: employee.departmentName ? deptByName.get(employee.departmentName) : undefined,
+      });
+    }
+
+    for (const department of blueprint.departments) {
+      if (deptByName.has(department.name)) {
+        continue;
+      }
+      const nextDepartment: Department = {
+        id: crypto.randomUUID(),
+        name: department.name,
+        leadAgentId: department.leadBlueprintId ? blueprintIdMap.get(department.leadBlueprintId) ?? reportsToMap.coo : reportsToMap.coo,
+        color: department.color,
+        order: department.order,
+      };
+      departments.push(nextDepartment);
+      deptByName.set(nextDepartment.name, nextDepartment.id);
+    }
+  } else {
+    for (const employee of template?.employees ?? []) {
+      const reportsTo = employee.reportsToRole ? reportsToMap[employee.reportsToRole] : reportsToMap.ceo;
+      employees.push({
+        agentId: `${namespace}-${slugify(employee.nickname || employee.role)}-${employees.length}`,
+        nickname: employee.nickname,
+        role: employee.role,
+        isMeta: false,
+        reportsTo,
+        departmentId: departments.find((department) => department.leadAgentId === reportsTo)?.id,
+      });
+    }
+  }
+
+  const quickPrompts: QuickPrompt[] = blueprint
+    ? blueprint.quickPrompts.map((prompt) => ({
+        label: prompt.label,
+        icon: prompt.icon,
+        prompt: prompt.prompt,
+        targetAgentId: employees[0]?.agentId ?? reportsToMap.ceo,
+      }))
+    : [];
+
+  const company: Company = {
+    id: companyId,
+    name: companyName,
+    description: blueprint?.description || template?.description || "",
+    icon: blueprint?.icon || template?.icon || "🏢",
+    template: blueprint?.template || template?.id || "blank",
+    orgSettings: { autoCalibrate: true },
+    departments,
+    employees,
+    quickPrompts,
+    knowledgeItems: blueprint?.knowledgeItems ?? [],
+    createdAt: Date.now(),
+  };
+
+  const ceo = employees.find((employee) => employee.metaRole === "ceo")!;
+  const hr = employees.find((employee) => employee.metaRole === "hr")!;
+  const cto = employees.find((employee) => employee.metaRole === "cto")!;
+  const coo = employees.find((employee) => employee.metaRole === "coo")!;
+
+  const agentFiles = [
+    { agentId: ceo.agentId, name: "SOUL.md", content: generateCeoSoul(company.name) },
+    { agentId: hr.agentId, name: "SOUL.md", content: generateHrSoul(company.name) },
+    { agentId: cto.agentId, name: "SOUL.md", content: generateCtoSoul(company.name) },
+    { agentId: coo.agentId, name: "SOUL.md", content: generateCooSoul(company.name) },
+    {
+      agentId: ceo.agentId,
+      name: COMPANY_CONTEXT_FILE_NAME,
+      content: JSON.stringify(buildCompanyContextSnapshot(company), null, 2),
+    },
+    {
+      agentId: ceo.agentId,
+      name: CEO_OPERATIONS_FILE_NAME,
+      content: buildCeoOperationsGuide(company),
+    },
+  ];
+
+  return { company, agentFiles };
+}
+
+const repository = new AuthorityRepository(DB_PATH);
+const sockets = new Set<WebSocket>();
+
+function broadcast(event: AuthorityEvent) {
+  const encoded = JSON.stringify(event);
+  for (const socket of sockets) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(encoded);
+    }
+  }
+}
+
+const server = createServer(async (request, response) => {
+  setCorsHeaders(response);
+  if (request.method === "OPTIONS") {
+    response.statusCode = 204;
+    response.end();
+    return;
+  }
+
+  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+  try {
+    if (request.method === "GET" && url.pathname === "/health") {
+      sendJson(response, 200, repository.getHealth());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/bootstrap") {
+      sendJson(response, 200, repository.getBootstrap());
+      return;
+    }
+
+    if (request.method === "PUT" && url.pathname === "/config") {
+      const body = await readJsonBody<{ config: CyberCompanyConfig }>(request);
+      sendJson(response, 200, repository.saveConfig(body.config));
+      broadcast({ type: "bootstrap.updated", timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/companies") {
+      const body = await readJsonBody<AuthorityCreateCompanyRequest>(request);
+      const { company, agentFiles } = buildCompanyDefinition(body);
+      const existingConfig = repository.loadConfig();
+      const nextConfig: CyberCompanyConfig = existingConfig
+        ? {
+            ...existingConfig,
+            companies: [...existingConfig.companies, company],
+            activeCompanyId: company.id,
+          }
+        : {
+            version: 1,
+            companies: [company],
+            activeCompanyId: company.id,
+            preferences: { theme: "classic", locale: "zh-CN" },
+          };
+      repository.saveConfig(nextConfig);
+      repository.saveRuntime(EMPTY_RUNTIME(company.id));
+      agentFiles.forEach((file) => {
+        repository.setAgentFile(file.agentId, file.name, file.content);
+      });
+      const payload: AuthorityCreateCompanyResponse = {
+        company,
+        config: repository.loadConfig()!,
+        runtime: repository.loadRuntime(company.id),
+      };
+      sendJson(response, 200, payload);
+      broadcast({ type: "bootstrap.updated", companyId: company.id, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "DELETE" && url.pathname.startsWith("/companies/")) {
+      const companyId = decodeURIComponent(url.pathname.slice("/companies/".length));
+      repository.deleteCompany(companyId);
+      sendJson(response, 200, { ok: true });
+      broadcast({ type: "bootstrap.updated", companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/company/switch") {
+      const body = await readJsonBody<AuthoritySwitchCompanyRequest>(request);
+      sendJson(response, 200, repository.switchCompany(body.companyId));
+      broadcast({ type: "bootstrap.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/companies/") && url.pathname.endsWith("/runtime")) {
+      const companyId = decodeURIComponent(url.pathname.split("/")[2] ?? "");
+      sendJson(response, 200, repository.loadRuntime(companyId));
+      return;
+    }
+
+    if (request.method === "PUT" && url.pathname.startsWith("/companies/") && url.pathname.endsWith("/runtime")) {
+      const companyId = decodeURIComponent(url.pathname.split("/")[2] ?? "");
+      const body = await readJsonBody<AuthorityRuntimeSyncRequest>(request);
+      sendJson(response, 200, repository.saveRuntime({ ...body.snapshot, companyId }));
+      broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/companies/") && url.pathname.endsWith("/events")) {
+      const companyId = decodeURIComponent(url.pathname.split("/")[2] ?? "");
+      const cursor = url.searchParams.get("cursor");
+      const since = url.searchParams.has("since")
+        ? Number.parseInt(url.searchParams.get("since") ?? "", 10)
+        : undefined;
+      sendJson(response, 200, repository.listCompanyEvents(companyId, cursor, since));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/actors") {
+      sendJson(response, 200, repository.listActors());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/sessions") {
+      const companyId = url.searchParams.get("companyId");
+      const agentId = url.searchParams.get("agentId");
+      sendJson(response, 200, repository.listSessions(companyId, agentId));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/history")) {
+      const sessionKey = decodeURIComponent(url.pathname.replace(/^\/sessions\//, "").replace(/\/history$/, ""));
+      const limit = url.searchParams.has("limit")
+        ? Number.parseInt(url.searchParams.get("limit") ?? "", 10)
+        : undefined;
+      sendJson(response, 200, repository.getChatHistory(sessionKey, limit));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/reset")) {
+      const sessionKey = decodeURIComponent(url.pathname.replace(/^\/sessions\//, "").replace(/\/reset$/, ""));
+      sendJson(response, 200, repository.resetSession(sessionKey));
+      broadcast({ type: "conversation.updated", timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "DELETE" && url.pathname.startsWith("/sessions/")) {
+      const sessionKey = decodeURIComponent(url.pathname.replace(/^\/sessions\//, ""));
+      sendJson(response, 200, repository.deleteSession(sessionKey));
+      broadcast({ type: "conversation.updated", timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/agents/") && url.pathname.endsWith("/files")) {
+      const agentId = decodeURIComponent(url.pathname.replace(/^\/agents\//, "").replace(/\/files$/, ""));
+      sendJson(response, 200, repository.listAgentFiles(agentId));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/agents/") && url.pathname.includes("/files/")) {
+      const [, , agentId, , ...nameParts] = url.pathname.split("/");
+      sendJson(response, 200, repository.getAgentFile(decodeURIComponent(agentId), decodeURIComponent(nameParts.join("/"))));
+      return;
+    }
+
+    if (request.method === "PUT" && url.pathname.startsWith("/agents/") && url.pathname.includes("/files/")) {
+      const [, , agentId, , ...nameParts] = url.pathname.split("/");
+      const body = await readJsonBody<{ content: string }>(request);
+      sendJson(
+        response,
+        200,
+        repository.setAgentFile(decodeURIComponent(agentId), decodeURIComponent(nameParts.join("/")), body.content),
+      );
+      broadcast({ type: "artifact.updated", timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/chat.send") {
+      const body = await readJsonBody<AuthorityChatSendRequest>(request);
+      const result = repository.sendChat(body);
+      sendJson(response, 200, result);
+      const history = repository.getChatHistory(result.sessionKey, 1);
+      const message = history.messages[history.messages.length - 1];
+      broadcast({
+        type: "chat",
+        companyId: body.companyId,
+        timestamp: Date.now(),
+        payload: {
+          runId: result.runId,
+          sessionKey: result.sessionKey,
+          seq: 1,
+          state: "final",
+          message,
+        },
+      });
+      broadcast({ type: "conversation.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/requirement.transition") {
+      const body = await readJsonBody<AuthorityRequirementTransitionRequest>(request);
+      sendJson(response, 200, repository.transitionRequirement(body));
+      broadcast({ type: "requirement.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/room.append") {
+      const body = await readJsonBody<AuthorityAppendRoomRequest>(request);
+      sendJson(response, 200, repository.upsertRoom(body));
+      broadcast({ type: "room.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/dispatch.create") {
+      const body = await readJsonBody<AuthorityDispatchUpsertRequest>(request);
+      sendJson(response, 200, repository.upsertDispatch(body));
+      broadcast({ type: "dispatch.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/company-event.append") {
+      const body = await readJsonBody<AuthorityAppendCompanyEventRequest>(request);
+      sendJson(response, 200, repository.appendCompanyEvent(body.event));
+      return;
+    }
+
+    sendError(response, 404, `Unknown route: ${request.method} ${url.pathname}`);
+  } catch (error) {
+    console.error("Authority request failed", error);
+    sendError(response, 500, error instanceof Error ? error.message : String(error));
+  }
+});
+
+const wsServer = new WebSocketServer({ noServer: true });
+wsServer.on("connection", (socket) => {
+  sockets.add(socket);
+  socket.on("close", () => {
+    sockets.delete(socket);
+  });
+});
+
+server.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+  if (url.pathname !== "/events") {
+    socket.destroy();
+    return;
+  }
+  wsServer.handleUpgrade(request, socket, head, (websocket) => {
+    wsServer.emit("connection", websocket, request);
+  });
+});
+
+server.listen(AUTHORITY_PORT, "127.0.0.1", () => {
+  console.log(`cyber-company authority listening on http://127.0.0.1:${AUTHORITY_PORT}`);
+  console.log(`SQLite authority db: ${DB_PATH}`);
+});

@@ -13,6 +13,7 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Routes, Route, Link, useLocation, Navigate } from "react-router-dom";
 import { ApprovalModalHost } from "./components/system/approval-modal-host";
+import { CompanyAuthoritySyncHost } from "./components/system/company-authority-sync-host";
 import { GatewayNotificationHost } from "./components/system/gateway-notification-host";
 import { RequirementAggregateHost } from "./components/system/requirement-aggregate-host";
 import { GatewayStatusBanner } from "./components/system/gateway-status-banner";
@@ -91,6 +92,8 @@ export default function App() {
     hasEverConnected,
     autoConnectInitialized,
     bootstrapAutoConnect,
+    providerId,
+    providers,
   } = useGatewayStore();
   const cachedBootstrapConfig = peekCachedCompanyConfig();
   const cachedBootstrapCompany =
@@ -106,6 +109,7 @@ export default function App() {
   const previousConnectedRef = useRef(connected);
   const hasSeenStableConnectionRef = useRef(connected);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const currentProvider = providers.find((provider) => provider.id === providerId);
 
   useEffect(() => {
     bootstrapAutoConnect();
@@ -139,9 +143,9 @@ export default function App() {
       return;
     }
     if (previousConnected && !connected) {
-      toast.warning("Gateway 连接已断开", "系统正在自动重连。你可以继续停留在当前页面。");
+      toast.warning("Authority 连接已断开", "系统正在自动重连。你可以继续停留在当前页面。");
     } else if (!previousConnected && connected) {
-      toast.success("Gateway 已恢复连接", "实时操作能力已恢复。");
+      toast.success("Authority 已恢复连接", "本机权威源和执行能力已恢复。");
     }
     previousConnectedRef.current = connected;
   }, [connected]);
@@ -230,12 +234,12 @@ export default function App() {
             ? "bg-rose-500"
             : "bg-red-500";
       const connectionLabel = connected
-        ? "已连接到 Gateway"
+        ? `已连接到${currentProvider?.label || "本机 authority"}`
         : phase === "reconnecting" || phase === "connecting"
           ? "连接中断，正在重连"
           : phase === "failed"
             ? "重连失败，请重新配置连接"
-            : "Gateway 已离线";
+            : `${currentProvider?.label || "本机 authority"} 已离线`;
 
       content = (
         <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
@@ -398,6 +402,7 @@ export default function App() {
       {content}
       <ToastHost />
       <ApprovalModalHost />
+      <CompanyAuthoritySyncHost />
       <GatewayNotificationHost />
       <RequirementAggregateHost />
     </>

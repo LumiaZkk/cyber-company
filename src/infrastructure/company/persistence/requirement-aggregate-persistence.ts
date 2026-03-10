@@ -4,8 +4,8 @@ import type {
   RequirementLifecycleState,
 } from "./types";
 
-const REQUIREMENT_AGGREGATE_CACHE_PREFIX = "cyber_company_requirement_aggregates:";
 const REQUIREMENT_AGGREGATE_LIMIT = 64;
+const requirementAggregateCache = new Map<string, RequirementAggregateRecord[]>();
 
 function isRequirementLifecycleState(value: unknown): value is RequirementLifecycleState {
   return (
@@ -50,10 +50,6 @@ function isRequirementAggregateRecord(value: unknown): value is RequirementAggre
     isRequirementLifecycleState(candidate.status) &&
     isRequirementAcceptanceStatus(candidate.acceptanceStatus ?? "not_requested")
   );
-}
-
-function getRequirementAggregateCacheKey(companyId: string) {
-  return `${REQUIREMENT_AGGREGATE_CACHE_PREFIX}${companyId.trim()}`;
 }
 
 export function sanitizeRequirementAggregateRecords(
@@ -110,19 +106,7 @@ export function loadRequirementAggregateRecords(
   if (!companyId) {
     return [];
   }
-  const raw = localStorage.getItem(getRequirementAggregateCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeRequirementAggregateRecords(companyId, parsed);
-  } catch {
-    return [];
-  }
+  return requirementAggregateCache.get(companyId) ?? [];
 }
 
 export function persistRequirementAggregateRecords(
@@ -136,12 +120,12 @@ export function persistRequirementAggregateRecords(
     0,
     REQUIREMENT_AGGREGATE_LIMIT,
   );
-  localStorage.setItem(getRequirementAggregateCacheKey(companyId), JSON.stringify(sanitized));
+  requirementAggregateCache.set(companyId, sanitized);
 }
 
 export function clearRequirementAggregateRecords(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getRequirementAggregateCacheKey(companyId));
+  requirementAggregateCache.delete(companyId);
 }

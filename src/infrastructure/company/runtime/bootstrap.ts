@@ -1,15 +1,9 @@
-import { loadArtifactRecords } from "../persistence/artifact-persistence";
-import { loadConversationStateRecords } from "../persistence/conversation-state-persistence";
-import { loadDispatchRecords } from "../persistence/dispatch-persistence";
-import { loadConversationMissionRecords } from "../persistence/mission-persistence";
-import { peekCachedCompanyConfig } from "../persistence/persistence";
-import { loadRoomConversationBindings } from "../persistence/room-binding-persistence";
-import { loadRequirementRoomRecords } from "../persistence/room-persistence";
-import { loadRoundRecords } from "../persistence/round-persistence";
-import { loadPersistedRequirementRuntimeState, reconcileActiveRequirementState } from "./requirements";
+import { readCachedAuthorityConfig, readCachedAuthorityRuntimeSnapshot } from "../../authority/runtime-cache";
+import { runtimeStateFromAuthorityRuntimeSnapshot } from "../../authority/runtime-snapshot";
 import type {
   ArtifactRecord,
   Company,
+  CompanyRuntimeState,
   ConversationMissionRecord,
   RequirementAggregateRecord,
   RequirementEvidenceEvent,
@@ -19,10 +13,9 @@ import type {
   RoundRecord,
   WorkItemRecord,
 } from "./types";
-import { loadStoredWorkItems, syncArtifactLinks, syncDispatchLinks } from "./work-items";
 
 export type LoadedCompanyProductState = {
-  loadedRooms: ReturnType<typeof loadRequirementRoomRecords>;
+  loadedRooms: CompanyRuntimeStateBootstrap["activeRoomRecords"];
   loadedMissions: ConversationMissionRecord[];
   loadedConversationStates: ConversationStateRecord[];
   loadedWorkItems: WorkItemRecord[];
@@ -35,101 +28,75 @@ export type LoadedCompanyProductState = {
   primaryRequirementId: string | null;
 };
 
-export function loadProductState(companyId: string): LoadedCompanyProductState {
-  const loadedRooms = loadRequirementRoomRecords(companyId);
-  const loadedMissions = loadConversationMissionRecords(companyId);
-  const loadedConversationStates = loadConversationStateRecords(companyId);
-  const loadedArtifacts = loadArtifactRecords(companyId);
-  const loadedDispatches = loadDispatchRecords(companyId);
-  const loadedRoomBindings = loadRoomConversationBindings(companyId);
-  const loadedRounds = loadRoundRecords(companyId);
-  const loadedWorkItems = loadStoredWorkItems({
-    companyId,
-    rooms: loadedRooms,
-    artifacts: loadedArtifacts,
-    dispatches: loadedDispatches,
-  });
-  const persistedRequirementState = loadPersistedRequirementRuntimeState(companyId);
-  const reconciledRequirementState = reconcileActiveRequirementState({
-    companyId,
-    activeRequirementAggregates: persistedRequirementState.loadedRequirementAggregates,
-    primaryRequirementId:
-      persistedRequirementState.loadedRequirementAggregates.find((aggregate) => aggregate.primary)?.id ?? null,
-    activeConversationStates: loadedConversationStates,
-    activeWorkItems: loadedWorkItems,
-    activeRoomRecords: loadedRooms,
-    activeRequirementEvidence: persistedRequirementState.loadedRequirementEvidence,
-  });
+type CompanyRuntimeStateBootstrap = ReturnType<typeof createEmptyProductState>;
 
+export function loadProductState(companyId: string): LoadedCompanyProductState {
+  const snapshot = readCachedAuthorityRuntimeSnapshot(companyId);
+  const state = runtimeStateFromAuthorityRuntimeSnapshot(snapshot);
   return {
-    loadedRooms,
-    loadedMissions,
-    loadedConversationStates,
-    loadedWorkItems: syncArtifactLinks(syncDispatchLinks(loadedWorkItems, loadedDispatches), loadedArtifacts),
-    loadedRounds,
-    loadedArtifacts,
-    loadedDispatches,
-    loadedRoomBindings,
-    loadedRequirementAggregates: reconciledRequirementState.activeRequirementAggregates,
-    loadedRequirementEvidence: persistedRequirementState.loadedRequirementEvidence,
-    primaryRequirementId: reconciledRequirementState.primaryRequirementId,
+    loadedRooms: state.activeRoomRecords,
+    loadedMissions: state.activeMissionRecords,
+    loadedConversationStates: state.activeConversationStates,
+    loadedWorkItems: state.activeWorkItems,
+    loadedRounds: state.activeRoundRecords,
+    loadedArtifacts: state.activeArtifacts,
+    loadedDispatches: state.activeDispatches,
+    loadedRoomBindings: state.activeRoomBindings,
+    loadedRequirementAggregates: state.activeRequirementAggregates,
+    loadedRequirementEvidence: state.activeRequirementEvidence,
+    primaryRequirementId: state.primaryRequirementId,
   };
 }
 
-export function createEmptyProductState(): LoadedCompanyProductState {
+export function createEmptyProductState(): Pick<
+  CompanyRuntimeState,
+  | "activeRoomRecords"
+  | "activeMissionRecords"
+  | "activeConversationStates"
+  | "activeWorkItems"
+  | "activeRequirementAggregates"
+  | "activeRequirementEvidence"
+  | "primaryRequirementId"
+  | "activeRoundRecords"
+  | "activeArtifacts"
+  | "activeDispatches"
+  | "activeRoomBindings"
+> {
   return {
-    loadedRooms: [],
-    loadedMissions: [],
-    loadedConversationStates: [],
-    loadedWorkItems: [],
-    loadedRounds: [],
-    loadedArtifacts: [],
-    loadedDispatches: [],
-    loadedRoomBindings: [],
-    loadedRequirementAggregates: [],
-    loadedRequirementEvidence: [],
+    activeRoomRecords: [],
+    activeMissionRecords: [],
+    activeConversationStates: [],
+    activeWorkItems: [],
+    activeRequirementAggregates: [],
+    activeRequirementEvidence: [],
     primaryRequirementId: null,
+    activeRoundRecords: [],
+    activeArtifacts: [],
+    activeDispatches: [],
+    activeRoomBindings: [],
   };
 }
 
 export function loadInitialCompanyState() {
-  try {
-    const config = peekCachedCompanyConfig();
-    const activeCompany = config?.companies.find((company: Company) => company.id === config.activeCompanyId) ?? null;
-    const state = activeCompany ? loadProductState(activeCompany.id) : createEmptyProductState();
+  const config = readCachedAuthorityConfig();
+  const activeCompany =
+    config?.companies.find((company: Company) => company.id === config.activeCompanyId) ?? null;
+  const state = activeCompany ? loadProductState(activeCompany.id) : null;
 
-    return {
-      config: config ?? null,
-      activeCompany,
-      activeRoomRecords: state.loadedRooms,
-      activeMissionRecords: state.loadedMissions,
-      activeConversationStates: state.loadedConversationStates,
-      activeWorkItems: state.loadedWorkItems,
-      activeRequirementAggregates: state.loadedRequirementAggregates,
-      activeRequirementEvidence: state.loadedRequirementEvidence,
-      primaryRequirementId: state.primaryRequirementId,
-      activeRoundRecords: state.loadedRounds,
-      activeArtifacts: state.loadedArtifacts,
-      activeDispatches: state.loadedDispatches,
-      activeRoomBindings: state.loadedRoomBindings,
-      bootstrapPhase: activeCompany ? ("ready" as const) : config ? ("missing" as const) : ("idle" as const),
-    };
-  } catch {
-    return {
-      config: null,
-      activeCompany: null,
-      activeRoomRecords: [],
-      activeMissionRecords: [],
-      activeConversationStates: [],
-      activeWorkItems: [],
-      activeRequirementAggregates: [],
-      activeRequirementEvidence: [],
-      primaryRequirementId: null,
-      activeRoundRecords: [],
-      activeArtifacts: [],
-      activeDispatches: [],
-      activeRoomBindings: [],
-      bootstrapPhase: "idle" as const,
-    };
-  }
+  return {
+    config: config ?? null,
+    activeCompany,
+    activeRoomRecords: state?.loadedRooms ?? [],
+    activeMissionRecords: state?.loadedMissions ?? [],
+    activeConversationStates: state?.loadedConversationStates ?? [],
+    activeWorkItems: state?.loadedWorkItems ?? [],
+    activeRequirementAggregates: state?.loadedRequirementAggregates ?? [],
+    activeRequirementEvidence: state?.loadedRequirementEvidence ?? [],
+    primaryRequirementId: state?.primaryRequirementId ?? null,
+    activeRoundRecords: state?.loadedRounds ?? [],
+    activeArtifacts: state?.loadedArtifacts ?? [],
+    activeDispatches: state?.loadedDispatches ?? [],
+    activeRoomBindings: state?.loadedRoomBindings ?? [],
+    bootstrapPhase: activeCompany ? ("ready" as const) : config ? ("missing" as const) : ("idle" as const),
+  };
 }

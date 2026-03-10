@@ -12,8 +12,8 @@ import {
 } from "../../../application/mission/message-truth";
 import type { RoundMessageSnapshot, RoundRecord } from "./types";
 
-const ROUND_CACHE_PREFIX = "cyber_company_round_records:";
 const ROUND_LIMIT = 80;
+const roundCache = new Map<string, RoundRecord[]>();
 function isRoundRecord(value: unknown): value is RoundRecord {
   if (!value || typeof value !== "object") {
     return false;
@@ -50,10 +50,6 @@ function isRoundMessageSnapshot(value: unknown): value is RoundMessageSnapshot {
     typeof candidate.text === "string" &&
     typeof candidate.timestamp === "number"
   );
-}
-
-function getRoundCacheKey(companyId: string) {
-  return `${ROUND_CACHE_PREFIX}${companyId.trim()}`;
 }
 
 function normalizeRoundField(value: string | null | undefined): string {
@@ -173,21 +169,7 @@ export function loadRoundRecords(companyId: string | null | undefined): RoundRec
   if (!companyId) {
     return [];
   }
-
-  const raw = localStorage.getItem(getRoundCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeRoundRecords(parsed.filter(isRoundRecord));
-  } catch {
-    return [];
-  }
+  return roundCache.get(companyId) ?? [];
 }
 
 export function persistRoundRecords(companyId: string | null | undefined, rounds: RoundRecord[]) {
@@ -197,12 +179,12 @@ export function persistRoundRecords(companyId: string | null | undefined, rounds
 
   const trimmed = sanitizeRoundRecords(rounds)
     .slice(0, ROUND_LIMIT);
-  localStorage.setItem(getRoundCacheKey(companyId), JSON.stringify(trimmed));
+  roundCache.set(companyId, trimmed);
 }
 
 export function clearRoundRecords(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getRoundCacheKey(companyId));
+  roundCache.delete(companyId);
 }

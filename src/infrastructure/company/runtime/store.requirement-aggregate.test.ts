@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { gateway } from "../../../application/gateway";
 import { useCompanyRuntimeStore } from "./store";
 import type { Company, WorkItemRecord } from "./types";
 
@@ -66,6 +67,17 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
 
   beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(gateway, "appendCompanyEvent").mockResolvedValue({
+      ok: true,
+      event: {
+        eventId: "test-event",
+        companyId: "company-1",
+        kind: "requirement_seeded",
+        fromActorId: "system:test",
+        createdAt: Date.now(),
+        payload: {},
+      },
+    });
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, "localStorage", {
       value: {

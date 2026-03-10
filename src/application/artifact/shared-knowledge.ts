@@ -1,4 +1,5 @@
-import type { Company, SharedKnowledgeItem, SharedKnowledgeKind } from "../../domain";
+import type { SharedKnowledgeItem, SharedKnowledgeKind } from "../../domain/artifact/types";
+import type { Company } from "../../domain/org/types";
 import { getActiveHandoffs } from "../delegation/active-handoffs";
 
 function normalizeText(value: string | undefined | null): string {
@@ -7,7 +8,9 @@ function normalizeText(value: string | undefined | null): string {
     .trim();
 }
 
-function inferKnowledgeScenario(company: Company): "novel" | "content" | "service" | "research" | "assistant" | "generic" {
+function inferKnowledgeScenario(
+  company: Company,
+): "novel" | "content" | "service" | "research" | "assistant" | "generic" {
   const haystack = normalizeText(
     [company.name, company.description, company.template, ...company.employees.map((item) => item.role)].join(" "),
   );
@@ -239,7 +242,7 @@ export function buildSeedKnowledgeItems(company: Company): SharedKnowledgeItem[]
 }
 
 export function resolveCompanyKnowledge(company: Company): SharedKnowledgeItem[] {
-  const seededById = new Map(buildSeedKnowledgeItems(company).map((item) => [item.id, item]));
+  const seededById = new Map(buildSeedKnowledgeItems(company).map((item) => [item.id, item] as const));
   const storedItems = company.knowledgeItems ?? [];
 
   for (const item of storedItems) {

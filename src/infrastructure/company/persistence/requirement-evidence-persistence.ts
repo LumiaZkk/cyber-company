@@ -1,7 +1,7 @@
 import type { RequirementEvidenceEvent } from "./types";
 
-const REQUIREMENT_EVIDENCE_CACHE_PREFIX = "cyber_company_requirement_evidence:";
 const REQUIREMENT_EVIDENCE_LIMIT = 256;
+const requirementEvidenceCache = new Map<string, RequirementEvidenceEvent[]>();
 
 function isRequirementEvidenceEvent(value: unknown): value is RequirementEvidenceEvent {
   if (!value || typeof value !== "object") {
@@ -25,10 +25,6 @@ function isRequirementEvidenceEvent(value: unknown): value is RequirementEvidenc
     !Array.isArray(candidate.payload) &&
     typeof candidate.applied === "boolean"
   );
-}
-
-function getRequirementEvidenceCacheKey(companyId: string) {
-  return `${REQUIREMENT_EVIDENCE_CACHE_PREFIX}${companyId.trim()}`;
 }
 
 export function sanitizeRequirementEvidenceEvents(
@@ -61,19 +57,7 @@ export function loadRequirementEvidenceEvents(
   if (!companyId) {
     return [];
   }
-  const raw = localStorage.getItem(getRequirementEvidenceCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeRequirementEvidenceEvents(companyId, parsed);
-  } catch {
-    return [];
-  }
+  return requirementEvidenceCache.get(companyId) ?? [];
 }
 
 export function persistRequirementEvidenceEvents(
@@ -84,12 +68,12 @@ export function persistRequirementEvidenceEvents(
     return;
   }
   const sanitized = sanitizeRequirementEvidenceEvents(companyId, events);
-  localStorage.setItem(getRequirementEvidenceCacheKey(companyId), JSON.stringify(sanitized));
+  requirementEvidenceCache.set(companyId, sanitized);
 }
 
 export function clearRequirementEvidenceEvents(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getRequirementEvidenceCacheKey(companyId));
+  requirementEvidenceCache.delete(companyId);
 }

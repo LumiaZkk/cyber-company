@@ -17,8 +17,8 @@ export function GatewayStatusBanner() {
         <span className="inline-flex items-center gap-2 font-medium">
           <span className={`h-2.5 w-2.5 rounded-full ${isRetrying ? "animate-pulse bg-amber-500" : "bg-red-500"}`} />
           {isRetrying
-            ? `${currentProvider?.label || "工作引擎"} 连接已断开，正在重连...`
-            : `${currentProvider?.label || "工作引擎"} 连接中断`}
+            ? `${currentProvider?.label || "本机 authority"} 连接已断开，正在重连...`
+            : `${currentProvider?.label || "本机 authority"} 连接中断`}
         </span>
         {error ? <span className="truncate text-xs opacity-80">{error}</span> : null}
         <button

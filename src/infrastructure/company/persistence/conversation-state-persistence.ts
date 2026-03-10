@@ -1,11 +1,7 @@
 import type { ConversationStateRecord } from "./types";
 
-const CONVERSATION_STATE_CACHE_PREFIX = "cyber_company_conversation_state:";
 const CONVERSATION_STATE_LIMIT = 128;
-
-function getConversationStateCacheKey(companyId: string) {
-  return `${CONVERSATION_STATE_CACHE_PREFIX}${companyId.trim()}`;
-}
+const conversationStateCache = new Map<string, ConversationStateRecord[]>();
 
 function isConversationStateRecord(value: unknown): value is ConversationStateRecord {
   if (!value || typeof value !== "object") {
@@ -59,21 +55,7 @@ export function loadConversationStateRecords(
   if (!companyId) {
     return [];
   }
-
-  const raw = localStorage.getItem(getConversationStateCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeConversationStateRecords(companyId, parsed.filter(isConversationStateRecord));
-  } catch {
-    return [];
-  }
+  return conversationStateCache.get(companyId) ?? [];
 }
 
 export function persistConversationStateRecords(
@@ -85,12 +67,12 @@ export function persistConversationStateRecords(
   }
 
   const trimmed = sanitizeConversationStateRecords(companyId, records);
-  localStorage.setItem(getConversationStateCacheKey(companyId), JSON.stringify(trimmed));
+  conversationStateCache.set(companyId, trimmed);
 }
 
 export function clearConversationStateRecords(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getConversationStateCacheKey(companyId));
+  conversationStateCache.delete(companyId);
 }

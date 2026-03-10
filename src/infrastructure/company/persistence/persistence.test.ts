@@ -1,16 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { gateway } from "../../../application/gateway";
+import type { AuthorityBootstrapSnapshot, AuthorityCompanyRuntimeSnapshot } from "../../authority/contract";
+import { authorityClient } from "../../authority/client";
 import {
+  readCachedAuthorityRuntimeSnapshot,
+  writeCachedAuthorityRuntimeSnapshot,
+} from "../../authority/runtime-cache";
+import type { Company, CyberCompanyConfig } from "../../../domain/org/types";
+import {
+  clearConfigCache,
   deleteCompanyCascade,
   getConfigOwnerAgentId,
+  getPersistedActiveCompanyId,
+  loadCompanyConfig,
+  peekCachedCompanyConfig,
   saveCompanyConfig,
+  setPersistedActiveCompanyId,
 } from "./persistence";
-import {
-  readCompanyRuntimeSnapshot,
-  writeCompanyRuntimeSnapshot,
-} from "../runtime/company-runtime-snapshot";
-import type { Company, CyberCompanyConfig } from "./types";
 
 function createCompany(
   id: string,
@@ -50,186 +56,117 @@ function createConfig(): CyberCompanyConfig {
   };
 }
 
+function createRuntime(companyId: string): AuthorityCompanyRuntimeSnapshot {
+  return {
+    companyId,
+    activeRoomRecords: [],
+    activeMissionRecords: [],
+    activeConversationStates: [],
+    activeWorkItems: [],
+    activeRequirementAggregates: [],
+    activeRequirementEvidence: [],
+    primaryRequirementId: null,
+    activeRoundRecords: [],
+    activeArtifacts: [],
+    activeDispatches: [],
+    activeRoomBindings: [],
+    updatedAt: Date.now(),
+  };
+}
+
+function createBootstrap(config: CyberCompanyConfig | null): AuthorityBootstrapSnapshot {
+  const activeCompany =
+    config?.companies.find((company) => company.id === config.activeCompanyId) ??
+    config?.companies[0] ??
+    null;
+  return {
+    config,
+    activeCompany,
+    runtime: activeCompany ? createRuntime(activeCompany.id) : null,
+    executor: {
+      adapter: "single-executor-local",
+      state: "ready",
+      provider: "none",
+      note: "test",
+    },
+    authority: {
+      url: "http://127.0.0.1:18790",
+      dbPath: "/tmp/test.sqlite",
+      connected: true,
+    },
+  };
+}
+
 describe("company persistence", () => {
-  const storage = new Map<string, string>();
-
   beforeEach(() => {
-    storage.clear();
+    clearConfigCache();
     vi.restoreAllMocks();
-
-    Object.defineProperty(globalThis, "localStorage", {
-      value: {
-        getItem: (key: string) => storage.get(key) ?? null,
-        setItem: (key: string, value: string) => {
-          storage.set(key, value);
-        },
-        removeItem: (key: string) => {
-          storage.delete(key);
-        },
-      },
-      configurable: true,
-      writable: true,
-    });
   });
 
-  it("falls back to the active company CEO when the stored config owner no longer exists", async () => {
-    storage.set("cyber_company_config_owner", "missing-ceo");
+  it("loads config from authority and hydrates the cached CEO owner", async () => {
+    const config = createConfig();
+    vi.spyOn(authorityClient, "bootstrap").mockResolvedValue(createBootstrap(config));
 
-    vi.spyOn(gateway, "isConnected", "get").mockReturnValue(true);
-    vi.spyOn(gateway, "listAgents").mockResolvedValue({
-      agents: [
-        { id: "old-ceo", name: "old-ceo" },
-        { id: "new-ceo", name: "new-ceo" },
-        { id: "other-ceo", name: "other-ceo" },
-      ],
-    } as Awaited<ReturnType<typeof gateway.listAgents>>);
-    const setAgentFile = vi.spyOn(gateway, "setAgentFile").mockResolvedValue({
-      ok: true,
-      agentId: "new-ceo",
-      workspace: "~/.openclaw/workspaces/new-ceo",
-      file: {
-        name: "company-config.json",
-        path: "~/.openclaw/workspaces/new-ceo/company-config.json",
-        missing: false,
-        content: "{}",
-      },
-    });
+    const loaded = await loadCompanyConfig();
 
-    const saved = await saveCompanyConfig(createConfig());
+    expect(loaded).toEqual(config);
+    expect(peekCachedCompanyConfig()).toEqual(config);
+    expect(getPersistedActiveCompanyId()).toBe("company-2");
+    expect(getConfigOwnerAgentId()).toBe("new-ceo");
+  });
+
+  it("saves config through authority and refreshes the cached active company", async () => {
+    const config = createConfig();
+    const updateConfig = vi
+      .spyOn(authorityClient, "updateConfig")
+      .mockResolvedValue(createBootstrap(config));
+
+    const saved = await saveCompanyConfig(config);
 
     expect(saved).toBe(true);
-    expect(setAgentFile).toHaveBeenCalledWith(
-      "new-ceo",
-      "company-config.json",
-      expect.any(String),
-    );
-    expect(setAgentFile.mock.calls).toEqual(
-      expect.arrayContaining([
-        ["new-ceo", "company-context.json", expect.any(String)],
-        ["new-ceo", "OPERATIONS.md", expect.any(String)],
-        ["new-ceo", "SOUL.md", expect.stringContaining('Role: CEO')],
-      ]),
-    );
+    expect(updateConfig).toHaveBeenCalledWith(config);
+    expect(peekCachedCompanyConfig()).toEqual(config);
     expect(getConfigOwnerAgentId()).toBe("new-ceo");
   });
 
-  it("deletes company-scoped state and cascades cleanup into unique agent resources", async () => {
-    storage.set("cyber_company_config_owner", "old-ceo");
-    storage.set("cyber_company_mission_records:company-1", '[{"id":"mission-1"}]');
-    storage.set("cyber_company_conversation_state:company-1", '[{"conversationId":"conv-1"}]');
-    storage.set("cyber_company_round_records:company-1", '[{"id":"round-1"}]');
-    storage.set("cyber_company_artifacts:company-1", '[{"id":"artifact-1"}]');
-    storage.set("cyber_company_dispatch_records:company-1", '[{"id":"dispatch-1"}]');
-    storage.set("cyber_company_room_records:company-1", '[{"id":"room-1"}]');
-    storage.set("cyber_company_room_bindings:company-1", '[{"roomId":"room-1"}]');
-    storage.set("cyber_company_work_items:company-1", '[{"id":"work-1"}]');
-    writeCompanyRuntimeSnapshot("company-1", { agents: [] });
+  it("switches the cached active company without touching browser storage", async () => {
+    const config = createConfig();
+    vi.spyOn(authorityClient, "bootstrap").mockResolvedValue(createBootstrap(config));
+    await loadCompanyConfig();
 
-    vi.spyOn(gateway, "isConnected", "get").mockReturnValue(true);
-    vi.spyOn(gateway, "listAgents").mockResolvedValue({
-      agents: [
-        { id: "old-ceo", name: "old-ceo" },
-        { id: "old-hr", name: "old-hr" },
-        { id: "new-ceo", name: "new-ceo" },
-      ],
-    } as Awaited<ReturnType<typeof gateway.listAgents>>);
-    const setAgentFile = vi.spyOn(gateway, "setAgentFile").mockResolvedValue({
-      ok: true,
-      agentId: "new-ceo",
-      workspace: "~/.openclaw/workspaces/new-ceo",
-      file: {
-        name: "company-config.json",
-        path: "~/.openclaw/workspaces/new-ceo/company-config.json",
-        missing: false,
-        content: "{}",
-      },
-    });
-    const deleteAgent = vi.spyOn(gateway, "deleteAgent").mockImplementation(async (agentId) => ({
-      ok: true,
-      agentId,
-      removedSessions: 1,
-      removedCronJobs: 1,
-    }));
+    setPersistedActiveCompanyId("company-1");
 
-    const result = await deleteCompanyCascade(createConfig(), "company-1");
-
-    expect(result).toMatchObject({
-      activeCompanyId: "company-2",
-      companies: [{ id: "company-2", name: "新公司" }],
-    });
-    expect(getConfigOwnerAgentId()).toBe("new-ceo");
-    expect(storage.get("cyber_company_mission_records:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_conversation_state:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_round_records:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_artifacts:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_dispatch_records:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_room_records:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_room_bindings:company-1")).toBeUndefined();
-    expect(storage.get("cyber_company_work_items:company-1")).toBeUndefined();
-    expect(readCompanyRuntimeSnapshot("company-1")).toBeNull();
-    expect(deleteAgent).toHaveBeenCalledWith("old-ceo", { deleteFiles: true, purgeState: true });
-    expect(deleteAgent).toHaveBeenCalledWith("old-hr", { deleteFiles: true, purgeState: true });
-    expect(setAgentFile.mock.calls).toEqual(
-      expect.arrayContaining([
-        ["new-ceo", "company-config.json", expect.stringContaining('"company-2"')],
-        ["new-ceo", "company-context.json", expect.any(String)],
-        ["new-ceo", "OPERATIONS.md", expect.any(String)],
-        ["new-ceo", "SOUL.md", expect.stringContaining('Role: CEO')],
-      ]),
-    );
+    expect(peekCachedCompanyConfig()).toMatchObject({ activeCompanyId: "company-1" });
+    expect(getPersistedActiveCompanyId()).toBe("company-1");
+    expect(getConfigOwnerAgentId()).toBe("old-ceo");
   });
 
-  it("persists an empty config, deletes the final company agents, and clears the stale owner", async () => {
-    storage.set("cyber_company_config_owner", "solo-ceo");
-
-    const config: CyberCompanyConfig = {
-      version: 1,
-      activeCompanyId: "company-1",
-      preferences: { theme: "classic", locale: "zh-CN" },
-      companies: [
-        createCompany("company-1", "独苗公司", [
-          { agentId: "solo-ceo", metaRole: "ceo" },
-          { agentId: "solo-hr", metaRole: "hr" },
-        ]),
-      ],
+  it("deletes company data through authority, clears its runtime cache, and reloads bootstrap", async () => {
+    const currentConfig = createConfig();
+    const nextConfig: CyberCompanyConfig = {
+      ...currentConfig,
+      companies: [currentConfig.companies[1]!],
     };
+    writeCachedAuthorityRuntimeSnapshot(createRuntime("company-1"));
+    const deleteCompany = vi.spyOn(authorityClient, "deleteCompany").mockResolvedValue({ ok: true });
+    vi.spyOn(authorityClient, "bootstrap").mockResolvedValue(createBootstrap(nextConfig));
 
-    vi.spyOn(gateway, "isConnected", "get").mockReturnValue(true);
-    vi.spyOn(gateway, "listAgents").mockResolvedValue({
-      agents: [
-        { id: "solo-ceo", name: "solo-ceo" },
-        { id: "solo-hr", name: "solo-hr" },
-      ],
-    } as Awaited<ReturnType<typeof gateway.listAgents>>);
-    const setAgentFile = vi.spyOn(gateway, "setAgentFile").mockResolvedValue({
-      ok: true,
-      agentId: "solo-ceo",
-      workspace: "~/.openclaw/workspaces/solo-ceo",
-      file: {
-        name: "company-config.json",
-        path: "~/.openclaw/workspaces/solo-ceo/company-config.json",
-        missing: false,
-        content: "{}",
-      },
-    });
-    const deleteAgent = vi.spyOn(gateway, "deleteAgent").mockImplementation(async (agentId) => ({
-      ok: true,
-      agentId,
-    }));
+    const result = await deleteCompanyCascade(currentConfig, "company-1");
 
-    const result = await deleteCompanyCascade(config, "company-1");
+    expect(deleteCompany).toHaveBeenCalledWith("company-1");
+    expect(result).toEqual(nextConfig);
+    expect(readCachedAuthorityRuntimeSnapshot("company-1")).toBeNull();
+    expect(getPersistedActiveCompanyId()).toBe("company-2");
+    expect(getConfigOwnerAgentId()).toBe("new-ceo");
+  });
 
-    expect(result).toMatchObject({
-      activeCompanyId: "",
-      companies: [],
-    });
-    expect(getConfigOwnerAgentId()).toBeNull();
-    expect(deleteAgent).toHaveBeenCalledWith("solo-ceo", { deleteFiles: true, purgeState: true });
-    expect(deleteAgent).toHaveBeenCalledWith("solo-hr", { deleteFiles: true, purgeState: true });
-    expect(setAgentFile.mock.calls).toEqual(
-      expect.arrayContaining([
-        ["solo-ceo", "company-config.json", expect.stringContaining('"companies": []')],
-      ]),
-    );
+  it("returns the current config unchanged when the company is unknown", async () => {
+    const currentConfig = createConfig();
+    const deleteCompany = vi.spyOn(authorityClient, "deleteCompany");
+
+    const result = await deleteCompanyCascade(currentConfig, "missing-company");
+
+    expect(result).toBe(currentConfig);
+    expect(deleteCompany).not.toHaveBeenCalled();
   });
 });

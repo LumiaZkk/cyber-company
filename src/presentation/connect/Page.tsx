@@ -58,13 +58,14 @@ function ConnectForm({
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         <div className="mb-4 space-y-1 text-sm">
-          <div className="font-semibold text-slate-900">连接工作引擎</div>
+          <div className="font-semibold text-slate-900">连接本机 authority</div>
           <p className="text-slate-500">
-            通过统一协议接入 Agent 后端。当前使用 {currentProvider?.label || "工作引擎"}。
+            前端会先连接本机 authority，再由 authority 选择可用执行器。当前目标是{" "}
+            {currentProvider?.label || "本机 authority"}。
           </p>
           <p className="text-xs text-slate-400">
-            当前真实可连接的运行时 provider 仍以 OpenClaw 为主。设置页中的 Codex 授权只会把 Codex
-            模型导入 OpenClaw 模型目录，不代表已经接入独立的 Codex 后端。
+            authority 是系统权威源。即使远程 provider 不可用，只要 authority 在线，你仍可以查看公司、
+            主线需求和历史记录。
           </p>
         </div>
 
@@ -90,7 +91,7 @@ function ConnectForm({
                 <p className="mt-1 text-xs text-slate-500">{currentProvider.description}</p>
               ) : null}
               <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                <div className="font-medium text-slate-800">Provider Bootstrap</div>
+                <div className="font-medium text-slate-800">执行器能力快照</div>
                 <div className="mt-1">
                   运行模式：{manifest.actorStrategy} · 房间：{manifest.roomStrategy} · 归档：
                   {manifest.archiveStrategy} · 存储：{manifest.storageStrategy}
@@ -187,8 +188,8 @@ function ConnectForm({
                 {!connectError?.steps?.length ? (
                   <ul className="space-y-1 text-xs">
                     {[
-                      "确认本地或远程 Gateway 进程正在运行",
-                      "检查 Gateway URL 是否正确（本地默认 ws://localhost:18789）",
+                      "确认本机 authority 进程正在运行",
+                      `检查 authority 地址是否正确（当前默认 ${currentProvider?.defaultUrl || "http://127.0.0.1:18790"}）`,
                       "如果启用了鉴权，确认 Token 输入无误",
                       "检查本机与目标地址网络可达（防火墙/端口）",
                     ].map((step) => (
@@ -239,7 +240,7 @@ function ConnectForm({
               </code>
             </>
           ) : (
-            "请先启动后端工作引擎，再回来连接。"
+            "请先启动本机 authority，再回来连接。"
           )}
         </p>
       </div>
@@ -270,7 +271,7 @@ export function ConnectPresentationPage() {
 
   useEffect(() => {
     if (connected) {
-      toast.success("连接成功", "Gateway 已连接，正在进入公司选择。");
+      toast.success("连接成功", "本机 authority 已连接，正在进入公司选择。");
       navigate("/select");
     }
   }, [connected, navigate]);
@@ -280,7 +281,7 @@ export function ConnectPresentationPage() {
     if (phase === "failed" && previousPhase !== "failed") {
       toast.error(
         connectError?.title || "自动重连失败",
-        connectError?.message || "请检查地址、Token 或 Gateway 服务状态。",
+        connectError?.message || "请检查 authority 地址、Token 或本机服务状态。",
       );
     }
     previousPhaseRef.current = phase;

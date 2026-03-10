@@ -1,7 +1,7 @@
 import type { ArtifactRecord, ArtifactStatus } from "./types";
 
-const ARTIFACT_CACHE_PREFIX = "cyber_company_artifacts:";
 const ARTIFACT_LIMIT = 256;
+const artifactCache = new Map<string, ArtifactRecord[]>();
 
 function isArtifactStatus(value: unknown): value is ArtifactStatus {
   return value === "draft" || value === "ready" || value === "superseded" || value === "archived";
@@ -24,10 +24,6 @@ function isArtifactRecord(value: unknown): value is ArtifactRecord {
   );
 }
 
-function getArtifactCacheKey(companyId: string) {
-  return `${ARTIFACT_CACHE_PREFIX}${companyId.trim()}`;
-}
-
 export function sanitizeArtifactRecords(records: ArtifactRecord[]): ArtifactRecord[] {
   const deduped = new Map<string, ArtifactRecord>();
   for (const record of records) {
@@ -46,21 +42,7 @@ export function loadArtifactRecords(companyId: string | null | undefined): Artif
   if (!companyId) {
     return [];
   }
-
-  const raw = localStorage.getItem(getArtifactCacheKey(companyId));
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return sanitizeArtifactRecords(parsed.filter(isArtifactRecord));
-  } catch {
-    return [];
-  }
+  return artifactCache.get(companyId) ?? [];
 }
 
 export function persistArtifactRecords(
@@ -73,12 +55,12 @@ export function persistArtifactRecords(
 
   const trimmed = sanitizeArtifactRecords(artifacts)
     .slice(0, ARTIFACT_LIMIT);
-  localStorage.setItem(getArtifactCacheKey(companyId), JSON.stringify(trimmed));
+  artifactCache.set(companyId, trimmed);
 }
 
 export function clearArtifactRecords(companyId: string | null | undefined) {
   if (!companyId) {
     return;
   }
-  localStorage.removeItem(getArtifactCacheKey(companyId));
+  artifactCache.delete(companyId);
 }

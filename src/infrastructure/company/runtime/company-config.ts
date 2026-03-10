@@ -1,9 +1,8 @@
 import {
   deleteCompanyCascade,
-  loadCompanyConfig,
   saveCompanyConfig,
-  setPersistedActiveCompanyId,
 } from "../persistence/persistence";
+import { authorityClient } from "../../authority/client";
 import type {
   Company,
   CompanyRuntimeState,
@@ -12,13 +11,9 @@ import type {
   SharedKnowledgeItem,
   TrackedTask,
 } from "./types";
-import { createEmptyProductState, loadProductState } from "./bootstrap";
-import { persistActiveConversationStates } from "./conversation-state";
-import {
-  persistActiveRequirementAggregates,
-  persistActiveRequirementEvidence,
-} from "./requirements";
-import { persistActiveWorkItems } from "./work-items";
+import { createEmptyProductState } from "./bootstrap";
+import { hydrateAuthorityBootstrapCache, writeCachedAuthorityConfig, writeCachedAuthorityRuntimeSnapshot } from "../../authority/runtime-cache";
+import { runtimeStateFromAuthorityBootstrap, runtimeStateFromAuthorityRuntimeSnapshot } from "../../authority/runtime-snapshot";
 
 type RuntimeSet = (partial: Partial<CompanyRuntimeState>) => void;
 type RuntimeGet = () => CompanyRuntimeState;
@@ -59,32 +54,15 @@ export function buildCompanyConfigActions(
     loadConfig: async () => {
       set({ loading: true, error: null, bootstrapPhase: "restoring" });
       try {
-        const config = await loadCompanyConfig();
-        if (config) {
-          const active = config.companies.find((c) => c.id === config.activeCompanyId) || null;
-          const state = active ? loadProductState(active.id) : createEmptyProductState();
+        const bootstrap = await authorityClient.bootstrap();
+        hydrateAuthorityBootstrapCache(bootstrap);
+        if (bootstrap.config) {
+          const state = runtimeStateFromAuthorityBootstrap(bootstrap);
           set({
-            config,
-            activeCompany: active,
-            activeRoomRecords: state.loadedRooms,
-            activeMissionRecords: state.loadedMissions,
-            activeConversationStates: state.loadedConversationStates,
-            activeWorkItems: state.loadedWorkItems,
-            activeRequirementAggregates: state.loadedRequirementAggregates,
-            activeRequirementEvidence: state.loadedRequirementEvidence,
-            primaryRequirementId: state.primaryRequirementId,
-            activeRoundRecords: state.loadedRounds,
-            activeArtifacts: state.loadedArtifacts,
-            activeDispatches: state.loadedDispatches,
-            activeRoomBindings: state.loadedRoomBindings,
+            ...state,
             loading: false,
-            bootstrapPhase: active ? "ready" : "missing",
+            bootstrapPhase: bootstrap.activeCompany ? "ready" : "missing",
           });
-          if (active) {
-            persistActiveWorkItems(active.id, state.loadedWorkItems);
-            persistActiveRequirementAggregates(active.id, state.loadedRequirementAggregates);
-            persistActiveRequirementEvidence(active.id, state.loadedRequirementEvidence);
-          }
           return;
         }
         set({
@@ -156,29 +134,28 @@ export function buildCompanyConfigActions(
       }
 
       const newConfig = { ...config, activeCompanyId: id };
-      const state = loadProductState(company.id);
-      setPersistedActiveCompanyId(id);
+      writeCachedAuthorityConfig(newConfig);
+      void authorityClient
+        .switchCompany({ companyId: id })
+        .then((bootstrap) => {
+          hydrateAuthorityBootstrapCache(bootstrap);
+          const nextState = runtimeStateFromAuthorityBootstrap(bootstrap);
+          set({
+            ...nextState,
+            loading: false,
+            bootstrapPhase: bootstrap.activeCompany ? "ready" : "missing",
+          });
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          set({ error: message, loading: false });
+        });
       set({
         config: newConfig,
         activeCompany: company,
-        activeRoomRecords: state.loadedRooms,
-        activeMissionRecords: state.loadedMissions,
-        activeConversationStates: state.loadedConversationStates,
-        activeWorkItems: state.loadedWorkItems,
-        activeRequirementAggregates: state.loadedRequirementAggregates,
-        activeRequirementEvidence: state.loadedRequirementEvidence,
-        primaryRequirementId: state.primaryRequirementId,
-        activeRoundRecords: state.loadedRounds,
-        activeArtifacts: state.loadedArtifacts,
-        activeDispatches: state.loadedDispatches,
-        activeRoomBindings: state.loadedRoomBindings,
+        ...runtimeStateFromAuthorityRuntimeSnapshot(null),
         bootstrapPhase: "ready",
       });
-      persistActiveWorkItems(company.id, state.loadedWorkItems);
-      persistActiveRequirementAggregates(company.id, state.loadedRequirementAggregates);
-      persistActiveRequirementEvidence(company.id, state.loadedRequirementEvidence);
-      persistActiveConversationStates(company.id, state.loadedConversationStates);
-      void get().saveConfig();
     },
 
     deleteCompany: async (id: string) => {
@@ -192,32 +169,26 @@ export function buildCompanyConfigActions(
         const nextConfig = await deleteCompanyCascade(config, id);
         const nextActiveCompany =
           nextConfig?.companies.find((company) => company.id === nextConfig.activeCompanyId) ?? null;
-        const nextState = nextActiveCompany ? loadProductState(nextActiveCompany.id) : createEmptyProductState();
+        const nextRuntime = nextActiveCompany
+          ? runtimeStateFromAuthorityRuntimeSnapshot(
+              await authorityClient.getRuntime(nextActiveCompany.id),
+            )
+          : createEmptyProductState();
+        if (nextActiveCompany) {
+          writeCachedAuthorityRuntimeSnapshot({
+            companyId: nextActiveCompany.id,
+            ...nextRuntime,
+            updatedAt: Date.now(),
+          });
+        }
 
         set({
           config: nextConfig,
           activeCompany: nextActiveCompany,
-          activeRoomRecords: nextState.loadedRooms,
-          activeMissionRecords: nextState.loadedMissions,
-          activeConversationStates: nextState.loadedConversationStates,
-          activeWorkItems: nextState.loadedWorkItems,
-          activeRequirementAggregates: nextState.loadedRequirementAggregates,
-          activeRequirementEvidence: nextState.loadedRequirementEvidence,
-          primaryRequirementId: nextState.primaryRequirementId,
-          activeRoundRecords: nextState.loadedRounds,
-          activeArtifacts: nextState.loadedArtifacts,
-          activeDispatches: nextState.loadedDispatches,
-          activeRoomBindings: nextState.loadedRoomBindings,
+          ...nextRuntime,
           loading: false,
           bootstrapPhase: nextActiveCompany ? "ready" : "missing",
         });
-
-        if (nextActiveCompany) {
-          persistActiveWorkItems(nextActiveCompany.id, nextState.loadedWorkItems);
-          persistActiveRequirementAggregates(nextActiveCompany.id, nextState.loadedRequirementAggregates);
-          persistActiveRequirementEvidence(nextActiveCompany.id, nextState.loadedRequirementEvidence);
-          persistActiveConversationStates(nextActiveCompany.id, nextState.loadedConversationStates);
-        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         set({ error: message, loading: false });
