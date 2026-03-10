@@ -1,38 +1,45 @@
 import { useCallback } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { syncDelegationClosedLoopState } from "../../../application/delegation/closed-loop";
-import type { ArtifactRecord } from "../../../domain/artifact/types";
+import { readConversationWorkspaceState } from "../../../application/mission";
 import type { DispatchRecord } from "../../../domain/delegation/types";
 import type { Company } from "../../../domain/org/types";
 import type { RequirementSessionSnapshot } from "../../../domain/mission/requirement-snapshot";
 
 export function useChatClosedLoop(input: {
   activeCompany: Company | null;
-  activeArtifacts: ArtifactRecord[];
-  activeDispatches: DispatchRecord[];
   previousSnapshotsRef: RefObject<RequirementSessionSnapshot[]>;
   setCompanySessionSnapshots: Dispatch<SetStateAction<RequirementSessionSnapshot[]>>;
   replaceDispatchRecords: (dispatches: DispatchRecord[]) => void;
   updateCompany: (company: Partial<Company>) => Promise<void>;
 }) {
+  const {
+    activeCompany,
+    previousSnapshotsRef,
+    replaceDispatchRecords,
+    setCompanySessionSnapshots,
+    updateCompany,
+  } = input;
+
   return useCallback(
     async (options?: { force?: boolean }) => {
-      if (!input.activeCompany) {
-        input.setCompanySessionSnapshots([]);
+      if (!activeCompany) {
+        setCompanySessionSnapshots([]);
         return null;
       }
 
+      const { activeArtifacts, activeDispatches } = readConversationWorkspaceState();
       const { companyPatch, dispatches, sessionSnapshots, summary } =
         await syncDelegationClosedLoopState({
-          company: input.activeCompany,
-          previousSnapshots: input.previousSnapshotsRef.current,
-          activeArtifacts: input.activeArtifacts,
-          activeDispatches: input.activeDispatches,
+          company: activeCompany,
+          previousSnapshots: previousSnapshotsRef.current,
+          activeArtifacts,
+          activeDispatches,
           force: options?.force,
         });
 
-      input.setCompanySessionSnapshots(sessionSnapshots);
-      input.replaceDispatchRecords(dispatches);
+      setCompanySessionSnapshots(sessionSnapshots);
+      replaceDispatchRecords(dispatches);
 
       const hasChanges =
         summary.requestsAdded > 0 ||
@@ -41,10 +48,10 @@ export function useChatClosedLoop(input: {
         summary.handoffsRecovered > 0 ||
         summary.tasksRecovered > 0;
       if (hasChanges) {
-        await input.updateCompany(companyPatch);
+        await updateCompany(companyPatch);
       }
       return summary;
     },
-    [input],
+    [activeCompany, previousSnapshotsRef, replaceDispatchRecords, setCompanySessionSnapshots, updateCompany],
   );
 }

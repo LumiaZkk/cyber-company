@@ -1,16 +1,18 @@
+import { memo, useMemo } from "react";
 import { Users } from "lucide-react";
-import { resolveMentionedEmployeesInText } from "../../../application/assignment/chat-mentions";
-import { buildRequirementRoomRoute } from "../../../application/delegation/room-routing";
+import { resolveMentionedEmployeesInEmployees } from "../../../application/assignment/chat-mentions";
+import { buildRequirementRoomRouteFromCompanyContext } from "../../../application/delegation/room-routing";
 import { inferMissionTopicKey, inferRequestTopicKey } from "../../../application/delegation/request-topic";
+import { readConversationWorkspaceState } from "../../../application/mission";
 import { Avatar, AvatarImage } from "../../../components/ui/avatar";
-import type { RequirementRoomRecord } from "../../../domain/delegation/types";
-import type { Company } from "../../../domain/org/types";
+import type { EmployeeRef } from "../../../domain/org/types";
 import { buildCompanyChatRoute } from "../../../lib/chat-routes";
 import { resolveTaskTitle } from "../view-models/task-tracker";
 
-export function ChatAssignmentActions(input: {
+type ChatAssignmentActionsProps = {
   messageText: string;
-  activeCompany: Company | null;
+  companyId: string | null;
+  employees: EmployeeRef[];
   isCeoSession: boolean;
   targetAgentId: string | null;
   currentConversationRequirementTopicKey: string | null;
@@ -18,14 +20,18 @@ export function ChatAssignmentActions(input: {
   conversationMissionRecordId: string | null;
   persistedWorkItemId: string | null;
   groupWorkItemId: string | null;
-  activeRoomRecords: RequirementRoomRecord[];
   onNavigateToRoute: (route: string) => void;
-}) {
-  const mentions = resolveMentionedEmployeesInText(input.messageText, input.activeCompany);
-  const activeCompany = input.activeCompany;
-  if (mentions.length === 0) {
+};
+
+export const ChatAssignmentActions = memo(function ChatAssignmentActions(input: ChatAssignmentActionsProps) {
+  const mentions = useMemo(
+    () => resolveMentionedEmployeesInEmployees(input.messageText, input.employees),
+    [input.employees, input.messageText],
+  );
+  if (!input.companyId || mentions.length === 0) {
     return null;
   }
+  const companyId = input.companyId;
 
   return (
     <div className="mt-4 space-y-2 border-t border-slate-200/60 pt-3">
@@ -38,7 +44,7 @@ export function ChatAssignmentActions(input: {
             key={member.agentId}
             onClick={() =>
               input.onNavigateToRoute(
-                buildCompanyChatRoute(member.agentId, input.activeCompany?.id),
+                buildCompanyChatRoute(member.agentId, companyId),
               )
             }
             className="group/btn flex items-center gap-1.5 rounded-lg border border-indigo-100 bg-white px-2 py-1.5 shadow-sm transition-all hover:border-indigo-300 hover:bg-indigo-50"
@@ -52,12 +58,13 @@ export function ChatAssignmentActions(input: {
             </span>
           </button>
         ))}
-        {activeCompany && mentions.length >= 2 ? (
+        {mentions.length >= 2 ? (
           <button
             type="button"
             onClick={() => {
-              const groupRoute = buildRequirementRoomRoute({
-                company: activeCompany,
+              const groupRoute = buildRequirementRoomRouteFromCompanyContext({
+                companyId,
+                employees: input.employees,
                 memberIds: mentions.map((member) => member.agentId),
                 topic: resolveTaskTitle(input.messageText, "任务小组"),
                 topicKey:
@@ -71,7 +78,7 @@ export function ChatAssignmentActions(input: {
                   input.groupWorkItemId ??
                   null,
                 preferredInitiatorAgentId: input.targetAgentId,
-                existingRooms: input.activeRoomRecords,
+                existingRooms: readConversationWorkspaceState().activeRoomRecords,
               });
               if (groupRoute) {
                 input.onNavigateToRoute(groupRoute);
@@ -86,4 +93,4 @@ export function ChatAssignmentActions(input: {
       </div>
     </div>
   );
-}
+});

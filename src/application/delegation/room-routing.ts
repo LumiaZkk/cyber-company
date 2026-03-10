@@ -19,6 +19,9 @@ export {
   areRequirementRoomRecordsEquivalent,
 } from "./room-transcript";
 export {
+  buildRequirementRoomRouteFromCompanyContext,
+} from "./room-routes";
+export {
   appendRequirementRoomMessages,
   buildRequirementRoomHrefFromRecord,
   buildRequirementRoomRecord,

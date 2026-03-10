@@ -1,5 +1,11 @@
-import { useConversationWorkspaceViewModel } from "../../../application/mission/conversation-workspace";
+import {
+  useConversationWorkspaceApp,
+  useConversationWorkspaceChatPageQuery,
+} from "../../../application/mission";
 
 export function useChatWorkspaceViewModel() {
-  return useConversationWorkspaceViewModel();
+  return {
+    ...useConversationWorkspaceChatPageQuery(),
+    ...useConversationWorkspaceApp(),
+  };
 }

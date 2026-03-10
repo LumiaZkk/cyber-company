@@ -1,5 +1,6 @@
 import type {
   Company,
+  EmployeeRef,
   RoomConversationBindingRecord,
   RequirementRoomRecord,
 } from "../../domain";
@@ -12,6 +13,17 @@ export type RequirementRoomSession = {
   label: string;
   role: string;
   sessionKey: string;
+};
+
+type RequirementRoomRouteInput = {
+  companyId: string;
+  employees: EmployeeRef[];
+  memberIds: string[];
+  topic: string;
+  topicKey?: string | null;
+  workItemId?: string | null;
+  preferredInitiatorAgentId?: string | null;
+  existingRooms?: RequirementRoomRecord[] | null;
 };
 
 function normalizeRoomTopicKey(value: string | null | undefined): string | null {
@@ -47,25 +59,17 @@ function sanitizeTopicId(topic: string): string {
   );
 }
 
-export function buildRequirementRoomRoute(input: {
-  company: Company;
-  memberIds: string[];
-  topic: string;
-  topicKey?: string | null;
-  workItemId?: string | null;
-  preferredInitiatorAgentId?: string | null;
-  existingRooms?: RequirementRoomRecord[] | null;
-}): string | null {
+function buildRequirementRoomRouteCore(input: RequirementRoomRouteInput): string | null {
   const uniqueMembers = dedupeAgentIds(input.memberIds).sort();
   if (uniqueMembers.length < 2) {
     return null;
   }
 
-  const ceoAgentId = input.company.employees.find((employee) => employee.metaRole === "ceo")?.agentId;
+  const ceoAgentId = input.employees.find((employee) => employee.metaRole === "ceo")?.agentId;
   const initiatorAgentId =
     ceoAgentId ||
     input.preferredInitiatorAgentId?.trim() ||
-    input.company.employees[0]?.agentId;
+    input.employees[0]?.agentId;
   if (!initiatorAgentId) {
     return null;
   }
@@ -102,7 +106,7 @@ export function buildRequirementRoomRoute(input: {
   const roomId = input.workItemId?.trim()
     ? buildRoomRecordIdFromWorkItem(input.workItemId.trim())
     : `room:${sanitizeTopicId(normalizedTopicKey ?? input.topic)}-${buildStableGroupSuffix(
-        `${input.company.id}|${normalizedTopicKey ?? input.topic}`,
+        `${input.companyId}|${normalizedTopicKey ?? input.topic}`,
         [initiatorAgentId, ...uniqueMembers],
       )}`;
   const params = new URLSearchParams();
@@ -117,8 +121,33 @@ export function buildRequirementRoomRoute(input: {
 
   return appendCompanyScopeToChatRoute(
     `/chat/${encodeURIComponent(`room:${roomId}`)}?${params.toString()}`,
-    input.company.id,
+    input.companyId,
   );
+}
+
+export function buildRequirementRoomRoute(input: {
+  company: Company;
+  memberIds: string[];
+  topic: string;
+  topicKey?: string | null;
+  workItemId?: string | null;
+  preferredInitiatorAgentId?: string | null;
+  existingRooms?: RequirementRoomRecord[] | null;
+}): string | null {
+  return buildRequirementRoomRouteCore({
+    companyId: input.company.id,
+    employees: input.company.employees,
+    memberIds: input.memberIds,
+    topic: input.topic,
+    topicKey: input.topicKey,
+    workItemId: input.workItemId,
+    preferredInitiatorAgentId: input.preferredInitiatorAgentId,
+    existingRooms: input.existingRooms,
+  });
+}
+
+export function buildRequirementRoomRouteFromCompanyContext(input: RequirementRoomRouteInput): string | null {
+  return buildRequirementRoomRouteCore(input);
 }
 
 export function buildRequirementRoomHrefFromRecord(room: RequirementRoomRecord): string {

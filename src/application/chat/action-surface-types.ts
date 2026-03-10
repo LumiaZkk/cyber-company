@@ -8,7 +8,7 @@ import type {
   RequirementExecutionOverview,
   RequirementParticipantProgress,
 } from "../mission/requirement-overview";
-import type { DispatchRecord, RequirementRoomRecord } from "../../domain/delegation/types";
+import type { RequirementRoomRecord } from "../../domain/delegation/types";
 import type { ConversationMissionRecord, WorkItemRecord } from "../../domain/mission/types";
 import type { Company } from "../../domain/org/types";
 import type { FocusActionButton, FocusActionWatch } from "./focus-actions";
@@ -28,7 +28,6 @@ export type RequirementLifecycleSection = {
 
 export type BuildChatActionSurfaceInput = {
   activeCompany: Company | null;
-  activeDispatches: DispatchRecord[];
   activeRoomRecords: RequirementRoomRecord[];
   linkedRequirementRoom: RequirementRoomRecord | null;
   stableDisplayWorkItem: WorkItemRecord | null;

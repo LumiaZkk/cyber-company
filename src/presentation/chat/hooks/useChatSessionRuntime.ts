@@ -7,6 +7,7 @@ import {
 import { initializeChatSession } from "../../../application/chat/session-runtime";
 import { parseChatEventPayload, resolveDispatchReplyUpdates } from "../../../application/delegation/chat-dispatch";
 import { gateway, type ChatMessage } from "../../../application/gateway";
+import { readConversationWorkspaceState } from "../../../application/mission";
 import { buildTrackedTaskFromChatFinal } from "../../../application/mission/chat-task-tracker";
 import type { RequirementSessionSnapshot } from "../../../domain/mission/requirement-snapshot";
 import type {
@@ -55,7 +56,6 @@ export type ChatSessionRuntimeInput = {
   sessionKey: string | null;
   productRoomId: string | null;
   activeRoomBindings: RoomConversationBindingRecord[];
-  activeDispatches: DispatchRecord[];
   currentConversationWorkItemId: string | null;
   currentConversationTopicKey?: string | null;
   lastSyncedRoomSignatureRef: MutableRefObject<string | null>;
@@ -246,8 +246,9 @@ export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
                 updatedAt: roomMessage.timestamp,
               },
             ]);
+            const currentDispatches = readConversationWorkspaceState().activeDispatches;
             const dispatchUpdates = resolveDispatchReplyUpdates({
-              dispatches: input.activeDispatches,
+              dispatches: currentDispatches,
               workItemId: input.currentConversationWorkItemId,
               roomId,
               actorId: agentKey,

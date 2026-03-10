@@ -29,6 +29,63 @@ export type ChatComposerProps = {
   onSend: (draft: string) => Promise<boolean>;
 };
 
+function areChatAttachmentsEqual(left: ChatAttachment[], right: ChatAttachment[]) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every(
+    (attachment, index) =>
+      attachment.mimeType === right[index]?.mimeType &&
+      attachment.dataUrl === right[index]?.dataUrl,
+  );
+}
+
+function areMentionCandidatesEqual(
+  left: RequirementRoomMentionCandidate[],
+  right: RequirementRoomMentionCandidate[],
+) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every(
+    (candidate, index) =>
+      candidate.agentId === right[index]?.agentId &&
+      candidate.label === right[index]?.label &&
+      candidate.role === right[index]?.role,
+  );
+}
+
+function isSamePrefill(
+  left: { id: string | number; text: string } | null | undefined,
+  right: { id: string | number; text: string } | null | undefined,
+) {
+  return left?.id === right?.id && left?.text === right?.text;
+}
+
+function areChatComposerPropsEqual(left: ChatComposerProps, right: ChatComposerProps) {
+  return (
+    left.placeholder === right.placeholder &&
+    left.sending === right.sending &&
+    left.uploadingFile === right.uploadingFile &&
+    left.broadcastMode === right.broadcastMode &&
+    left.showBroadcastToggle === right.showBroadcastToggle &&
+    areChatAttachmentsEqual(left.attachments, right.attachments) &&
+    areMentionCandidatesEqual(left.mentionCandidates ?? [], right.mentionCandidates ?? []) &&
+    isSamePrefill(left.prefill, right.prefill) &&
+    left.onBroadcastModeChange === right.onBroadcastModeChange &&
+    left.onRemoveAttachment === right.onRemoveAttachment &&
+    left.onPickFile === right.onPickFile &&
+    left.onPasteImage === right.onPasteImage &&
+    left.onSend === right.onSend
+  );
+}
+
 export const ChatComposer = memo(function ChatComposer({
   placeholder,
   sending,
@@ -376,4 +433,4 @@ export const ChatComposer = memo(function ChatComposer({
       </div>
     </>
   );
-});
+}, areChatComposerPropsEqual);

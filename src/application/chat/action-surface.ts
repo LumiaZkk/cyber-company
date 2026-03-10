@@ -1,8 +1,3 @@
-import {
-  buildAutoDispatchPlan,
-  shouldDelegateToNextBaton,
-  type AutoDispatchPlan,
-} from "../assignment/dispatch-planning";
 import { buildRequirementRoomHrefFromRecord } from "../delegation/room-routing";
 import { formatAgentLabel } from "../governance/focus-summary";
 import { buildCompanyChatRoute } from "../../lib/chat-routes";
@@ -32,7 +27,6 @@ export type {
 export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
   const {
     activeCompany,
-    activeDispatches,
     activeRoomRecords,
     linkedRequirementRoom,
     stableDisplayWorkItem,
@@ -61,11 +55,8 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     summaryRecoveryAction,
     latestStageGate,
     taskPlanOverview,
-    displayPlanCurrentStep,
     canonicalNextBatonAgentId,
     canonicalNextBatonLabel,
-    displayNextBatonLabel,
-    displayNextBatonAgentId,
     missionIsCompleted,
     shouldUseTaskPlanPrimaryView,
     effectiveOwnerAgentId,
@@ -73,7 +64,6 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     effectiveStage,
     effectiveStatusLabel,
     effectiveSummary,
-    effectiveActionHint,
     effectiveHeadline,
     effectiveTone,
     shouldAdvanceToNextPhase,
@@ -410,30 +400,6 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     requirementOverview?.topicKey ??
     undefined;
 
-  const autoDispatchPlan: AutoDispatchPlan | null = buildAutoDispatchPlan({
-    company: activeCompany,
-    dispatches: activeDispatches,
-    workItemId: currentConversationWorkItemId,
-    currentActorId: targetAgentId,
-    workTitle: effectiveHeadline,
-    ownerLabel: effectiveOwnerLabel,
-    summary: effectiveSummary,
-    actionHint: effectiveActionHint,
-    currentStep: displayPlanCurrentStep
-      ? {
-          id: displayPlanCurrentStep.id,
-          title: displayPlanCurrentStep.title,
-          assigneeAgentId: displayPlanCurrentStep.assigneeAgentId,
-          assigneeLabel: displayPlanCurrentStep.assigneeLabel,
-          detail: displayPlanCurrentStep.detail ?? null,
-        }
-      : null,
-    nextBatonAgentId: displayNextBatonAgentId,
-    nextBatonLabel: displayNextBatonLabel,
-    delegateToNextBaton:
-      shouldDispatchPublish || shouldDelegateToNextBaton(displayPlanCurrentStep?.title),
-  });
-
   const buildTeamAdjustmentAction = buildTeamAdjustmentActionFactory({
     effectiveHeadline,
     effectiveOwnerAgentId,
@@ -452,7 +418,6 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     teamGroupRoute,
     currentConversationWorkItemId,
     currentConversationTopicKey,
-    autoDispatchPlan,
     buildTeamAdjustmentAction,
     missionIsCompleted,
   };

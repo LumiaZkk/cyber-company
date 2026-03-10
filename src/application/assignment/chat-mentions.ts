@@ -4,11 +4,7 @@ function createChatMentionRegex(): RegExp {
   return /@([^\s@]+)/g;
 }
 
-export function resolveMentionedEmployeesInText(text: string, company: Company | null): EmployeeRef[] {
-  if (!company) {
-    return [];
-  }
-
+function resolveMentionedEmployees(text: string, employees: EmployeeRef[]): EmployeeRef[] {
   const mentions = text.matchAll(createChatMentionRegex());
   const found: EmployeeRef[] = [];
   const seen = new Set<string>();
@@ -23,7 +19,7 @@ export function resolveMentionedEmployeesInText(text: string, company: Company |
     }
     seen.add(normalizedToken);
     const matched =
-      company.employees.find((employee) => {
+      employees.find((employee) => {
         const values = [employee.agentId, employee.nickname, employee.role]
           .map((value) => value.trim().toLowerCase())
           .filter(Boolean);
@@ -39,4 +35,22 @@ export function resolveMentionedEmployeesInText(text: string, company: Company |
     }
   }
   return found;
+}
+
+export function resolveMentionedEmployeesInText(text: string, company: Company | null): EmployeeRef[] {
+  if (!company) {
+    return [];
+  }
+
+  return resolveMentionedEmployees(text, company.employees);
+}
+
+export function resolveMentionedEmployeesInEmployees(
+  text: string,
+  employees: EmployeeRef[] | null | undefined,
+): EmployeeRef[] {
+  if (!employees || employees.length === 0) {
+    return [];
+  }
+  return resolveMentionedEmployees(text, employees);
 }

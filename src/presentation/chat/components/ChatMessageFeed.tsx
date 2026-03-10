@@ -1,5 +1,6 @@
 import { Sparkles } from "lucide-react";
 import { memo, useMemo } from "react";
+import { useConversationDispatches } from "../../../application/mission";
 import { Avatar, AvatarFallback, AvatarImage } from "../../../components/ui/avatar";
 import type { DispatchRecord } from "../../../domain/delegation/types";
 import type { ChatDisplayItem } from "../view-models/messages";
@@ -8,8 +9,7 @@ import {
   getRenderableMessageContent,
 } from "../view-models/messages";
 import { getChatSenderIdentity } from "../view-models/sender-identity";
-import type { Company, EmployeeRef } from "../../../domain/org/types";
-import type { RequirementRoomRecord } from "../../../domain/delegation/types";
+import type { EmployeeRef } from "../../../domain/org/types";
 import { cn, formatTime, getAvatarUrl } from "../../../lib/utils";
 import { ChatContent } from "./ChatContent";
 import { ChatAssignmentActions } from "./ChatAssignmentActions";
@@ -56,9 +56,8 @@ type ChatMessageFeedProps = {
   renderWindowStep: number;
   displayItemsLength: number;
   visibleDisplayItems: ChatDisplayItem[];
-  activeCompany: Company | null;
-  activeDispatches: DispatchRecord[];
-  activeRoomRecords: RequirementRoomRecord[];
+  companyId: string | null;
+  employees: EmployeeRef[];
   isCeoSession: boolean;
   isGroup: boolean;
   groupTopic: string | null;
@@ -82,19 +81,28 @@ type ChatMessageFeedProps = {
 type ChatMessageListProps = Omit<ChatMessageFeedProps, "hasActiveRun" | "streamText" | "isGenerating">;
 
 const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProps) {
-  const employeeNameByAgentId = useMemo(() => {
-    const records = new Map<string, string>();
-    input.activeCompany?.employees.forEach((employee) => {
+  const activeDispatches = useConversationDispatches();
+  const employeesByAgentId = useMemo(() => {
+    const records = new Map<string, EmployeeRef>();
+    input.employees.forEach((employee) => {
       if (employee.agentId?.trim()) {
-        records.set(employee.agentId, employee.nickname ?? employee.agentId);
+        records.set(employee.agentId, employee);
       }
     });
     return records;
-  }, [input.activeCompany]);
+  }, [input.employees]);
+
+  const employeeNameByAgentId = useMemo(() => {
+    const records = new Map<string, string>();
+    employeesByAgentId.forEach((employee, agentId) => {
+      records.set(agentId, employee.nickname ?? agentId);
+    });
+    return records;
+  }, [employeesByAgentId]);
 
   const dispatchByRoomMessageId = useMemo(() => {
     const records = new Map<string, DispatchRecord>();
-    input.activeDispatches.forEach((dispatch) => {
+    activeDispatches.forEach((dispatch) => {
       if (dispatch.sourceMessageId?.trim()) {
         records.set(dispatch.sourceMessageId, dispatch);
       }
@@ -103,7 +111,7 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
       }
     });
     return records;
-  }, [input.activeDispatches]);
+  }, [activeDispatches]);
 
   return (
     <>
@@ -159,7 +167,8 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
         const msg = item.message;
         const sender = getChatSenderIdentity({
           msg,
-          activeCompany: input.activeCompany,
+          activeCompany: null,
+          employeesByAgentId,
           isGroup: input.isGroup,
           groupTopic: input.groupTopic,
           emp: input.emp,
@@ -267,7 +276,8 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
                   {assignmentText ? (
                     <ChatAssignmentActions
                       messageText={assignmentText}
-                      activeCompany={input.activeCompany}
+                      companyId={input.companyId}
+                      employees={input.employees}
                       isCeoSession={input.isCeoSession}
                       targetAgentId={input.targetAgentId}
                       currentConversationRequirementTopicKey={
@@ -277,7 +287,6 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
                       conversationMissionRecordId={input.conversationMissionRecordId}
                       persistedWorkItemId={input.persistedWorkItemId}
                       groupWorkItemId={input.groupWorkItemId}
-                      activeRoomRecords={input.activeRoomRecords}
                       onNavigateToRoute={input.onNavigateToRoute}
                     />
                   ) : null}
@@ -421,9 +430,8 @@ export const ChatMessageFeed = memo(function ChatMessageFeed(input: ChatMessageF
         renderWindowStep={input.renderWindowStep}
         displayItemsLength={input.displayItemsLength}
         visibleDisplayItems={input.visibleDisplayItems}
-        activeCompany={input.activeCompany}
-        activeDispatches={input.activeDispatches}
-        activeRoomRecords={input.activeRoomRecords}
+        companyId={input.companyId}
+        employees={input.employees}
         isCeoSession={input.isCeoSession}
         isGroup={input.isGroup}
         groupTopic={input.groupTopic}

@@ -191,7 +191,7 @@ function normalizeKnowledgeTitle(value: string): string {
   return value
     .trim()
     .replace(/^#+\s*/, "")
-    .replace(/[🎉🎯📚✅]/g, "")
+    .replace(/[🎉🎯📚✅]/gu, "")
     .replace(/\s+/g, " ")
     .toLowerCase();
 }

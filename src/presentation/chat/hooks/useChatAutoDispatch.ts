@@ -18,43 +18,59 @@ export function useChatAutoDispatch(input: {
   appendLocalProgressEvent: (event: FocusProgressEvent) => void;
 }) {
   const inFlightRef = useRef<Set<string>>(new Set());
+  const {
+    plan,
+    company,
+    providerManifest,
+    fromActorId,
+    workItemId,
+    topicKey,
+    enabled,
+    upsertDispatchRecord,
+    appendLocalProgressEvent,
+  } = input;
 
   useEffect(() => {
     if (
-      !input.enabled ||
-      !input.plan ||
-      !input.company ||
-      !input.fromActorId ||
-      !input.workItemId
+      !enabled ||
+      !plan ||
+      !company ||
+      !fromActorId ||
+      !workItemId
     ) {
       return;
     }
 
-    if (inFlightRef.current.has(input.plan.dispatchId)) {
+    if (inFlightRef.current.has(plan.dispatchId)) {
       return;
     }
-
-    const plan = input.plan;
-    const company = input.company;
-    const fromActorId = input.fromActorId;
-    const workItemId = input.workItemId;
 
     inFlightRef.current.add(plan.dispatchId);
     void (async () => {
       try {
         const result = await executeAutoDispatchPlan({
           company,
-          providerManifest: input.providerManifest,
+          providerManifest,
           plan,
           fromActorId,
           workItemId,
-          topicKey: input.topicKey,
+          topicKey,
         });
-        input.upsertDispatchRecord(result.dispatch);
-        input.appendLocalProgressEvent(result.progressEvent);
+        upsertDispatchRecord(result.dispatch);
+        appendLocalProgressEvent(result.progressEvent);
       } finally {
         inFlightRef.current.delete(plan.dispatchId);
       }
     })();
-  }, [input]);
+  }, [
+    appendLocalProgressEvent,
+    company,
+    enabled,
+    fromActorId,
+    plan,
+    providerManifest,
+    topicKey,
+    upsertDispatchRecord,
+    workItemId,
+  ]);
 }

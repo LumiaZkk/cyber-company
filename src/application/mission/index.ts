@@ -1,5 +1,6 @@
 import { useCompanyRuntimeCommands } from "../../infrastructure/company/runtime/commands";
 import {
+  readCompanyRuntimeState,
   selectConversationWorkspaceState,
   selectMissionBoardState,
 } from "../../infrastructure/company/runtime/selectors";
@@ -29,6 +30,31 @@ export function useMissionBoardApp() {
 
 export function useConversationWorkspaceQuery() {
   return useCompanyRuntimeStore(useShallow(selectConversationWorkspaceState));
+}
+
+export function useConversationWorkspaceChatPageQuery() {
+  return useCompanyRuntimeStore(
+    useShallow((state) => ({
+      config: state.config,
+      activeCompany: state.activeCompany,
+      activeRoomRecords: state.activeRoomRecords,
+      activeMissionRecords: state.activeMissionRecords,
+      activeConversationStates: state.activeConversationStates,
+      activeWorkItems: state.activeWorkItems,
+      activeRequirementAggregates: state.activeRequirementAggregates,
+      primaryRequirementId: state.primaryRequirementId,
+      activeRoundRecords: state.activeRoundRecords,
+      activeRoomBindings: state.activeRoomBindings,
+    })),
+  );
+}
+
+export function useConversationArtifacts() {
+  return useCompanyRuntimeStore((state) => state.activeArtifacts);
+}
+
+export function useConversationDispatches() {
+  return useCompanyRuntimeStore((state) => state.activeDispatches);
 }
 
 export function useConversationWorkspaceApp() {
@@ -68,6 +94,10 @@ export function useConversationWorkspaceApp() {
     replaceDispatchRecords,
     switchCompany,
   };
+}
+
+export function readConversationWorkspaceState() {
+  return selectConversationWorkspaceState(readCompanyRuntimeState());
 }
 
 export {

@@ -14,7 +14,8 @@ export type SenderIdentity = {
 
 type GetChatSenderIdentityInput = {
   msg: ChatMessage;
-  activeCompany: Company | null;
+  activeCompany?: Company | null;
+  employeesByAgentId?: Map<string, EmployeeRef>;
   isGroup: boolean;
   groupTopic?: string | null;
   emp?: EmployeeRef | null;
@@ -25,6 +26,7 @@ type GetChatSenderIdentityInput = {
 export function getChatSenderIdentity({
   msg,
   activeCompany,
+  employeesByAgentId,
   isGroup,
   groupTopic,
   emp,
@@ -43,8 +45,11 @@ export function getChatSenderIdentity({
       ? provenance.sourceActorId
       : null;
   const sourcedEmployee =
-    sourceAgentId && activeCompany
-      ? activeCompany.employees.find((employee) => employee.agentId === sourceAgentId) ?? null
+    sourceAgentId
+      ? employeesByAgentId?.get(sourceAgentId) ??
+        (activeCompany
+          ? activeCompany.employees.find((employee) => employee.agentId === sourceAgentId) ?? null
+          : null)
       : null;
 
   const roomAgentId =
@@ -52,16 +57,22 @@ export function getChatSenderIdentity({
       ? msg.roomAgentId
       : sourceAgentId;
   const roomEmployee =
-    roomAgentId && activeCompany
-      ? activeCompany.employees.find((employee) => employee.agentId === roomAgentId) ?? null
+    roomAgentId
+      ? employeesByAgentId?.get(roomAgentId) ??
+        (activeCompany
+          ? activeCompany.employees.find((employee) => employee.agentId === roomAgentId) ?? null
+          : null)
       : null;
   const roomSessionAgentId =
     typeof msg.roomAgentId === "string" && msg.roomAgentId.length > 0
       ? msg.roomAgentId
       : null;
   const roomSessionEmployee =
-    roomSessionAgentId && activeCompany
-      ? activeCompany.employees.find((employee) => employee.agentId === roomSessionAgentId) ?? null
+    roomSessionAgentId
+      ? employeesByAgentId?.get(roomSessionAgentId) ??
+        (activeCompany
+          ? activeCompany.employees.find((employee) => employee.agentId === roomSessionAgentId) ?? null
+          : null)
       : null;
 
   if (msg.role === "assistant" && isGroup && roomEmployee) {
@@ -158,11 +169,7 @@ export function getChatSenderIdentity({
       isGroup && Array.isArray(msg.roomAudienceAgentIds) && msg.roomAudienceAgentIds.length > 0
         ? (() => {
             const labels = msg.roomAudienceAgentIds
-              .map(
-                (agentId) =>
-                  activeCompany?.employees.find((employee) => employee.agentId === agentId)
-                    ?.nickname,
-              )
+              .map((agentId) => employeesByAgentId?.get(agentId)?.nickname)
               .filter((label): label is string => Boolean(label));
             if (labels.length === 0) {
               return "已发送到团队房间";

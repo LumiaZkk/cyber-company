@@ -4,7 +4,6 @@ import {
 } from "../../../application/delegation/room-routing";
 import {
   buildConversationMissionTruth,
-  buildConversationWorkItemTruth,
   buildRequirementTeamRoomTruth,
   resolveConversationCurrentWorkSelection,
   shouldPersistPreviewConversationWorkItem,
@@ -12,8 +11,7 @@ import {
   type ConversationMissionView,
 } from "../../../application/mission/conversation-truth";
 import { areWorkItemRecordsEquivalent } from "../../../application/mission/work-item-equivalence";
-import type { ArtifactRecord } from "../../../domain/artifact/types";
-import type { DispatchRecord, RequirementRoomRecord } from "../../../domain/delegation/types";
+import type { RequirementRoomRecord } from "../../../domain/delegation/types";
 import type {
   ConversationMissionRecord,
   WorkItemRecord,
@@ -43,8 +41,6 @@ export function useChatConversationTruth(input: {
   displayNextBatonAgentId: string | null;
   missionIsCompleted: boolean;
   activeCompany: Company | null;
-  activeArtifacts: ArtifactRecord[];
-  activeDispatches: DispatchRecord[];
   activeRoomRecords: RequirementRoomRecord[];
   requirementTeam:
     | {
@@ -94,8 +90,6 @@ export function useChatConversationTruth(input: {
     displayNextBatonAgentId,
     missionIsCompleted,
     activeCompany,
-    activeArtifacts,
-    activeDispatches,
     activeRoomRecords,
     requirementTeam,
     groupWorkItemId,
@@ -163,42 +157,6 @@ export function useChatConversationTruth(input: {
     conversationMissionRecord,
     conversationMissionRecordSignature,
   } = conversationTruth;
-  const reconciledConversationWorkItem = useMemo(
-    () =>
-      buildConversationWorkItemTruth({
-        shouldPersistConversationTruth,
-        activeCompany,
-        persistedWorkItem,
-        conversationMissionRecord,
-        requirementOverview,
-        effectiveRequirementRoom,
-        activeArtifacts,
-        activeDispatches,
-        sessionKey,
-        productRoomId,
-      }),
-    [
-      activeArtifacts,
-      activeCompany,
-      activeDispatches,
-      conversationMissionRecord,
-      effectiveRequirementRoom,
-      persistedWorkItem,
-      productRoomId,
-      requirementOverview,
-      sessionKey,
-      shouldPersistConversationTruth,
-    ],
-  );
-  const shouldPersistReconciledConversationWorkItem = useMemo(
-    () =>
-      Boolean(
-        reconciledConversationWorkItem &&
-          (!persistedWorkItem ||
-            !areWorkItemRecordsEquivalent(reconciledConversationWorkItem, persistedWorkItem)),
-      ),
-    [persistedWorkItem, reconciledConversationWorkItem],
-  );
   const shouldPersistPreviewConversationWorkItemRecord = useMemo(
     () =>
       Boolean(
@@ -298,32 +256,6 @@ export function useChatConversationTruth(input: {
 
   useEffect(() => {
     if (
-      !shouldPersistConversationTruth ||
-      !reconciledConversationWorkItem ||
-      !shouldPersistReconciledConversationWorkItem
-    ) {
-      return;
-    }
-    upsertWorkItemRecord(reconciledConversationWorkItem);
-    if (conversationStateKey) {
-      setConversationCurrentWorkKey(
-        conversationStateKey,
-        reconciledConversationWorkItem.workKey,
-        reconciledConversationWorkItem.id,
-        reconciledConversationWorkItem.roundId,
-      );
-    }
-  }, [
-    conversationStateKey,
-    reconciledConversationWorkItem,
-    setConversationCurrentWorkKey,
-    shouldPersistReconciledConversationWorkItem,
-    upsertWorkItemRecord,
-    shouldPersistConversationTruth,
-  ]);
-
-  useEffect(() => {
-    if (
       !shouldPersistPreviewWorkItem ||
       !previewConversationWorkItem
     ) {
@@ -405,5 +337,6 @@ export function useChatConversationTruth(input: {
 
   return {
     conversationMissionRecord,
+    shouldPersistConversationTruth,
   };
 }

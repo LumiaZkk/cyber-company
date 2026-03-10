@@ -19,7 +19,9 @@ import {
   resolveRequirementProductStatus,
 } from "../../application/mission/requirement-product-status";
 import { selectPrimaryRequirementProjection } from "../../application/mission/requirement-aggregate";
+import { ChatAutoDispatchController } from "./components/ChatAutoDispatchController";
 import { ChatComposerFooter } from "./components/ChatComposerFooter";
+import { ChatConversationWorkItemSync } from "./components/ChatConversationWorkItemSync";
 import { ChatMessageFeed } from "./components/ChatMessageFeed";
 import { ChatMissionStrip } from "./components/ChatMissionStrip";
 import { ChatSessionHeader } from "./components/ChatSessionHeader";
@@ -38,7 +40,6 @@ import { useChatSessionContext } from "./hooks/useChatSessionContext";
 import { useChatWorkspaceViewModel } from "./hooks/useChatWorkspaceViewModel";
 import { useChatCollaborationSurface } from "./hooks/useChatCollaborationSurface";
 import { useChatConversationSurface } from "./hooks/useChatConversationSurface";
-import { useChatAutoDispatch } from "./hooks/useChatAutoDispatch";
 import { useChatDragAndDrop } from "./hooks/useChatDragAndDrop";
 import { useChatFocusAction } from "./hooks/useChatFocusAction";
 import { useChatHistoryActions } from "./hooks/useChatHistoryActions";
@@ -67,8 +68,10 @@ import { useChatActionSurface } from "./hooks/useChatActionSurface";
 import { useChatPreviewPersistence } from "./hooks/useChatPreviewPersistence";
 import { useChatRuntimeEffects } from "./hooks/useChatRuntimeEffects";
 import { useChatRouteCompanyState } from "./hooks/useChatRouteCompanyState";
+import type { EmployeeRef } from "../../domain/org/types";
 
 const CHAT_RENDER_WINDOW_STEP = 80;
+const EMPTY_EMPLOYEES: EmployeeRef[] = [];
 
 export function ChatPageScreen() {
   const navigate = useNavigate();
@@ -83,8 +86,6 @@ export function ChatPageScreen() {
     activeRequirementAggregates,
     primaryRequirementId,
     activeRoundRecords,
-    activeArtifacts,
-    activeDispatches,
     activeRoomBindings,
     updateCompany,
     upsertTask,
@@ -496,8 +497,6 @@ export function ChatPageScreen() {
   });
   const syncCompanyCommunication = useChatClosedLoop({
     activeCompany,
-    activeArtifacts,
-    activeDispatches,
     previousSnapshotsRef: companySessionSnapshotsRef,
     setCompanySessionSnapshots,
     replaceDispatchRecords,
@@ -618,7 +617,10 @@ export function ChatPageScreen() {
     shouldPreferPersistedConversationMission,
     activeConversationMission,
   } = missionSurface;
-  const { conversationMissionRecord } = useChatConversationTruth({
+  const {
+    conversationMissionRecord,
+    shouldPersistConversationTruth,
+  } = useChatConversationTruth({
     isGroup,
     isCeoSession,
     sessionKey,
@@ -639,8 +641,6 @@ export function ChatPageScreen() {
     displayNextBatonAgentId,
     missionIsCompleted,
     activeCompany,
-    activeArtifacts,
-    activeDispatches,
     activeRoomRecords,
     requirementTeam: requirementTeam
       ? {
@@ -674,11 +674,9 @@ export function ChatPageScreen() {
     teamGroupRoute,
     currentConversationWorkItemId,
     currentConversationTopicKey,
-    autoDispatchPlan,
     buildTeamAdjustmentAction,
   } = useChatActionSurface({
     activeCompany,
-    activeDispatches,
     activeRoomRecords,
     linkedRequirementRoom,
     stableDisplayWorkItem,
@@ -730,24 +728,6 @@ export function ChatPageScreen() {
     requirementTechParticipant,
     focusSummaryOwnerRole: focusSummary.ownerRole,
   });
-  useChatAutoDispatch({
-    plan: autoDispatchPlan,
-    company: activeCompany,
-    providerManifest,
-    fromActorId: targetAgentId,
-    workItemId: currentConversationWorkItemId,
-    topicKey: currentConversationTopicKey,
-    enabled:
-      isCeoSession &&
-      !isGroup &&
-      !isArchiveView &&
-      !isFreshConversation &&
-      !isRequirementBootstrapPending &&
-      !routeCompanyConflictMessage,
-    upsertDispatchRecord,
-    appendLocalProgressEvent,
-  });
-
   const { handleCopyTakeoverPack, handleRecoverCommunication } = useChatCoordinationActions({
     takeoverPack: takeoverPack ? { operatorNote: takeoverPack.operatorNote } : null,
     activeCompanyId: activeCompany?.id ?? null,
@@ -826,6 +806,7 @@ export function ChatPageScreen() {
     streamText,
   });
   const deferredStreamText = useDeferredValue(streamText);
+  const companyEmployees = activeCompany?.employees ?? EMPTY_EMPLOYEES;
   const chatSessionRuntime = useMemo(
     () => ({
       activeCompany,
@@ -854,7 +835,6 @@ export function ChatPageScreen() {
       sessionKey,
       productRoomId,
       activeRoomBindings,
-      activeDispatches,
       currentConversationWorkItemId,
       currentConversationTopicKey,
       lastSyncedRoomSignatureRef,
@@ -875,7 +855,6 @@ export function ChatPageScreen() {
     [
       activeArchivedRound,
       activeCompany,
-      activeDispatches,
       activeRoomBindings,
       agentId,
       archiveId,
@@ -904,6 +883,7 @@ export function ChatPageScreen() {
       sessionKey,
       setActiveRunId,
       targetAgentId,
+      updateStreamText,
       upsertDispatchRecord,
       upsertRoomConversationBindings,
       upsertRoomRecord,
@@ -1064,6 +1044,44 @@ export function ChatPageScreen() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <ChatConversationWorkItemSync
+        activeCompany={activeCompany}
+        conversationMissionRecord={conversationMissionRecord}
+        conversationStateKey={conversationStateKey}
+        effectiveRequirementRoom={effectiveRequirementRoom}
+        persistedWorkItem={persistedWorkItem}
+        productRoomId={productRoomId}
+        requirementOverview={requirementOverview}
+        sessionKey={sessionKey}
+        shouldPersistConversationTruth={shouldPersistConversationTruth}
+        upsertWorkItemRecord={upsertWorkItemRecord}
+        setConversationCurrentWorkKey={setConversationCurrentWorkKey}
+      />
+      <ChatAutoDispatchController
+        company={activeCompany}
+        providerManifest={providerManifest}
+        fromActorId={targetAgentId}
+        workItemId={currentConversationWorkItemId}
+        topicKey={currentConversationTopicKey}
+        enabled={
+          isCeoSession &&
+          !isGroup &&
+          !isArchiveView &&
+          !isFreshConversation &&
+          !isRequirementBootstrapPending &&
+          !routeCompanyConflictMessage
+        }
+        upsertDispatchRecord={upsertDispatchRecord}
+        appendLocalProgressEvent={appendLocalProgressEvent}
+        workTitle={effectiveHeadline}
+        ownerLabel={effectiveOwnerLabel}
+        summary={effectiveSummary}
+        actionHint={effectiveActionHint}
+        currentStep={displayPlanCurrentStep}
+        nextBatonAgentId={displayNextBatonAgentId}
+        nextBatonLabel={displayNextBatonLabel}
+        shouldDispatchPublish={shouldDispatchPublish}
+      />
       {/* 拖拽上传遮罩 */}
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-indigo-500/10 backdrop-blur-[2px] border-4 border-dashed border-indigo-400 rounded-xl m-2 flex flex-col items-center justify-center transition-all pointer-events-none">
@@ -1329,9 +1347,8 @@ export function ChatPageScreen() {
           renderWindowStep={CHAT_RENDER_WINDOW_STEP}
           displayItemsLength={displayItems.length}
           visibleDisplayItems={visibleDisplayItems}
-          activeCompany={activeCompany}
-          activeDispatches={activeDispatches}
-          activeRoomRecords={activeRoomRecords}
+          companyId={activeCompany?.id ?? null}
+          employees={companyEmployees}
           isCeoSession={isCeoSession}
           isGroup={isGroup}
           groupTopic={groupTopic}
