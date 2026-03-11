@@ -10,7 +10,13 @@ import type { ResolvedExecutionState } from "../mission/execution-state";
 import { useLobbyRuntimeState } from "./runtime-state";
 import type { RequirementSessionSnapshot } from "../../domain/mission/requirement-snapshot";
 import type { ArtifactRecord } from "../../domain/artifact/types";
-import type { DispatchRecord, RequirementRoomRecord } from "../../domain/delegation/types";
+import type {
+  DecisionTicketRecord,
+  DispatchRecord,
+  EscalationRecord,
+  RequirementRoomRecord,
+  SupportRequestRecord,
+} from "../../domain/delegation/types";
 import type {
   Company,
   ConversationStateRecord,
@@ -36,6 +42,9 @@ type BuildLobbyPageSurfaceInput = {
   activeArtifacts: ArtifactRecord[];
   activeDispatches: DispatchRecord[];
   activeRoomRecords: RequirementRoomRecord[];
+  activeSupportRequests: SupportRequestRecord[];
+  activeEscalations: EscalationRecord[];
+  activeDecisionTickets: DecisionTicketRecord[];
 };
 
 export function buildLobbyPageSurface(input: BuildLobbyPageSurfaceInput) {
@@ -61,11 +70,14 @@ export function buildLobbyPageSurface(input: BuildLobbyPageSurfaceInput) {
     currentTime: input.currentTime,
   });
 
-  const ceoSurface = buildCeoControlSurface(
-    requirementSurface.currentWorkItem
+  const ceoSurface = buildCeoControlSurface({
+    company: requirementSurface.currentWorkItem
       ? input.activeCompany
       : { ...input.activeCompany, tasks: [], handoffs: [], requests: [] },
-  );
+    activeSupportRequests: input.activeSupportRequests,
+    activeEscalations: input.activeEscalations,
+    activeDecisionTickets: input.activeDecisionTickets,
+  });
 
   const operationsSurface = buildLobbyOperationsSurface({
     activeCompany: input.activeCompany,
@@ -120,6 +132,9 @@ export function useLobbyPageViewModel(input: { isPageVisible: boolean }) {
       activeArtifacts: lobbyViewModel.activeArtifacts,
       activeDispatches: lobbyViewModel.activeDispatches,
       activeRoomRecords: lobbyViewModel.activeRoomRecords,
+      activeSupportRequests: lobbyViewModel.activeSupportRequests,
+      activeEscalations: lobbyViewModel.activeEscalations,
+      activeDecisionTickets: lobbyViewModel.activeDecisionTickets,
       activeWorkItems: lobbyViewModel.activeWorkItems,
       activeRequirementAggregates: lobbyViewModel.activeRequirementAggregates,
       primaryRequirementId: lobbyViewModel.primaryRequirementId,
@@ -137,6 +152,9 @@ export function useLobbyPageViewModel(input: { isPageVisible: boolean }) {
     lobbyViewModel.activeConversationStates,
     lobbyViewModel.activeDispatches,
     lobbyViewModel.activeRoomRecords,
+    lobbyViewModel.activeSupportRequests,
+    lobbyViewModel.activeEscalations,
+    lobbyViewModel.activeDecisionTickets,
     lobbyViewModel.activeWorkItems,
     lobbyViewModel.activeRequirementAggregates,
     lobbyViewModel.primaryRequirementId,

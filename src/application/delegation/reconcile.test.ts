@@ -114,4 +114,28 @@ describe("reconcileCompanyCommunication", () => {
     expect(result.companyPatch.requests?.find((request) => request.id === "older-request")?.status).toBe("superseded");
     expect(result.companyPatch.requests?.find((request) => request.id === latestRequest.id)?.status).toBe("answered");
   });
+
+  it("drops instruction-doc requests recovered from workspace bootstrap text", () => {
+    const result = reconcileCompanyCommunication(
+      createCompany({
+        requests: [
+          createRequest({
+            id: "ops-guide-request",
+            title: "# CEO 执行准则",
+            summary: "公司：on",
+            requiredItems: [
+              "1. 先读取 `company-context.json`。",
+              "2. 严禁借用你自己的 workspace 替 CTO / COO / HR 执行他们的工作。",
+            ],
+            responseSummary: "公司：on",
+            responseDetails: undefined,
+          }),
+        ],
+      }),
+      [],
+      3_000,
+    );
+
+    expect(result.companyPatch.requests).toEqual([]);
+  });
 });

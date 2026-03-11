@@ -69,6 +69,7 @@ export function buildRequirementRoomRecord(input: {
   memberIds: string[];
   ownerAgentId?: string | null;
   topicKey?: string | null;
+  scope?: RequirementRoomRecord["scope"];
   transcript?: RequirementRoomMessage[];
   createdAt?: number;
   updatedAt?: number;
@@ -92,6 +93,7 @@ export function buildRequirementRoomRecord(input: {
     title: input.title.trim() || "需求团队",
     headline: state.headline,
     topicKey: normalizeRoomTopicKey(input.topicKey) ?? undefined,
+    scope: input.scope ?? "company",
     ownerActorId: input.ownerAgentId ?? null,
     batonActorId: null,
     memberActorIds: memberIds,
@@ -116,6 +118,7 @@ export function buildRequirementRoomRecordFromSessions(input: {
   memberIds: string[];
   ownerAgentId?: string | null;
   topicKey?: string | null;
+  scope?: RequirementRoomRecord["scope"];
   seedTranscript?: RequirementRoomMessage[];
   sessions: Array<{ sessionKey: string; agentId: string; messages: ChatMessage[] }>;
   providerId?: string;
@@ -151,6 +154,7 @@ export function buildRequirementRoomRecordFromSessions(input: {
     memberIds: input.memberIds,
     ownerAgentId: input.ownerAgentId,
     topicKey: input.topicKey,
+    scope: input.scope,
     transcript,
     updatedAt: effectiveUpdatedAt,
     lastSourceSyncAt: latestTimestamp || undefined,
@@ -167,6 +171,7 @@ export function buildRequirementRoomRecordFromSnapshots(input: {
   memberIds: string[];
   ownerAgentId?: string | null;
   topicKey?: string | null;
+  scope?: RequirementRoomRecord["scope"];
   startedAt?: number | null;
   seedTranscript?: RequirementRoomMessage[];
   snapshots: RequirementSessionSnapshot[];
@@ -216,6 +221,7 @@ export function buildRequirementRoomRecordFromSnapshots(input: {
     memberIds: input.memberIds,
     ownerAgentId: input.ownerAgentId,
     topicKey: input.topicKey,
+    scope: input.scope,
     transcript,
     updatedAt: latestTimestamp || Date.now(),
     lastSourceSyncAt: latestTimestamp || undefined,
@@ -232,6 +238,7 @@ export function mergeRequirementRoomRecordFromSessions(input: {
   memberIds: string[];
   ownerAgentId?: string | null;
   topicKey?: string | null;
+  scope?: RequirementRoomRecord["scope"];
   sessions: Array<{ sessionKey: string; agentId: string; messages: ChatMessage[] }>;
   providerId?: string;
 }): RequirementRoomRecord {
@@ -279,6 +286,7 @@ export function mergeRequirementRoomRecordFromSessions(input: {
     memberIds: dedupeAgentIds([...(existingRoom?.memberIds ?? []), ...input.memberIds]),
     ownerAgentId: existingRoom?.ownerAgentId ?? input.ownerAgentId,
     topicKey: existingRoom?.topicKey ?? input.topicKey,
+    scope: existingRoom?.scope ?? input.scope,
     transcript,
     createdAt: existingRoom?.createdAt,
     updatedAt,
@@ -297,6 +305,7 @@ export function mergeRequirementRoomRecordFromSnapshots(input: {
   memberIds: string[];
   ownerAgentId?: string | null;
   topicKey?: string | null;
+  scope?: RequirementRoomRecord["scope"];
   startedAt?: number | null;
   snapshots: RequirementSessionSnapshot[];
 }): RequirementRoomRecord {
@@ -353,6 +362,7 @@ export function mergeRequirementRoomRecordFromSnapshots(input: {
     memberIds: dedupeAgentIds([...(existingRoom?.memberIds ?? []), ...input.memberIds]),
     ownerAgentId: existingRoom?.ownerAgentId ?? input.ownerAgentId,
     topicKey: existingRoom?.topicKey ?? input.topicKey,
+    scope: existingRoom?.scope ?? input.scope,
     transcript,
     createdAt: existingRoom?.createdAt,
     updatedAt,

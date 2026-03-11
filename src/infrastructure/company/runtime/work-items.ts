@@ -1,6 +1,7 @@
 import { loadWorkItemRecords, persistWorkItemRecords, sanitizeWorkItemRecords } from "../persistence/work-item-persistence";
 import type {
   ArtifactRecord,
+  Company,
   CompanyRuntimeState,
   DispatchRecord,
   RequirementRoomRecord,
@@ -62,6 +63,7 @@ export function syncDispatchLinks(
 
 export function reconcileStoredWorkItems(input: {
   companyId: string;
+  company?: Company | null;
   workItems: WorkItemRecord[];
   rooms: RequirementRoomRecord[];
   artifacts: ArtifactRecord[];
@@ -88,6 +90,7 @@ export function reconcileStoredWorkItems(input: {
         return (
           reconcileWorkItemRecord({
             companyId: input.companyId,
+            company: input.company,
             existingWorkItem: workItem,
             room: matchingRoom,
             artifacts: input.artifacts,
@@ -114,6 +117,7 @@ export function reconcileStoredWorkItems(input: {
     return (
       reconcileWorkItemRecord({
         companyId: input.companyId,
+        company: input.company,
         existingWorkItem: workItem,
         room: matchingRoom,
         artifacts: input.artifacts,
@@ -128,12 +132,14 @@ export function reconcileStoredWorkItems(input: {
 }
 
 export function loadStoredWorkItems(input: {
+  company?: Company | null;
   companyId: string;
   rooms: RequirementRoomRecord[];
   artifacts: ArtifactRecord[];
   dispatches: DispatchRecord[];
 }) {
   return reconcileStoredWorkItems({
+    company: input.company,
     companyId: input.companyId,
     workItems: sanitizeWorkItemRecords(loadWorkItemRecords(input.companyId)),
     rooms: input.rooms,

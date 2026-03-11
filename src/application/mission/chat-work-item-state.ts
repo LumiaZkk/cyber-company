@@ -123,6 +123,7 @@ export function buildChatWorkItemState(input: BuildChatWorkItemStateInput): Chat
     isReliableRequirementOverview(input.rawConversationRequirementOverview ?? input.requirementOverview)
       ? reconcileWorkItemRecord({
           companyId: input.activeCompany.id,
+          company: input.activeCompany,
           existingWorkItem: input.effectiveStableConversationWorkItem,
           overview: input.rawConversationRequirementOverview ?? input.requirementOverview,
           fallbackSessionKey: input.sessionKey,

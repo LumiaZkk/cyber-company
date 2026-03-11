@@ -1,8 +1,11 @@
 import type { ArtifactRecord } from "../../domain/artifact/types";
 import type {
+  DecisionTicketRecord,
   DispatchRecord,
+  EscalationRecord,
   RequirementRoomRecord,
   RoomConversationBindingRecord,
+  SupportRequestRecord,
 } from "../../domain/delegation/types";
 import type {
   ConversationMissionRecord,
@@ -84,6 +87,9 @@ export type AuthorityCompanyRuntimeSnapshot = {
   activeArtifacts: ArtifactRecord[];
   activeDispatches: DispatchRecord[];
   activeRoomBindings: RoomConversationBindingRecord[];
+  activeSupportRequests: SupportRequestRecord[];
+  activeEscalations: EscalationRecord[];
+  activeDecisionTickets: DecisionTicketRecord[];
   updatedAt: number;
 };
 

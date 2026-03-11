@@ -16,6 +16,9 @@ export function runtimeStateFromAuthorityRuntimeSnapshot(
   | "activeArtifacts"
   | "activeDispatches"
   | "activeRoomBindings"
+  | "activeSupportRequests"
+  | "activeEscalations"
+  | "activeDecisionTickets"
 > {
   return {
     activeRoomRecords: runtime?.activeRoomRecords ?? [],
@@ -29,6 +32,9 @@ export function runtimeStateFromAuthorityRuntimeSnapshot(
     activeArtifacts: runtime?.activeArtifacts ?? [],
     activeDispatches: runtime?.activeDispatches ?? [],
     activeRoomBindings: runtime?.activeRoomBindings ?? [],
+    activeSupportRequests: runtime?.activeSupportRequests ?? [],
+    activeEscalations: runtime?.activeEscalations ?? [],
+    activeDecisionTickets: runtime?.activeDecisionTickets ?? [],
   };
 }
 
@@ -49,6 +55,9 @@ export function runtimeStateFromAuthorityBootstrap(
   | "activeArtifacts"
   | "activeDispatches"
   | "activeRoomBindings"
+  | "activeSupportRequests"
+  | "activeEscalations"
+  | "activeDecisionTickets"
 > {
   return {
     config: snapshot.config,

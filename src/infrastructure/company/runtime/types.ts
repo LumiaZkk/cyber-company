@@ -1,11 +1,14 @@
 import type { ArtifactRecord, SharedKnowledgeItem } from "../../../domain/artifact/types";
 import type {
+  DecisionTicketRecord,
   DispatchRecord,
+  EscalationRecord,
   HandoffRecord,
   RequestRecord,
   RequirementRoomMessage,
   RequirementRoomRecord,
   RoomConversationBindingRecord,
+  SupportRequestRecord,
 } from "../../../domain/delegation/types";
 import type {
   ConversationMissionRecord,
@@ -20,12 +23,15 @@ import type { Company, CyberCompanyConfig } from "../../../domain/org/types";
 
 export type { ArtifactRecord, SharedKnowledgeItem } from "../../../domain/artifact/types";
 export type {
+  DecisionTicketRecord,
   DispatchRecord,
+  EscalationRecord,
   HandoffRecord,
   RequestRecord,
   RequirementRoomMessage,
   RequirementRoomRecord,
   RoomConversationBindingRecord,
+  SupportRequestRecord,
 } from "../../../domain/delegation/types";
 export type {
   ConversationMissionRecord,
@@ -54,6 +60,9 @@ export interface CompanyRuntimeState {
   activeArtifacts: ArtifactRecord[];
   activeDispatches: DispatchRecord[];
   activeRoomBindings: RoomConversationBindingRecord[];
+  activeSupportRequests: SupportRequestRecord[];
+  activeEscalations: EscalationRecord[];
+  activeDecisionTickets: DecisionTicketRecord[];
   loading: boolean;
   error: string | null;
   bootstrapPhase: CompanyBootstrapPhase;
@@ -65,6 +74,15 @@ export interface CompanyRuntimeState {
   upsertTask: (task: TrackedTask) => Promise<void>;
   upsertHandoff: (handoff: HandoffRecord) => Promise<void>;
   upsertRequest: (request: RequestRecord) => Promise<void>;
+  upsertSupportRequest: (request: SupportRequestRecord) => Promise<void>;
+  replaceSupportRequestRecords: (requests: SupportRequestRecord[]) => void;
+  deleteSupportRequestRecord: (requestId: string) => void;
+  upsertEscalationRecord: (escalation: EscalationRecord) => void;
+  replaceEscalationRecords: (escalations: EscalationRecord[]) => void;
+  deleteEscalationRecord: (escalationId: string) => void;
+  upsertDecisionTicketRecord: (ticket: DecisionTicketRecord) => void;
+  replaceDecisionTicketRecords: (tickets: DecisionTicketRecord[]) => void;
+  deleteDecisionTicketRecord: (ticketId: string) => void;
   upsertKnowledgeItem: (knowledgeItem: SharedKnowledgeItem) => Promise<void>;
   upsertRoomRecord: (room: RequirementRoomRecord) => void;
   appendRoomMessages: (
@@ -81,6 +99,10 @@ export interface CompanyRuntimeState {
     workKey: string | null,
     workItemId?: string | null,
     roundId?: string | null,
+  ) => void;
+  setConversationDraftRequirement: (
+    conversationId: string,
+    draftRequirement: ConversationStateRecord["draftRequirement"],
   ) => void;
   clearConversationState: (conversationId: string) => void;
   upsertWorkItemRecord: (workItem: WorkItemRecord) => void;

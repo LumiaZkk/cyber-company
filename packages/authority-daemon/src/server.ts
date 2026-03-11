@@ -4,13 +4,34 @@ import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
+import {
+  buildManagedExecutorFiles,
+  buildManagedExecutorFilesForCompany,
+  listDesiredManagedExecutorAgents,
+  planManagedExecutorReconcile,
+} from "./company-executor-sync";
+import { CompanyOpsEngine } from "./company-ops-engine";
+import {
+  deleteCompanyStrongConsistency,
+  removeManagedExecutorCompanyWorkspace,
+  StrongCompanyDeleteError,
+  waitForExecutorAgentsAbsent,
+} from "./company-delete";
 import { createOpenClawExecutorBridge } from "./openclaw-bridge";
 import { resolveLocalOpenClawGatewayToken } from "./openclaw-local-auth";
 import { parseCompanyBlueprint } from "../../../src/application/company/blueprint";
-import { COMPANY_CONTEXT_FILE_NAME, CEO_OPERATIONS_FILE_NAME, buildCeoOperationsGuide, buildCompanyContextSnapshot } from "../../../src/application/company/agent-context";
 import { COMPANY_TEMPLATES } from "../../../src/application/company/templates";
+import { normalizeWorkItemDepartmentOwnership } from "../../../src/application/org/department-autonomy";
+import { isSupportRequestActive, normalizeSupportRequestRecord } from "../../../src/domain/delegation/support-request";
 import type { CompanyEvent } from "../../../src/domain/delegation/events";
-import type { DispatchRecord, RequirementRoomRecord, RoomConversationBindingRecord } from "../../../src/domain/delegation/types";
+import type {
+  DecisionTicketRecord,
+  DispatchRecord,
+  EscalationRecord,
+  RequirementRoomRecord,
+  RoomConversationBindingRecord,
+  SupportRequestRecord,
+} from "../../../src/domain/delegation/types";
 import type { ArtifactRecord } from "../../../src/domain/artifact/types";
 import type {
   ConversationMissionRecord,
@@ -20,8 +41,11 @@ import type {
   RoundRecord,
   WorkItemRecord,
 } from "../../../src/domain/mission/types";
-import { generateCeoSoul, generateCooSoul, generateCtoSoul, generateHrSoul } from "../../../src/domain/org/meta-agent-souls";
-import { buildDefaultMainCompany, DEFAULT_MAIN_AGENT_ID, isReservedSystemCompany } from "../../../src/domain/org/system-company";
+import { buildDefaultOrgSettings } from "../../../src/domain/org/autonomy-policy";
+import {
+  buildDefaultMainCompany,
+  isReservedSystemCompany,
+} from "../../../src/domain/org/system-company";
 import type { Company, CyberCompanyConfig, Department, EmployeeRef, QuickPrompt } from "../../../src/domain/org/types";
 import type {
   AuthorityAppendCompanyEventRequest,
@@ -64,12 +88,18 @@ type RuntimeSliceTables =
   | "rounds"
   | "artifacts"
   | "dispatches"
-  | "room_bindings";
+  | "room_bindings"
+  | "support_requests"
+  | "escalations"
+  | "decision_tickets";
 
 const AUTHORITY_PORT = Number.parseInt(process.env.CYBER_COMPANY_AUTHORITY_PORT ?? "18790", 10);
 const DATA_DIR = path.join(os.homedir(), ".cyber-company", "authority");
 const DB_PATH = path.join(DATA_DIR, "authority.sqlite");
 const DEFAULT_OPENCLAW_URL = "ws://localhost:18789";
+let syncAuthorityAgentFileMirror:
+  | ((file: { agentId: string; name: string; content: string }) => void)
+  | null = null;
 
 const EMPTY_RUNTIME = (companyId: string): AuthorityCompanyRuntimeSnapshot => ({
   companyId,
@@ -84,6 +114,9 @@ const EMPTY_RUNTIME = (companyId: string): AuthorityCompanyRuntimeSnapshot => ({
   activeArtifacts: [],
   activeDispatches: [],
   activeRoomBindings: [],
+  activeSupportRequests: [],
+  activeEscalations: [],
+  activeDecisionTickets: [],
   updatedAt: Date.now(),
 });
 
@@ -96,6 +129,13 @@ type StoredExecutorConfig = {
   connectionState?: AuthorityExecutorConfig["connectionState"];
   lastError?: string | null;
   lastConnectedAt?: number | null;
+};
+
+type ManagedExecutorAgentRow = {
+  agentId: string;
+  companyId: string | null;
+  desiredPresent: boolean;
+  updatedAt: number;
 };
 
 function createDefaultStoredExecutorConfig(): StoredExecutorConfig {
@@ -167,6 +207,66 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function normalizeCompany(company: Company): Company {
+  return {
+    ...company,
+    orgSettings: buildDefaultOrgSettings(company.orgSettings),
+    supportRequests: (company.supportRequests ?? [])
+      .map(normalizeSupportRequestRecord)
+      .filter(isSupportRequestActive),
+    escalations: (company.escalations ?? []).filter(
+      (item) => item.status === "open" || item.status === "acknowledged",
+    ),
+    decisionTickets: (company.decisionTickets ?? []).filter(
+      (item) => item.status === "open" || item.status === "pending_human",
+    ),
+  };
+}
+
+function normalizeRuntimeSnapshot(
+  company: Company | null | undefined,
+  snapshot: AuthorityCompanyRuntimeSnapshot,
+): AuthorityCompanyRuntimeSnapshot {
+  return {
+    ...snapshot,
+    activeWorkItems: snapshot.activeWorkItems.map((workItem) =>
+      normalizeWorkItemDepartmentOwnership({
+        company,
+        workItem,
+      }),
+    ),
+    activeSupportRequests: (snapshot.activeSupportRequests ?? []).map(normalizeSupportRequestRecord),
+    activeEscalations: snapshot.activeEscalations ?? [],
+    activeDecisionTickets: snapshot.activeDecisionTickets ?? [],
+  };
+}
+
+function stringifyError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isAgentAlreadyExistsError(error: unknown) {
+  return stringifyError(error).includes("already exists");
+}
+
+function isAgentNotFoundError(error: unknown) {
+  const message = stringifyError(error);
+  return (
+    message.includes("not found")
+    || message.includes("unknown agent id")
+    || message.includes("unknown agent")
+  );
+}
+
+function isLegacyAgentsDeletePurgeStateError(error: unknown) {
+  const message = stringifyError(error);
+  return (
+    message.includes("invalid agents.delete params") &&
+    message.includes("unexpected property") &&
+    message.includes("purgeState")
+  );
 }
 
 function sendJson(response: import("node:http").ServerResponse, status: number, payload: unknown) {
@@ -370,6 +470,24 @@ class AuthorityRepository {
         updated_at INTEGER NOT NULL,
         payload_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS support_requests (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS escalations (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS decision_tickets (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS dispatches (
         id TEXT PRIMARY KEY,
         company_id TEXT NOT NULL,
@@ -417,6 +535,12 @@ class AuthorityRepository {
         started_at INTEGER NOT NULL,
         finished_at INTEGER,
         payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS managed_executor_agents (
+        agent_id TEXT PRIMARY KEY,
+        company_id TEXT,
+        desired_present INTEGER NOT NULL DEFAULT 1,
+        updated_at INTEGER NOT NULL
       );
     `);
 
@@ -477,22 +601,20 @@ class AuthorityRepository {
     return normalized;
   }
 
-  loadConfig(): CyberCompanyConfig | null {
+  private readStoredConfig(): CyberCompanyConfig | null {
     const rows = this.db.prepare("SELECT company_json FROM companies ORDER BY created_at ASC").all() as Array<{
       company_json: string;
     }>;
     if (rows.length === 0) {
-      const defaultCompany = this.ensureDefaultMainCompany();
-      return {
-        version: 1,
-        companies: [defaultCompany],
-        activeCompanyId: defaultCompany.id,
-        preferences: { theme: "classic", locale: "zh-CN" },
-      };
+      return null;
     }
     const companies = rows
       .map((row) => parseJson<Company | null>(row.company_json, null))
+      .map((company) => (company ? normalizeCompany(company) : null))
       .filter(isPresent);
+    if (companies.length === 0) {
+      return null;
+    }
     const activeCompanyId =
       this.getActiveCompanyId() && companies.some((company) => company.id === this.getActiveCompanyId())
         ? this.getActiveCompanyId()!
@@ -505,11 +627,149 @@ class AuthorityRepository {
     };
   }
 
+  loadConfig(): CyberCompanyConfig | null {
+    const stored = this.readStoredConfig();
+    if (stored) {
+      return stored;
+    }
+    const defaultCompany = this.ensureDefaultMainCompany();
+    return {
+      version: 1,
+      companies: [defaultCompany],
+      activeCompanyId: defaultCompany.id,
+      preferences: { theme: "classic", locale: "zh-CN" },
+    };
+  }
+
   private loadCompanyById(companyId: string): Company | null {
     const row = this.db.prepare("SELECT company_json FROM companies WHERE id = ?").get(companyId) as
       | { company_json?: string }
       | undefined;
-    return parseJson<Company | null>(row?.company_json, null);
+    const company = parseJson<Company | null>(row?.company_json, null);
+    return company ? normalizeCompany(company) : null;
+  }
+
+  private refreshManagedContextFiles(companyId: string, runtime: AuthorityCompanyRuntimeSnapshot) {
+    const company = this.loadCompanyById(companyId);
+    if (!company) {
+      return;
+    }
+    for (const file of buildManagedExecutorFilesForCompany(company, {
+      activeWorkItems: runtime.activeWorkItems,
+      activeSupportRequests: runtime.activeSupportRequests,
+      activeEscalations: runtime.activeEscalations,
+      activeDecisionTickets: runtime.activeDecisionTickets,
+    })) {
+      const saved = this.setAgentFile(file.agentId, file.name, file.content);
+      if (!saved.changed) {
+        continue;
+      }
+      syncAuthorityAgentFileMirror?.({
+        agentId: file.agentId,
+        name: file.name,
+        content: file.content,
+      });
+    }
+  }
+
+  listManagedExecutorAgents(): ManagedExecutorAgentRow[] {
+    const rows = this.db.prepare(`
+      SELECT agent_id, company_id, desired_present, updated_at
+      FROM managed_executor_agents
+      ORDER BY updated_at ASC, agent_id ASC
+    `).all() as Array<{
+      agent_id: string;
+      company_id: string | null;
+      desired_present: number;
+      updated_at: number;
+    }>;
+    return rows.map((row) => ({
+      agentId: row.agent_id,
+      companyId: row.company_id ?? null,
+      desiredPresent: row.desired_present === 1,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  private upsertManagedExecutorAgent(input: {
+    agentId: string;
+    companyId: string | null;
+    desiredPresent: boolean;
+  }) {
+    this.db.prepare(`
+      INSERT INTO managed_executor_agents (agent_id, company_id, desired_present, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        company_id = excluded.company_id,
+        desired_present = excluded.desired_present,
+        updated_at = excluded.updated_at
+    `).run(
+      input.agentId,
+      input.companyId,
+      input.desiredPresent ? 1 : 0,
+      Date.now(),
+    );
+  }
+
+  clearManagedExecutorAgent(agentId: string) {
+    this.db.prepare("DELETE FROM managed_executor_agents WHERE agent_id = ?").run(agentId);
+  }
+
+  clearManagedExecutorAgentsForCompany(companyId: string) {
+    this.db.prepare("DELETE FROM managed_executor_agents WHERE company_id = ?").run(companyId);
+  }
+
+  syncManagedExecutorAgentTargets(
+    previousConfig: CyberCompanyConfig | null,
+    nextConfig: CyberCompanyConfig | null,
+  ) {
+    const previousTargets = new Map(
+      listDesiredManagedExecutorAgents(previousConfig).map((target) => [target.agentId, target] as const),
+    );
+    const nextTargets = new Map(
+      listDesiredManagedExecutorAgents(nextConfig).map((target) => [target.agentId, target] as const),
+    );
+    const currentTargets = new Map(
+      this.listManagedExecutorAgents().map((row) => [row.agentId, row] as const),
+    );
+
+    for (const target of nextTargets.values()) {
+      this.upsertManagedExecutorAgent({
+        agentId: target.agentId,
+        companyId: target.companyId,
+        desiredPresent: true,
+      });
+    }
+
+    const absentIds = new Set<string>();
+    for (const row of currentTargets.values()) {
+      if (row.desiredPresent && !nextTargets.has(row.agentId)) {
+        absentIds.add(row.agentId);
+      }
+    }
+    for (const target of previousTargets.values()) {
+      if (!nextTargets.has(target.agentId)) {
+        absentIds.add(target.agentId);
+      }
+    }
+
+    for (const agentId of absentIds) {
+      this.upsertManagedExecutorAgent({
+        agentId,
+        companyId: currentTargets.get(agentId)?.companyId ?? previousTargets.get(agentId)?.companyId ?? null,
+        desiredPresent: false,
+      });
+    }
+  }
+
+  ensureManagedExecutorAgentInventory() {
+    const row = this.db.prepare("SELECT COUNT(*) as count FROM managed_executor_agents").get() as
+      | { count?: number }
+      | undefined;
+    if ((row?.count ?? 0) > 0) {
+      return;
+    }
+    this.syncManagedExecutorAgentTargets(null, this.readStoredConfig());
   }
 
   private ensureDefaultMainCompany(): Company {
@@ -568,7 +828,17 @@ class AuthorityRepository {
     }
   }
 
+  private syncManagedCompanyFiles(config: CyberCompanyConfig | null) {
+    const runtimeByCompanyId = new Map(
+      (config?.companies ?? []).map((company) => [company.id, this.loadRuntime(company.id)] as const),
+    );
+    for (const file of buildManagedExecutorFiles(config, runtimeByCompanyId)) {
+      this.setAgentFile(file.agentId, file.name, file.content);
+    }
+  }
+
   saveConfig(config: CyberCompanyConfig) {
+    const previousConfig = this.readStoredConfig();
     const existingCompanyRows = this.db.prepare("SELECT id FROM companies").all() as Array<{ id: string }>;
     const nextIds = new Set(config.companies.map((company) => company.id));
     for (const row of existingCompanyRows) {
@@ -577,7 +847,8 @@ class AuthorityRepository {
       }
     }
 
-    for (const company of config.companies) {
+    for (const rawCompany of config.companies) {
+      const company = normalizeCompany(rawCompany);
       this.db.prepare(`
         INSERT INTO companies (id, name, company_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
@@ -597,10 +868,24 @@ class AuthorityRepository {
       this.saveRuntime({
         ...currentRuntime,
         companyId: company.id,
+        activeSupportRequests:
+          currentRuntime.activeSupportRequests.length > 0
+            ? currentRuntime.activeSupportRequests
+            : (company.supportRequests ?? []).map(normalizeSupportRequestRecord),
+        activeEscalations:
+          currentRuntime.activeEscalations.length > 0
+            ? currentRuntime.activeEscalations
+            : company.escalations ?? [],
+        activeDecisionTickets:
+          currentRuntime.activeDecisionTickets.length > 0
+            ? currentRuntime.activeDecisionTickets
+            : company.decisionTickets ?? [],
       });
     }
 
+    this.syncManagedCompanyFiles(config);
     this.setActiveCompanyId(config.companies.length > 0 ? config.activeCompanyId : null);
+    this.syncManagedExecutorAgentTargets(previousConfig, config);
   }
 
   private deleteCompanyData(companyId: string) {
@@ -620,6 +905,9 @@ class AuthorityRepository {
       "requirement_evidence",
       "rooms",
       "room_bindings",
+      "support_requests",
+      "escalations",
+      "decision_tickets",
       "dispatches",
       "rounds",
       "artifacts",
@@ -644,19 +932,31 @@ class AuthorityRepository {
   }
 
   deleteCompany(companyId: string) {
-    const company = this.loadCompanyById(companyId);
+    const currentConfig = this.loadConfig();
+    const company = currentConfig?.companies.find((entry) => entry.id === companyId) ?? this.loadCompanyById(companyId);
     if (isReservedSystemCompany(company)) {
       throw new Error("系统默认公司不可删除。");
     }
-    this.deleteCompanyData(companyId);
-    const config = this.loadConfig();
-    if (!config) {
+    if (!currentConfig || !currentConfig.companies.some((entry) => entry.id === companyId)) {
+      return;
+    }
+
+    const nextCompanies = currentConfig.companies.filter((entry) => entry.id !== companyId);
+    if (nextCompanies.length === 0) {
+      this.deleteCompanyData(companyId);
+      this.syncManagedExecutorAgentTargets(currentConfig, null);
       this.setActiveCompanyId(null);
       return;
     }
-    if (!config.companies.some((company) => company.id === config.activeCompanyId)) {
-      this.setActiveCompanyId(config.companies[0]?.id ?? null);
-    }
+
+    this.saveConfig({
+      ...currentConfig,
+      companies: nextCompanies,
+      activeCompanyId:
+        currentConfig.activeCompanyId === companyId
+          ? nextCompanies[0]!.id
+          : currentConfig.activeCompanyId,
+    });
   }
 
   getBootstrap(input?: {
@@ -691,14 +991,18 @@ class AuthorityRepository {
   }
 
   loadRuntime(companyId: string): AuthorityCompanyRuntimeSnapshot {
+    const company = this.loadCompanyById(companyId);
     const row = this.db.prepare("SELECT snapshot_json FROM runtimes WHERE company_id = ?").get(companyId) as
       | { snapshot_json?: string }
       | undefined;
     if (row?.snapshot_json) {
-      return parseJson<AuthorityCompanyRuntimeSnapshot>(row.snapshot_json, EMPTY_RUNTIME(companyId));
+      return normalizeRuntimeSnapshot(
+        company,
+        parseJson<AuthorityCompanyRuntimeSnapshot>(row.snapshot_json, EMPTY_RUNTIME(companyId)),
+      );
     }
 
-    const snapshot: AuthorityCompanyRuntimeSnapshot = {
+    const snapshot = normalizeRuntimeSnapshot(company, {
       companyId,
       activeMissionRecords: this.readPayloadTable<ConversationMissionRecord>("missions", companyId),
       activeConversationStates: this.readPayloadTable<ConversationStateRecord>("conversation_states", companyId),
@@ -710,12 +1014,15 @@ class AuthorityRepository {
       activeArtifacts: this.readPayloadTable<ArtifactRecord>("artifacts", companyId),
       activeDispatches: this.readPayloadTable<DispatchRecord>("dispatches", companyId),
       activeRoomBindings: this.readPayloadTable<RoomConversationBindingRecord>("room_bindings", companyId),
+      activeSupportRequests: this.readPayloadTable<SupportRequestRecord>("support_requests", companyId),
+      activeEscalations: this.readPayloadTable<EscalationRecord>("escalations", companyId),
+      activeDecisionTickets: this.readPayloadTable<DecisionTicketRecord>("decision_tickets", companyId),
       primaryRequirementId:
         this.readPayloadTable<RequirementAggregateRecord>("requirement_aggregates", companyId).find(
           (aggregate) => aggregate.primary,
         )?.id ?? null,
       updatedAt: Date.now(),
-    };
+    });
     this.saveRuntime(snapshot);
     return snapshot;
   }
@@ -751,10 +1058,11 @@ class AuthorityRepository {
   }
 
   saveRuntime(snapshot: AuthorityCompanyRuntimeSnapshot) {
-    const normalized: AuthorityCompanyRuntimeSnapshot = {
+    const company = this.loadCompanyById(snapshot.companyId);
+    const normalized = normalizeRuntimeSnapshot(company, {
       ...snapshot,
       updatedAt: Date.now(),
-    };
+    });
     this.replacePayloadTable("missions", snapshot.companyId, normalized.activeMissionRecords);
     this.replacePayloadTable("conversation_states", snapshot.companyId, normalized.activeConversationStates);
     this.replacePayloadTable("work_items", snapshot.companyId, normalized.activeWorkItems);
@@ -765,6 +1073,9 @@ class AuthorityRepository {
     this.replacePayloadTable("artifacts", snapshot.companyId, normalized.activeArtifacts);
     this.replacePayloadTable("dispatches", snapshot.companyId, normalized.activeDispatches);
     this.replacePayloadTable("room_bindings", snapshot.companyId, normalized.activeRoomBindings);
+    this.replacePayloadTable("support_requests", snapshot.companyId, normalized.activeSupportRequests);
+    this.replacePayloadTable("escalations", snapshot.companyId, normalized.activeEscalations);
+    this.replacePayloadTable("decision_tickets", snapshot.companyId, normalized.activeDecisionTickets);
     this.db.prepare(`
       INSERT INTO runtimes (company_id, snapshot_json, updated_at)
       VALUES (?, ?, ?)
@@ -772,6 +1083,7 @@ class AuthorityRepository {
         snapshot_json = excluded.snapshot_json,
         updated_at = excluded.updated_at
     `).run(snapshot.companyId, JSON.stringify(normalized), normalized.updatedAt);
+    this.refreshManagedContextFiles(snapshot.companyId, normalized);
     return normalized;
   }
 
@@ -963,6 +1275,27 @@ class AuthorityRepository {
   }
 
   setAgentFile(agentId: string, name: string, content: string) {
+    const existing = this.db.prepare(`
+      SELECT content, updated_at
+      FROM agent_files
+      WHERE agent_id = ? AND name = ?
+    `).get(agentId, name) as { content?: string; updated_at?: number } | undefined;
+    if (existing?.content === content) {
+      return {
+        ok: true as const,
+        changed: false as const,
+        agentId,
+        workspace: `authority://${agentId}`,
+        file: {
+          name,
+          path: `authority://${agentId}/${name}`,
+          missing: false,
+          size: content.length,
+          updatedAtMs: existing.updated_at ?? Date.now(),
+          content,
+        },
+      };
+    }
     const updatedAt = Date.now();
     this.db.prepare(`
       INSERT INTO agent_files (agent_id, name, content, updated_at)
@@ -973,6 +1306,7 @@ class AuthorityRepository {
     `).run(agentId, name, content, updatedAt);
     return {
       ok: true as const,
+      changed: true as const,
       agentId,
       workspace: `authority://${agentId}`,
       file: {
@@ -1173,10 +1507,42 @@ function buildCompanyDefinition(input: AuthorityCreateCompanyRequest): {
   const namespace = `${slugify(companyName)}-${companyId.slice(0, 6)}`;
 
   const departments: Department[] = [
-    { id: crypto.randomUUID(), name: "管理中枢", leadAgentId: `${namespace}-ceo`, color: "slate", order: 0 },
-    { id: crypto.randomUUID(), name: "人力资源部", leadAgentId: `${namespace}-hr`, color: "rose", order: 1 },
-    { id: crypto.randomUUID(), name: "技术部", leadAgentId: `${namespace}-cto`, color: "indigo", order: 2 },
-    { id: crypto.randomUUID(), name: "运营部", leadAgentId: `${namespace}-coo`, color: "emerald", order: 3 },
+    {
+      id: crypto.randomUUID(),
+      name: "管理中枢",
+      leadAgentId: `${namespace}-ceo`,
+      kind: "meta",
+      color: "slate",
+      order: 0,
+      missionPolicy: "manager_delegated",
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "人力资源部",
+      leadAgentId: `${namespace}-hr`,
+      kind: "support",
+      color: "rose",
+      order: 1,
+      missionPolicy: "support_only",
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "技术部",
+      leadAgentId: `${namespace}-cto`,
+      kind: "support",
+      color: "indigo",
+      order: 2,
+      missionPolicy: "support_only",
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "运营部",
+      leadAgentId: `${namespace}-coo`,
+      kind: "support",
+      color: "emerald",
+      order: 3,
+      missionPolicy: "support_only",
+    },
   ];
   const deptByName = new Map(departments.map((department) => [department.name, department.id] as const));
   const employees: EmployeeRef[] = [
@@ -1252,8 +1618,10 @@ function buildCompanyDefinition(input: AuthorityCreateCompanyRequest): {
         id: crypto.randomUUID(),
         name: department.name,
         leadAgentId: department.leadBlueprintId ? blueprintIdMap.get(department.leadBlueprintId) ?? reportsToMap.coo : reportsToMap.coo,
+        kind: "business",
         color: department.color,
         order: department.order,
+        missionPolicy: "manager_delegated",
       };
       departments.push(nextDepartment);
       deptByName.set(nextDepartment.name, nextDepartment.id);
@@ -1287,7 +1655,7 @@ function buildCompanyDefinition(input: AuthorityCreateCompanyRequest): {
     description: blueprint?.description || template?.description || "",
     icon: blueprint?.icon || template?.icon || "🏢",
     template: blueprint?.template || template?.id || "blank",
-    orgSettings: { autoCalibrate: true },
+    orgSettings: buildDefaultOrgSettings({ autoCalibrate: true }),
     departments,
     employees,
     quickPrompts,
@@ -1295,29 +1663,7 @@ function buildCompanyDefinition(input: AuthorityCreateCompanyRequest): {
     createdAt: Date.now(),
   };
 
-  const ceo = employees.find((employee) => employee.metaRole === "ceo")!;
-  const hr = employees.find((employee) => employee.metaRole === "hr")!;
-  const cto = employees.find((employee) => employee.metaRole === "cto")!;
-  const coo = employees.find((employee) => employee.metaRole === "coo")!;
-
-  const agentFiles = [
-    { agentId: ceo.agentId, name: "SOUL.md", content: generateCeoSoul(company.name) },
-    { agentId: hr.agentId, name: "SOUL.md", content: generateHrSoul(company.name) },
-    { agentId: cto.agentId, name: "SOUL.md", content: generateCtoSoul(company.name) },
-    { agentId: coo.agentId, name: "SOUL.md", content: generateCooSoul(company.name) },
-    {
-      agentId: ceo.agentId,
-      name: COMPANY_CONTEXT_FILE_NAME,
-      content: JSON.stringify(buildCompanyContextSnapshot(company), null, 2),
-    },
-    {
-      agentId: ceo.agentId,
-      name: CEO_OPERATIONS_FILE_NAME,
-      content: buildCeoOperationsGuide(company),
-    },
-  ];
-
-  return { company, agentFiles };
+  return { company: normalizeCompany(company), agentFiles: buildManagedExecutorFilesForCompany(normalizeCompany(company)) };
 }
 
 function buildDefaultMainCompanyDefinition(): {
@@ -1328,30 +1674,42 @@ function buildDefaultMainCompanyDefinition(): {
 
   return {
     company,
-    agentFiles: [
-      {
-        agentId: DEFAULT_MAIN_AGENT_ID,
-        name: "SOUL.md",
-        content: generateCeoSoul(company.name),
-      },
-      {
-        agentId: DEFAULT_MAIN_AGENT_ID,
-        name: COMPANY_CONTEXT_FILE_NAME,
-        content: JSON.stringify(buildCompanyContextSnapshot(company), null, 2),
-      },
-      {
-        agentId: DEFAULT_MAIN_AGENT_ID,
-        name: CEO_OPERATIONS_FILE_NAME,
-        content: buildCeoOperationsGuide(company),
-      },
-    ],
+    agentFiles: buildManagedExecutorFilesForCompany(company),
   };
 }
 
 const repository = new AuthorityRepository(DB_PATH);
+repository.ensureManagedExecutorAgentInventory();
+const companyOpsEngine = new CompanyOpsEngine(
+  {
+    loadConfig: () => repository.loadConfig(),
+    saveConfig: (config) => repository.saveConfig(config),
+    loadRuntime: (companyId) => repository.loadRuntime(companyId),
+    saveRuntime: (runtime) => repository.saveRuntime(runtime),
+  },
+  {
+    onCompanyChanged: (companyId) => {
+      broadcast({ type: "bootstrap.updated", companyId, timestamp: Date.now() });
+      broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
+    },
+    onRuntimeChanged: (companyId) => {
+      broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
+    },
+  },
+);
 const executorBridge = createOpenClawExecutorBridge(repository.loadExecutorConfig(), {
   resolveFallbackToken: () => resolveLocalOpenClawGatewayToken(),
 });
+let lastExecutorConnectionState = executorBridge.snapshot().connectionState;
+syncAuthorityAgentFileMirror = (file) => {
+  void syncAgentFileToExecutor(file).catch((error) => {
+    if (isAgentNotFoundError(error)) {
+      void queueManagedExecutorSync(`agent-file-miss:${file.agentId}`);
+      return;
+    }
+    console.warn(`Failed to mirror ${file.name} to executor for ${file.agentId}`, error);
+  });
+};
 const sockets = new Set<WebSocket>();
 
 function broadcast(event: AuthorityEvent) {
@@ -1429,12 +1787,310 @@ async function syncAgentFileToExecutor(input: { agentId: string; name: string; c
   return executorBridge.request("agents.files.set", input);
 }
 
-async function seedCompanyFilesToExecutor(files: Array<{ agentId: string; name: string; content: string }>) {
-  const results = await Promise.allSettled(files.map((file) => syncAgentFileToExecutor(file)));
-  const failures = results.filter((result) => result.status === "rejected");
-  if (failures.length > 0) {
-    console.warn(`Failed to seed ${failures.length} company file(s) to OpenClaw executor.`);
+async function deleteManagedAgentFromExecutor(agentId: string) {
+  try {
+    await executorBridge.request("agents.delete", {
+      agentId,
+      deleteFiles: true,
+      purgeState: true,
+    });
+  } catch (error) {
+    if (isLegacyAgentsDeletePurgeStateError(error)) {
+      await executorBridge.request("agents.delete", {
+        agentId,
+        deleteFiles: true,
+      });
+      return;
+    }
+    throw error;
   }
+
+  const remainingAgentIds = await waitForExecutorAgentsAbsent({
+    agentIds: [agentId],
+    listExecutorAgentIds,
+    timeoutMs: EXECUTOR_AGENT_VISIBILITY_TIMEOUT_MS,
+    pollMs: EXECUTOR_AGENT_VISIBILITY_POLL_MS,
+  });
+  if (remainingAgentIds.size > 0) {
+    throw new Error(`OpenClaw agent ${agentId} 在删除后仍可见。`);
+  }
+}
+
+type ExecutorAgentsListResult = {
+  agents?: Array<{ id?: string }>;
+};
+
+const EXECUTOR_AGENT_VISIBILITY_TIMEOUT_MS = 15_000;
+const EXECUTOR_AGENT_VISIBILITY_POLL_MS = 200;
+const EXECUTOR_AGENT_CREATE_ATTEMPTS = 2;
+
+let managedExecutorMutationTail: Promise<void> = Promise.resolve();
+let managedExecutorSyncPromise: Promise<void> | null = null;
+let managedExecutorSyncQueued = false;
+
+function delay(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function runManagedExecutorMutation<T>(task: () => Promise<T>) {
+  const previous = managedExecutorMutationTail.catch(() => {});
+  let releaseCurrent!: () => void;
+  managedExecutorMutationTail = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  return previous.then(task).finally(() => {
+    releaseCurrent();
+  });
+}
+
+async function listExecutorAgentIds() {
+  const listed = await executorBridge.request<ExecutorAgentsListResult>("agents.list", {});
+  return new Set(
+    (listed.agents ?? []).map((agent) => readString(agent.id)).filter(isPresent),
+  );
+}
+
+async function waitForExecutorAgentsVisible(agentIds: string[]) {
+  if (agentIds.length === 0) {
+    return new Set<string>();
+  }
+
+  const remaining = new Set(agentIds);
+  const deadline = Date.now() + EXECUTOR_AGENT_VISIBILITY_TIMEOUT_MS;
+
+  while (remaining.size > 0 && Date.now() < deadline) {
+    try {
+      const existingAgentIds = await listExecutorAgentIds();
+      for (const agentId of remaining) {
+        if (existingAgentIds.has(agentId)) {
+          remaining.delete(agentId);
+        }
+      }
+      if (remaining.size === 0) {
+        return existingAgentIds;
+      }
+    } catch {
+      // Keep polling until timeout so transient list failures do not abort reconcile.
+    }
+
+    await delay(EXECUTOR_AGENT_VISIBILITY_POLL_MS);
+  }
+
+  try {
+    return await listExecutorAgentIds();
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function buildStandaloneCompanyConfig(company: Company): CyberCompanyConfig {
+  return {
+    version: 1,
+    companies: [company],
+    activeCompanyId: company.id,
+    preferences: { theme: "classic", locale: "zh-CN" },
+  };
+}
+
+function groupManagedFilesByAgent(files: Array<{ agentId: string; name: string; content: string }>) {
+  const grouped = new Map<string, Array<{ agentId: string; name: string; content: string }>>();
+  for (const file of files) {
+    const current = grouped.get(file.agentId);
+    if (current) {
+      current.push(file);
+      continue;
+    }
+    grouped.set(file.agentId, [file]);
+  }
+  return grouped;
+}
+
+async function ensureExecutorAgentVisible(
+  target: { agentId: string; workspace: string },
+  reason: string,
+) {
+  for (let attempt = 1; attempt <= EXECUTOR_AGENT_CREATE_ATTEMPTS; attempt += 1) {
+    try {
+      const existingAgentIds = await listExecutorAgentIds();
+      if (existingAgentIds.has(target.agentId)) {
+        return;
+      }
+    } catch {
+      // Fall through and retry create below.
+    }
+
+    try {
+      await executorBridge.request("agents.create", {
+        name: target.agentId,
+        workspace: target.workspace,
+      });
+    } catch (error) {
+      if (!isAgentAlreadyExistsError(error)) {
+        throw error;
+      }
+    }
+
+    const visibleAgentIds = await waitForExecutorAgentsVisible([target.agentId]);
+    if (visibleAgentIds.has(target.agentId)) {
+      return;
+    }
+  }
+
+  throw new Error(
+    `OpenClaw agent ${target.agentId} 在创建后仍不可见（${reason}）。`,
+  );
+}
+
+async function syncManagedFilesForAgent(
+  agentId: string,
+  files: Array<{ agentId: string; name: string; content: string }>,
+  reason: string,
+) {
+  for (const file of files) {
+    try {
+      await syncAgentFileToExecutor(file);
+    } catch (error) {
+      throw new Error(
+        `无法同步 ${file.name} 到 ${agentId}（${reason}）：${stringifyError(error)}`,
+      );
+    }
+  }
+}
+
+async function ensureManagedCompanyExecutorProvisioned(
+  company: Company,
+  runtime: AuthorityCompanyRuntimeSnapshot,
+  reason: string,
+) {
+  if (executorBridge.status().state !== "ready") {
+    throw new Error("Authority 尚未连接到 OpenClaw，无法确认 agent 已创建。");
+  }
+
+  const targets = listDesiredManagedExecutorAgents(buildStandaloneCompanyConfig(company));
+  const filesByAgent = groupManagedFilesByAgent(
+    buildManagedExecutorFilesForCompany(company, {
+      activeWorkItems: runtime.activeWorkItems,
+      activeSupportRequests: runtime.activeSupportRequests,
+      activeEscalations: runtime.activeEscalations,
+      activeDecisionTickets: runtime.activeDecisionTickets,
+    }),
+  );
+
+  for (const target of targets) {
+    await ensureExecutorAgentVisible(target, reason);
+    await syncManagedFilesForAgent(target.agentId, filesByAgent.get(target.agentId) ?? [], reason);
+  }
+}
+
+async function deleteManagedCompanyExecutorAgents(company: Company, reason: string) {
+  for (const target of listDesiredManagedExecutorAgents(buildStandaloneCompanyConfig(company))) {
+    try {
+      await deleteManagedAgentFromExecutor(target.agentId);
+    } catch (error) {
+      if (isAgentNotFoundError(error)) {
+        continue;
+      }
+      console.warn(`Failed to clean up managed OpenClaw agent ${target.agentId} (${reason}).`, error);
+    }
+  }
+}
+
+async function reconcileManagedExecutorState(reason: string) {
+  if (executorBridge.status().state !== "ready") {
+    return;
+  }
+
+  let existingAgentIds = new Set<string>();
+  try {
+    existingAgentIds = await listExecutorAgentIds();
+  } catch (error) {
+    console.warn(`Failed to list OpenClaw agents during Authority reconcile (${reason}).`, error);
+  }
+
+  const currentConfig = repository.loadConfig();
+  const reconcilePlan = planManagedExecutorReconcile({
+    trackedAgents: repository.listManagedExecutorAgents(),
+    desiredTargets: listDesiredManagedExecutorAgents(currentConfig),
+    existingAgentIds,
+  });
+
+  for (const agentId of reconcilePlan.deleteAgentIds) {
+    try {
+      await deleteManagedAgentFromExecutor(agentId);
+      repository.clearManagedExecutorAgent(agentId);
+      existingAgentIds.delete(agentId);
+    } catch (error) {
+      if (isAgentNotFoundError(error)) {
+        repository.clearManagedExecutorAgent(agentId);
+        existingAgentIds.delete(agentId);
+        continue;
+      }
+      console.warn(`Failed to delete managed OpenClaw agent ${agentId} (${reason}).`, error);
+    }
+  }
+
+  const createdAgentIds: string[] = [];
+  for (const target of reconcilePlan.createTargets) {
+    try {
+      await executorBridge.request("agents.create", {
+        name: target.agentId,
+        workspace: target.workspace,
+      });
+      createdAgentIds.push(target.agentId);
+    } catch (error) {
+      if (isAgentAlreadyExistsError(error)) {
+        existingAgentIds.add(target.agentId);
+        continue;
+      }
+      console.warn(`Failed to create managed OpenClaw agent ${target.agentId} (${reason}).`, error);
+    }
+  }
+
+  if (createdAgentIds.length > 0) {
+    existingAgentIds = await waitForExecutorAgentsVisible(createdAgentIds);
+    const stillMissing = createdAgentIds.filter((agentId) => !existingAgentIds.has(agentId));
+    if (stillMissing.length > 0) {
+      console.warn(
+        `Managed OpenClaw agent(s) not yet visible after create (${reason}): ${stillMissing.join(", ")}`,
+      );
+    }
+  }
+
+  const runtimeByCompanyId = new Map(
+    (currentConfig?.companies ?? []).map((company) => [company.id, repository.loadRuntime(company.id)] as const),
+  );
+  const managedFiles = buildManagedExecutorFiles(currentConfig, runtimeByCompanyId).filter((file) =>
+    existingAgentIds.has(file.agentId),
+  );
+  const fileResults = await Promise.allSettled(managedFiles.map((file) => syncAgentFileToExecutor(file)));
+  const failures = fileResults.filter((result) => result.status === "rejected");
+  if (failures.length > 0) {
+    console.warn(`Failed to mirror ${failures.length} managed company file(s) to OpenClaw executor (${reason}).`);
+  }
+}
+
+function queueManagedExecutorSync(reason: string) {
+  if (managedExecutorSyncPromise) {
+    managedExecutorSyncQueued = true;
+    return managedExecutorSyncPromise;
+  }
+
+  managedExecutorSyncPromise = runManagedExecutorMutation(async () => {
+    await reconcileManagedExecutorState(reason);
+  })
+    .catch((error) => {
+      console.warn(`Managed OpenClaw reconcile failed (${reason}).`, error);
+    })
+    .finally(() => {
+      managedExecutorSyncPromise = null;
+      if (managedExecutorSyncQueued) {
+        managedExecutorSyncQueued = false;
+        void queueManagedExecutorSync("queued");
+      }
+    });
+  return managedExecutorSyncPromise;
 }
 
 async function proxyGatewayRequest<T>(method: string, params?: unknown): Promise<T> {
@@ -1494,7 +2150,13 @@ async function proxyGatewayRequest<T>(method: string, params?: unknown): Promise
 }
 
 executorBridge.onStateChange(() => {
+  const connectionState = executorBridge.snapshot().connectionState;
+  const transitionedToReady = connectionState === "ready" && lastExecutorConnectionState !== "ready";
+  lastExecutorConnectionState = connectionState;
   broadcastExecutorStatus();
+  if (transitionedToReady) {
+    void queueManagedExecutorSync("executor.ready");
+  }
 });
 
 executorBridge.onEvent((event) => {
@@ -1534,6 +2196,7 @@ executorBridge.onEvent((event) => {
 void executorBridge.reconnect().catch((error) => {
   console.warn("Authority executor bridge failed to connect on startup:", error);
 });
+companyOpsEngine.start();
 
 const server = createServer(async (request, response) => {
   setCorsHeaders(response);
@@ -1587,6 +2250,7 @@ const server = createServer(async (request, response) => {
       } finally {
         broadcastExecutorStatus();
       }
+      await queueManagedExecutorSync("executor.patch");
       sendJson(response, 200, getExecutorSnapshot().executorConfig);
       return;
     }
@@ -1604,6 +2268,8 @@ const server = createServer(async (request, response) => {
     if (request.method === "PUT" && url.pathname === "/config") {
       const body = await readJsonBody<{ config: CyberCompanyConfig }>(request);
       repository.saveConfig(body.config);
+      companyOpsEngine.schedule("config.save");
+      await queueManagedExecutorSync("config.save");
       sendJson(response, 200, buildBootstrapSnapshot());
       broadcast({ type: "bootstrap.updated", timestamp: Date.now() });
       return;
@@ -1611,7 +2277,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/companies") {
       const body = await readJsonBody<AuthorityCreateCompanyRequest>(request);
-      const { company, agentFiles } = buildCompanyDefinition(body);
+      const { company } = buildCompanyDefinition(body);
       const existingConfig = repository.loadConfig();
       const nextConfig: CyberCompanyConfig = existingConfig
         ? {
@@ -1625,17 +2291,48 @@ const server = createServer(async (request, response) => {
             activeCompanyId: company.id,
             preferences: { theme: "classic", locale: "zh-CN" },
           };
-      repository.saveConfig(nextConfig);
-      repository.saveRuntime(EMPTY_RUNTIME(company.id));
-      agentFiles.forEach((file) => {
-        repository.setAgentFile(file.agentId, file.name, file.content);
+      let provisioningFailure: unknown = null;
+      await runManagedExecutorMutation(async () => {
+        repository.saveConfig(nextConfig);
+        repository.saveRuntime(EMPTY_RUNTIME(company.id));
+        try {
+          await ensureManagedCompanyExecutorProvisioned(
+            company,
+            repository.loadRuntime(company.id),
+            "company.create",
+          );
+        } catch (error) {
+          provisioningFailure = error;
+          console.warn(
+            `Failed to provision managed OpenClaw agents for ${company.id}. Rolling back company create.`,
+            error,
+          );
+          try {
+            repository.deleteCompany(company.id);
+          } catch (rollbackError) {
+            console.warn(
+              `Failed to roll back company ${company.id} after OpenClaw provisioning failure.`,
+              rollbackError,
+            );
+          }
+          await deleteManagedCompanyExecutorAgents(company, "company.create.rollback");
+        }
       });
-      await seedCompanyFilesToExecutor(agentFiles);
+      if (provisioningFailure) {
+        await queueManagedExecutorSync("company.create.rollback");
+        sendError(
+          response,
+          executorBridge.status().state === "ready" ? 502 : 503,
+          `创建公司失败，OpenClaw agent 未全部确认创建成功：${stringifyError(provisioningFailure)}`,
+        );
+        return;
+      }
       const payload: AuthorityCreateCompanyResponse = {
         company,
         config: repository.loadConfig()!,
         runtime: repository.loadRuntime(company.id),
       };
+      companyOpsEngine.schedule("company.create", company.id);
       sendJson(response, 200, payload);
       broadcast({ type: "bootstrap.updated", companyId: company.id, timestamp: Date.now() });
       return;
@@ -1644,12 +2341,41 @@ const server = createServer(async (request, response) => {
     if (request.method === "DELETE" && url.pathname.startsWith("/companies/")) {
       const companyId = decodeURIComponent(url.pathname.slice("/companies/".length));
       try {
-        repository.deleteCompany(companyId);
+        const bootstrap = await runManagedExecutorMutation(() =>
+          deleteCompanyStrongConsistency({
+            companyId,
+            currentConfig: repository.loadConfig(),
+            executorState: executorBridge.status().state,
+            loadRuntime: (targetCompanyId) => repository.loadRuntime(targetCompanyId),
+            deleteManagedAgentFromExecutor,
+            listExecutorAgentIds,
+            ensureManagedCompanyExecutorProvisioned,
+            deleteCompanyLocally: (targetCompanyId) => repository.deleteCompany(targetCompanyId),
+            clearManagedExecutorAgentsForCompany: (targetCompanyId) =>
+              repository.clearManagedExecutorAgentsForCompany(targetCompanyId),
+            restoreLocalCompany: (config, runtime) => {
+              repository.saveConfig(config);
+              repository.saveRuntime(runtime);
+            },
+            hasCompany: (targetCompanyId) => repository.hasCompany(targetCompanyId),
+            cleanupCompanyWorkspace: (targetCompanyId) =>
+              removeManagedExecutorCompanyWorkspace({ companyId: targetCompanyId }),
+            buildResult: buildBootstrapSnapshot,
+            logWarn: (message, error) => {
+              console.warn(message, error);
+            },
+          }),
+        );
+        sendJson(response, 200, bootstrap);
       } catch (error) {
-        sendError(response, 400, error instanceof Error ? error.message : String(error));
+        if (error instanceof StrongCompanyDeleteError) {
+          sendError(response, error.status, error.message);
+          return;
+        }
+        sendError(response, 500, error instanceof Error ? error.message : String(error));
         return;
       }
-      sendJson(response, 200, buildBootstrapSnapshot());
+      companyOpsEngine.schedule("company.delete");
       broadcast({ type: "bootstrap.updated", companyId, timestamp: Date.now() });
       return;
     }
@@ -1657,6 +2383,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/company/switch") {
       const body = await readJsonBody<AuthoritySwitchCompanyRequest>(request);
       repository.switchCompany(body.companyId);
+      companyOpsEngine.schedule("company.switch", body.companyId);
       sendJson(response, 200, buildBootstrapSnapshot());
       broadcast({ type: "bootstrap.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
@@ -1672,6 +2399,7 @@ const server = createServer(async (request, response) => {
       const companyId = decodeURIComponent(url.pathname.split("/")[2] ?? "");
       const body = await readJsonBody<AuthorityRuntimeSyncRequest>(request);
       sendJson(response, 200, repository.saveRuntime({ ...body.snapshot, companyId }));
+      companyOpsEngine.schedule("runtime.sync", companyId);
       broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
       return;
     }
@@ -1810,6 +2538,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/commands/requirement.transition") {
       const body = await readJsonBody<AuthorityRequirementTransitionRequest>(request);
       sendJson(response, 200, repository.transitionRequirement(body));
+      companyOpsEngine.schedule("requirement.transition", body.companyId);
       broadcast({ type: "requirement.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }
@@ -1817,6 +2546,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/commands/room.append") {
       const body = await readJsonBody<AuthorityAppendRoomRequest>(request);
       sendJson(response, 200, repository.upsertRoom(body));
+      companyOpsEngine.schedule("room.append", body.companyId);
       broadcast({ type: "room.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }
@@ -1824,6 +2554,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/commands/dispatch.create") {
       const body = await readJsonBody<AuthorityDispatchUpsertRequest>(request);
       sendJson(response, 200, repository.upsertDispatch(body));
+      companyOpsEngine.schedule("dispatch.create", body.companyId);
       broadcast({ type: "dispatch.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }

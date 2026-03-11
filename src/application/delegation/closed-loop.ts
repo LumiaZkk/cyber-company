@@ -14,6 +14,8 @@ import type { Company } from "../../domain/org/types";
 import { appendDelegationEvent, listAllDelegationEvents } from "../../infrastructure/delegation/company-event-log";
 import { gateway, type ChatMessage } from "../gateway";
 import { buildHandoffRecords } from "./handoff-object";
+import { isInstructionLikeHandoffRecord } from "./handoff-object";
+import { buildRecoveredReportEvents } from "./report-event";
 import {
   createRequirementMessageSnapshots,
   REQUIREMENT_SNAPSHOT_MESSAGE_LIMIT,
@@ -52,6 +54,11 @@ function normalizeMessage(raw: ChatMessage): ChatMessage {
     ...raw,
     timestamp: typeof raw.timestamp === "number" ? raw.timestamp : Date.now(),
   };
+}
+
+function isDuplicateCompanyEventError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /UNIQUE constraint failed: event_log\.event_id/i.test(message);
 }
 
 function extractText(message: ChatMessage): string {
@@ -281,15 +288,15 @@ export async function syncDelegationClosedLoopState(input: {
     input.previousSnapshots.map((snapshot) => [snapshot.sessionKey, snapshot] as const),
   );
 
-  const companyEvents = await listAllDelegationEvents(input.company.id);
-  const projected = projectDelegationFromEvents({
+  const existingCompanyEvents = await listAllDelegationEvents(input.company.id);
+  const initialProjected = projectDelegationFromEvents({
     company: input.company,
-    events: companyEvents,
+    events: existingCompanyEvents,
     existingDispatches: input.activeDispatches,
   });
 
   const sessionsToCheck = companySessions
-    .filter((session) => !projected.responseCoveredSessionKeys.has(session.key))
+    .filter((session) => !initialProjected.responseCoveredSessionKeys.has(session.key))
     .filter((session) => {
       if (input.force) {
         return true;
@@ -318,7 +325,7 @@ export async function syncDelegationClosedLoopState(input: {
       }).map((handoff) => ({ ...handoff, syncSource: "history" as const }));
       const normalizedFallback = normalizeFallbackHandoffs({
         handoffs: discoveredHandoffs,
-        projectedHandoffs: projected.handoffs,
+        projectedHandoffs: initialProjected.handoffs,
         existingHandoffs: input.company.handoffs ?? [],
         currentAgentId: sessionAgentId,
       });
@@ -374,6 +381,50 @@ export async function syncDelegationClosedLoopState(input: {
     }),
   );
 
+  const recoveredReportEvents = buildRecoveredReportEvents({
+    companyId: input.company.id,
+    existingEvents: existingCompanyEvents,
+    recoveredRequests: discovered.flatMap((item) =>
+      item.requests.map((request) => ({
+        agentId: item.agentId,
+        sessionKey: item.sessionKey,
+        request,
+      })),
+    ),
+  });
+  const appendedRecoveredEvents = (
+    await Promise.allSettled(
+      recoveredReportEvents.map(async (event) => {
+        try {
+          const result = await appendDelegationEvent(event);
+          return result.event;
+        } catch (error) {
+          if (isDuplicateCompanyEventError(error)) {
+            return null;
+          }
+          throw error;
+        }
+      }),
+    )
+  )
+    .flatMap((result) => {
+      if (result.status === "fulfilled" && result.value) {
+        return [result.value];
+      }
+      if (result.status === "rejected") {
+        console.warn("Failed to append recovered report event", result.reason);
+      }
+      return [];
+    });
+  const companyEvents = [...existingCompanyEvents, ...appendedRecoveredEvents].sort(
+    (left, right) => left.createdAt - right.createdAt,
+  );
+  const projected = projectDelegationFromEvents({
+    company: input.company,
+    events: companyEvents,
+    existingDispatches: input.activeDispatches,
+  });
+
   const projectedRequestIds = new Set(projected.requests.map((request) => request.id));
   const historyRequests = discovered
     .flatMap((item) => item.requests)
@@ -386,7 +437,7 @@ export async function syncDelegationClosedLoopState(input: {
     ...(input.company.handoffs ?? []).filter((handoff) => handoff.syncSource !== "event"),
     ...projected.handoffs,
     ...historyHandoffs,
-  ]);
+  ]).filter((handoff) => !isInstructionLikeHandoffRecord(handoff));
   const { companyPatch, summary } = reconcileCompanyCommunication(
     {
       ...input.company,

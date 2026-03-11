@@ -28,6 +28,12 @@ function extractToolCallNames(content: unknown): string[] {
     .filter((name) => name.length > 0);
 }
 
+function extractMessageToolName(message: ChatMessage): string | null {
+  return typeof message.toolName === "string" && message.toolName.trim().length > 0
+    ? message.toolName.trim()
+    : null;
+}
+
 function extractThinkingPreview(content: unknown): string | null {
   if (!Array.isArray(content)) {
     return null;
@@ -55,6 +61,9 @@ function extractToolResultText(message: ChatMessage): string | null {
 }
 
 export function isToolResultMessage(message: ChatMessage): boolean {
+  if (message.role === "toolResult") {
+    return true;
+  }
   return Array.isArray(message.content)
     ? message.content.some((block) => {
         if (!block || typeof block !== "object") {
@@ -120,7 +129,7 @@ function buildToolActivitySummary(message: ChatMessage): { title: string; detail
 }
 
 function buildToolResultSummary(message: ChatMessage): { title: string; detail: string } {
-  const toolNames = extractToolCallNames(message.content);
+  const toolNames = [...new Set([...extractToolCallNames(message.content), extractMessageToolName(message)].filter(Boolean))];
   const resultText = summarizeToolResultText(extractToolResultText(message) ?? "");
   const primaryTool = describeToolName(toolNames[0] ?? null);
   return {

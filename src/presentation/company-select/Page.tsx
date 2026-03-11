@@ -29,7 +29,7 @@ export function CompanySelectPresentationPage() {
     init();
   }, [connected, config, loadConfig]);
 
-  const isLoading = storeLoading || initLoading;
+  const isLoading = initLoading || (storeLoading && !deleteDialogOpen && !deleteSubmitting);
   const companies = config?.companies || [];
 
   const handleSelect = (id: string) => {
@@ -56,7 +56,7 @@ export function CompanySelectPresentationPage() {
       await deleteCompany(deleteTarget.id);
       toast.success(
         "公司已删除",
-        `已移除「${deleteTarget.name}」并清理其独占 agent 的会话、归档、自动化和文件内容。`,
+        `已确认「${deleteTarget.name}」相关 agent 已从 OpenClaw 删除，并完成公司数据清理。`,
       );
       setDeleteDialogOpen(false);
       setDeleteTarget(null);

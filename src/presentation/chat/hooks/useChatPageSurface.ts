@@ -82,7 +82,7 @@ export function useChatPageSurface(input: UseChatPageSurfaceInput) {
   );
 
   const displayItems = useMemo(
-    () => buildChatDisplayItems(input.messages, { hideToolItems: true }),
+    () => buildChatDisplayItems(input.messages),
     [input.messages],
   );
   const hiddenDisplayItemCount = Math.max(0, displayItems.length - input.displayWindowSize);

@@ -28,6 +28,8 @@ export type ChatPageState = {
   emptyStateText: string;
 };
 
+const COMPANY_SYNC_FALLBACK_INTERVAL_MS = 5 * 60 * 1000;
+
 export function buildChatPageState(input: ChatPageStateInput): ChatPageState {
   const canShowSessionHistory =
     !input.isGroup &&
@@ -46,12 +48,7 @@ export function buildChatPageState(input: ChatPageStateInput): ChatPageState {
   const shouldRunCompanySync = Boolean(
     input.hasActiveCompany && input.connected && input.isPageVisible && !input.isArchiveView,
   );
-  const companySyncIntervalMs =
-    input.isGroup || input.isSummaryOpen || input.actionWatchesLength > 0
-      ? 15_000
-      : input.isCeoSession
-        ? 30_000
-        : 45_000;
+  const companySyncIntervalMs = COMPANY_SYNC_FALLBACK_INTERVAL_MS;
 
   const hasRequirementRoomActivity = Boolean(
     (input.effectiveRequirementRoom?.transcript.some((message) => isVisibleRequirementRoomMessage(message)) ??

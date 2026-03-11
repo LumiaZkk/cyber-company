@@ -107,6 +107,9 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
       activeArtifacts: [],
       activeDispatches: [],
       activeRoomBindings: [],
+      activeSupportRequests: [],
+      activeEscalations: [],
+      activeDecisionTickets: [],
       loading: false,
       error: null,
       bootstrapPhase: "ready",
@@ -142,6 +145,25 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
             event.aggregateId === firstPrimaryRequirementId,
         ),
     ).toBe(true);
+  });
+
+  it("does not seed a visible requirement aggregate from draft conversation state alone", () => {
+    useCompanyRuntimeStore.getState().setConversationDraftRequirement("agent:co-ceo:main", {
+      topicKey: "mission:alpha",
+      topicText: "先梳理当前公司能力和下一步",
+      summary: "先由 CEO 判断现有能力能否直接承接当前目标。",
+      ownerActorId: "co-ceo",
+      ownerLabel: "CEO",
+      stage: "CEO 正在收敛目标和推进方式",
+      nextAction: "先确认当前公司里已有的角色、知识和工具。",
+      promotable: false,
+      updatedAt: 1_000,
+    });
+
+    const state = useCompanyRuntimeStore.getState();
+    expect(state.activeConversationStates[0]?.draftRequirement?.summary).toContain("现有能力");
+    expect(state.activeRequirementAggregates).toHaveLength(0);
+    expect(state.primaryRequirementId).toBeNull();
   });
 
   it("switches the primary aggregate only when a local conversation command explicitly points to another work item", () => {

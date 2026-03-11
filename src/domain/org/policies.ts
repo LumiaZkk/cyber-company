@@ -14,13 +14,15 @@ type MetaRole = NonNullable<EmployeeRef["metaRole"]>;
 const META_DEPARTMENT_SPECS: Array<{
   metaRole: MetaRole;
   name: string;
+  kind: Department["kind"];
   color: string;
   order: number;
+  missionPolicy: Department["missionPolicy"];
 }> = [
-  { metaRole: "ceo", name: "管理中枢", color: "slate", order: 0 },
-  { metaRole: "hr", name: "人力资源部", color: "rose", order: 1 },
-  { metaRole: "cto", name: "技术部", color: "indigo", order: 2 },
-  { metaRole: "coo", name: "运营部", color: "emerald", order: 3 },
+  { metaRole: "ceo", name: "管理中枢", kind: "meta", color: "slate", order: 0, missionPolicy: "manager_delegated" },
+  { metaRole: "hr", name: "人力资源部", kind: "support", color: "rose", order: 1, missionPolicy: "support_only" },
+  { metaRole: "cto", name: "技术部", kind: "support", color: "indigo", order: 2, missionPolicy: "support_only" },
+  { metaRole: "coo", name: "运营部", kind: "support", color: "emerald", order: 3, missionPolicy: "support_only" },
 ];
 
 function ensureMetaDepartments(params: {
@@ -57,8 +59,10 @@ function ensureMetaDepartments(params: {
       id,
       name: spec.name,
       leadAgentId: lead.agentId,
+      kind: spec.kind,
       color: spec.color,
       order: spec.order,
+      missionPolicy: spec.missionPolicy,
       archived: false,
     };
     departments.push(created);

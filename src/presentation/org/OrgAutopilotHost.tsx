@@ -1,95 +1,34 @@
 import { useEffect, useRef } from "react";
-import { autoCalibrateOrganization, isOrgAutopilotEnabled } from "../../application/assignment/org-fit";
-import { useGatewayStore } from "../../application/gateway";
-import { useOrgApp, useOrgQuery } from "../../application/org";
-import type { Company } from "../../domain/org/types";
+import { useOrgQuery } from "../../application/org";
 import { toast } from "../../components/system/toast-store";
 
-function buildOrgFingerprint(company: Company): string {
+function buildAutonomyFingerprint(companyId: string, actions: string[]): string {
   return JSON.stringify({
-    id: company.id,
-    autoCalibrate: isOrgAutopilotEnabled(company),
-    departments: (company.departments ?? []).map((department) => ({
-      id: department.id,
-      leadAgentId: department.leadAgentId,
-      archived: department.archived ?? false,
-    })),
-    employees: company.employees.map((employee) => ({
-      agentId: employee.agentId,
-      departmentId: employee.departmentId ?? null,
-      reportsTo: employee.reportsTo ?? null,
-      isMeta: employee.isMeta,
-    })),
+    companyId,
+    actions,
   });
 }
 
 export function OrgAutopilotHost() {
   const { activeCompany } = useOrgQuery();
-  const { updateCompany } = useOrgApp();
-  const connected = useGatewayStore((state) => state.connected);
-  const runningRef = useRef(false);
   const lastFingerprintRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!connected || !activeCompany || !isOrgAutopilotEnabled(activeCompany) || runningRef.current) {
+    if (!activeCompany) {
       return;
     }
-
-    const fingerprint = buildOrgFingerprint(activeCompany);
-    if (lastFingerprintRef.current === fingerprint) {
+    const ts = activeCompany.orgSettings?.autonomyState?.lastEngineRunAt ?? null;
+    const actions = activeCompany.orgSettings?.autonomyState?.lastEngineActions ?? [];
+    if (!ts || actions.length === 0) {
+      return;
+    }
+    const fingerprint = buildAutonomyFingerprint(activeCompany.id, actions);
+    if (fingerprint === lastFingerprintRef.current) {
       return;
     }
     lastFingerprintRef.current = fingerprint;
-    runningRef.current = true;
-
-    let cancelled = false;
-    const run = async () => {
-      try {
-        const result = autoCalibrateOrganization(activeCompany);
-        if (!result.changed || cancelled) {
-          return;
-        }
-
-        await updateCompany({
-          departments: result.departments,
-          employees: result.employees,
-          orgSettings: {
-            ...(activeCompany.orgSettings ?? {}),
-            autoCalibrate: true,
-            lastAutoCalibratedAt: Date.now(),
-            lastAutoCalibrationActions: result.appliedRecommendations.map((item) => item.title),
-          },
-        });
-
-        for (const warning of result.warnings) {
-          toast.info("组织自动校准", warning);
-        }
-
-        const summary = result.appliedRecommendations
-          .slice(0, 2)
-          .map((item) => item.title)
-          .join(" · ");
-        const suffix =
-          result.appliedRecommendations.length > 2
-            ? ` 等 ${result.appliedRecommendations.length} 项`
-            : "";
-        toast.success("组织已自动校准", `${summary}${suffix}`);
-      } catch (error) {
-        console.error("Failed to auto-calibrate organization", error);
-        if (!cancelled) {
-          toast.error("组织自动校准失败", error instanceof Error ? error.message : String(error));
-        }
-      } finally {
-        runningRef.current = false;
-      }
-    };
-
-    void run();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeCompany, connected, updateCompany]);
+    toast.info("自治引擎更新", actions.slice(0, 2).join(" · "));
+  }, [activeCompany]);
 
   return null;
 }

@@ -37,6 +37,42 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
+function looksLikeWorkspaceInstructionDocument(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const hasExplicitMention = /@[a-zA-Z0-9_-]+/.test(trimmed);
+  if (hasExplicitMention) {
+    return false;
+  }
+
+  const headingCount = (trimmed.match(/^\s*#{1,6}\s+/gm) ?? []).length;
+  const numberedLineCount = (trimmed.match(/^\s*\d+\.\s+/gm) ?? []).length;
+  const bulletLineCount = (trimmed.match(/^\s*[-*]\s+/gm) ?? []).length;
+  const looksLikePolicyDoc =
+    /(^|\n)#\s*(?:CEO|CTO|COO|HR)\s*执行准则\b/u.test(trimmed) ||
+    /(^|\n)#\s*Role:\s*(?:CEO|CTO|COO|HR)\b/i.test(trimmed) ||
+    /(^|\n)##\s*(?:开场动作|委派硬规则|当前 roster)\b/u.test(trimmed) ||
+    /company-context\.json|当前 roster|汇报给|最高负责人|严禁|委派硬规则/u.test(trimmed);
+
+  return looksLikePolicyDoc && (headingCount >= 2 || numberedLineCount >= 4 || bulletLineCount >= 6);
+}
+
+export function isInstructionLikeHandoffRecord(handoff: Pick<HandoffRecord, "title" | "summary" | "checklist" | "missingItems">): boolean {
+  return looksLikeWorkspaceInstructionDocument(
+    [
+      handoff.title,
+      handoff.summary,
+      ...(handoff.checklist ?? []),
+      ...(handoff.missingItems ?? []),
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join("\n"),
+  );
+}
+
 function matchEmployees(text: string, employees: EmployeeRef[]): string[] {
   const directMentions = [...text.matchAll(/@([a-zA-Z0-9_-]+)/g)].map((match) => match[1]);
   const namedMentions = employees
@@ -116,7 +152,7 @@ export function buildHandoffRecords(params: {
 
     const records: Array<HandoffRecord | null> = messages.map((message, index) => {
       const text = extractText(message);
-      if (!text || isPlaceholderOrBridgeText(text)) {
+      if (!text || isPlaceholderOrBridgeText(text) || looksLikeWorkspaceInstructionDocument(text)) {
         return null;
       }
 

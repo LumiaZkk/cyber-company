@@ -3,6 +3,7 @@ import type { CompanyRuntimeState } from "./types";
 import { loadInitialCompanyState } from "./bootstrap";
 import { buildConversationStateActions } from "./conversation-state";
 import { buildArtifactActions } from "./artifacts";
+import { buildAutonomyActions } from "./autonomy";
 import { buildCompanyConfigActions } from "./company-config";
 import { buildDispatchActions } from "./dispatches";
 import { buildMissionActions } from "./missions";
@@ -30,6 +31,9 @@ export const useCompanyRuntimeStore = create<CompanyRuntimeState>((set, get) => 
   activeArtifacts: initialCompanyState.activeArtifacts,
   activeDispatches: initialCompanyState.activeDispatches,
   activeRoomBindings: initialCompanyState.activeRoomBindings,
+  activeSupportRequests: initialCompanyState.activeSupportRequests,
+  activeEscalations: initialCompanyState.activeEscalations,
+  activeDecisionTickets: initialCompanyState.activeDecisionTickets,
   loading: false,
   error: null,
   bootstrapPhase: initialCompanyState.bootstrapPhase,
@@ -43,4 +47,5 @@ export const useCompanyRuntimeStore = create<CompanyRuntimeState>((set, get) => 
   ...buildRoundActions(set, get),
   ...buildArtifactActions(set, get),
   ...buildDispatchActions(set, get),
+  ...buildAutonomyActions(set, get),
 }));

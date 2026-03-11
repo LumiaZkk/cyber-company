@@ -1,3 +1,4 @@
+import { buildDefaultOrgSettings } from "./autonomy-policy";
 import type { Company } from "./types";
 
 export const DEFAULT_MAIN_COMPANY_ID = "system-main-company";
@@ -18,13 +19,18 @@ export function buildDefaultMainCompany(): Company {
       kind: "openclaw-main",
       mappedAgentId: DEFAULT_MAIN_AGENT_ID,
     },
+    orgSettings: buildDefaultOrgSettings({
+      autoCalibrate: false,
+    }),
     departments: [
       {
         id: departmentId,
         name: "主控台",
         leadAgentId: DEFAULT_MAIN_AGENT_ID,
+        kind: "meta",
         color: "slate",
         order: 0,
+        missionPolicy: "manager_delegated",
       },
     ],
     employees: [

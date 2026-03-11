@@ -15,6 +15,18 @@ function isConversationStateRecord(value: unknown): value is ConversationStateRe
     (typeof candidate.currentWorkKey === "string" || candidate.currentWorkKey == null) &&
     (typeof candidate.currentWorkItemId === "string" || candidate.currentWorkItemId == null) &&
     (typeof candidate.currentRoundId === "string" || candidate.currentRoundId == null) &&
+    (candidate.draftRequirement == null ||
+      (typeof candidate.draftRequirement === "object" &&
+        typeof candidate.draftRequirement.topicText === "string" &&
+        typeof candidate.draftRequirement.summary === "string" &&
+        (typeof candidate.draftRequirement.topicKey === "string" || candidate.draftRequirement.topicKey == null) &&
+        (typeof candidate.draftRequirement.ownerActorId === "string" ||
+          candidate.draftRequirement.ownerActorId == null) &&
+        typeof candidate.draftRequirement.ownerLabel === "string" &&
+        typeof candidate.draftRequirement.stage === "string" &&
+        typeof candidate.draftRequirement.nextAction === "string" &&
+        typeof candidate.draftRequirement.promotable === "boolean" &&
+        typeof candidate.draftRequirement.updatedAt === "number")) &&
     typeof candidate.updatedAt === "number"
   );
 }
@@ -35,6 +47,18 @@ function sanitizeConversationStateRecords(
       currentWorkKey: record.currentWorkKey?.trim() || null,
       currentWorkItemId: record.currentWorkItemId?.trim() || null,
       currentRoundId: record.currentRoundId?.trim() || null,
+      draftRequirement: record.draftRequirement
+        ? {
+            ...record.draftRequirement,
+            topicKey: record.draftRequirement.topicKey?.trim() || null,
+            topicText: record.draftRequirement.topicText.trim(),
+            summary: record.draftRequirement.summary.trim(),
+            ownerActorId: record.draftRequirement.ownerActorId?.trim() || null,
+            ownerLabel: record.draftRequirement.ownerLabel.trim(),
+            stage: record.draftRequirement.stage.trim(),
+            nextAction: record.draftRequirement.nextAction.trim(),
+          }
+        : null,
     };
     if (!normalized.conversationId) {
       continue;

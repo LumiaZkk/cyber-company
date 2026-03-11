@@ -1,11 +1,13 @@
 import type {
   ArtifactRecord,
+  Company,
   ConversationMissionRecord,
   DispatchRecord,
   RequirementRoomRecord,
   WorkItemRecord,
   WorkStepRecord,
 } from "../../domain";
+import { normalizeWorkItemDepartmentOwnership } from "../org/department-autonomy";
 import type { RequirementExecutionOverview } from "./requirement-overview";
 import {
   applyWorkItemDisplayFields,
@@ -166,6 +168,7 @@ function deriveWorkItemFlowFromRoom(input: {
 
 type ReconcileWorkItemInput = {
   companyId: string;
+  company?: Company | null;
   existingWorkItem?: WorkItemRecord | null;
   mission?: ConversationMissionRecord | null;
   overview?: RequirementExecutionOverview | null;
@@ -356,8 +359,11 @@ export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItem
     sameMainline ? (existingWorkItem?.completedAt ?? candidate.completedAt ?? null) : (candidate.completedAt ?? null),
     reconciled.updatedAt,
   );
-  return applyWorkItemDisplayFields({
+  return applyWorkItemDisplayFields(normalizeWorkItemDepartmentOwnership({
+    company: input.company,
+    workItem: {
     ...reconciled,
     completedAt: resolvedCompletedAt,
-  });
+    },
+  }));
 }

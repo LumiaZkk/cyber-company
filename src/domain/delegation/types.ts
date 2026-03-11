@@ -16,6 +16,12 @@ export type RoomMessageSource =
   | "system";
 
 export type RoomStatus = "active" | "paused" | "archived";
+export type RequirementRoomScope =
+  | "company"
+  | "department"
+  | "support_request"
+  | "escalation"
+  | "decision";
 
 export interface ProviderConversationRef {
   providerId: string;
@@ -92,6 +98,7 @@ export interface RoomConversationBindingRecord extends ProviderConversationRef {
 export interface RequirementRoomRecord extends RoomRecord {
   sessionKey: string;
   topicKey?: string;
+  scope?: RequirementRoomScope;
   memberIds: string[];
   ownerAgentId?: string | null;
   lastSourceSyncAt?: number;
@@ -146,6 +153,83 @@ export interface RequestRecord {
   responseMessageTs?: number;
   syncSource?: "event" | "history" | "normalized";
   transport?: "company_report" | "sessions_send" | "inferred";
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SupportRequestStatus =
+  | "open"
+  | "acknowledged"
+  | "in_progress"
+  | "fulfilled"
+  | "blocked"
+  | "cancelled";
+
+export interface SupportRequestRecord {
+  id: string;
+  workItemId: string;
+  parentWorkItemId?: string | null;
+  requesterDepartmentId: string;
+  targetDepartmentId: string;
+  requestedByActorId: string;
+  ownerActorId?: string | null;
+  roomId?: string | null;
+  summary: string;
+  detail?: string;
+  status: SupportRequestStatus;
+  slaDueAt?: number | null;
+  escalationId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type EscalationSourceType = "work_item" | "support_request" | "org_policy";
+export type EscalationSeverity = "warning" | "critical";
+export type EscalationStatus = "open" | "acknowledged" | "resolved" | "dismissed";
+
+export interface EscalationRecord {
+  id: string;
+  sourceType: EscalationSourceType;
+  sourceId: string;
+  companyId: string;
+  workItemId?: string | null;
+  requesterDepartmentId?: string | null;
+  targetActorId: string;
+  reason: string;
+  severity: EscalationSeverity;
+  status: EscalationStatus;
+  roomId?: string | null;
+  decisionTicketId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type DecisionTicketType =
+  | "budget"
+  | "headcount"
+  | "strategy"
+  | "legal"
+  | "priority_conflict";
+export type DecisionTicketStatus = "open" | "pending_human" | "resolved" | "cancelled";
+
+export interface DecisionTicketOptionRecord {
+  id: string;
+  label: string;
+  summary?: string | null;
+}
+
+export interface DecisionTicketRecord {
+  id: string;
+  companyId: string;
+  escalationId: string;
+  decisionOwnerActorId: string;
+  decisionType: DecisionTicketType;
+  summary: string;
+  options: DecisionTicketOptionRecord[];
+  requiresHuman: boolean;
+  status: DecisionTicketStatus;
+  resolution?: string | null;
+  roomId?: string | null;
   createdAt: number;
   updatedAt: number;
 }

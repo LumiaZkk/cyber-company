@@ -213,6 +213,7 @@ export function buildCurrentRequirementState(params: {
     rawRequirementOverview && isReliableRequirementOverview(rawRequirementOverview)
       ? reconcileWorkItemRecord({
           companyId: company.id,
+          company,
           existingWorkItem:
             stablePrimaryWorkItem ??
             ceoConversationWorkItem ??

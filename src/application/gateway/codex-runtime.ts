@@ -1,5 +1,6 @@
 import type { AgentControlSnapshot, GatewayModelChoice, GatewaySessionRow } from "./index";
 import { gateway } from "./index";
+import { waitForGatewayChatRunTerminal } from "./chat-run";
 
 type SessionModelPlanEntry = {
   actorId: string;
@@ -133,7 +134,13 @@ export async function reapplyCodexModelsToActiveSessions(): Promise<{
   }
 
   const settled = await Promise.allSettled(
-    plan.map((entry) => gateway.sendChatMessage(entry.sessionKey, `/model ${entry.model}`)),
+    plan.map(async (entry) => {
+      const ack = await gateway.sendChatMessage(entry.sessionKey, `/model ${entry.model}`);
+      await waitForGatewayChatRunTerminal({
+        providerSessionKey: entry.sessionKey,
+        runId: ack?.runId ?? null,
+      });
+    }),
   );
 
   let reapplied = 0;
@@ -167,7 +174,7 @@ export function formatCodexRuntimeSyncDescription(result: {
     return "当前没有检测到需要热切换的 Codex 活动会话。";
   }
   if (result.failed === 0) {
-    return `已对 ${result.reapplied} 个活动会话重新下发 Codex 模型指令。`;
+    return `已完成 ${result.reapplied} 个活动会话的 Codex 模型重绑。`;
   }
   return `已重绑 ${result.reapplied}/${result.matched} 个活动会话，另有 ${result.failed} 个会话重绑失败。`;
 }

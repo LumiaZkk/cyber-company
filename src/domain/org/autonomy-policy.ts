@@ -1,0 +1,61 @@
+import type {
+  Company,
+  CompanyAutonomyPolicy,
+  CompanyDepartmentAutonomyCounter,
+  CompanyOrgSettings,
+} from "./types";
+
+export const DEFAULT_AUTONOMY_POLICY: Required<CompanyAutonomyPolicy> = {
+  autoApproveInternalReassignments: true,
+  autoApproveSupportRequests: true,
+  humanApprovalRequiredForLayoffs: true,
+  humanApprovalRequiredForDepartmentCreateRemove: true,
+  maxAutoHeadcountDelta: 1,
+  maxAutoBudgetDelta: 1,
+  supportSlaHours: 6,
+  departmentBlockerEscalationHours: 4,
+};
+
+function normalizeDepartmentCounters(
+  counters: CompanyDepartmentAutonomyCounter[] | null | undefined,
+): CompanyDepartmentAutonomyCounter[] {
+  return Array.isArray(counters)
+    ? counters
+        .filter((item): item is CompanyDepartmentAutonomyCounter => Boolean(item && item.departmentId))
+        .map((item) => ({
+          departmentId: item.departmentId,
+          overloadStreak: Math.max(0, item.overloadStreak ?? 0),
+          underloadStreak: Math.max(0, item.underloadStreak ?? 0),
+          lastLoadScore: Math.max(0, item.lastLoadScore ?? 0),
+          updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : 0,
+        }))
+    : [];
+}
+
+export function buildDefaultOrgSettings(
+  orgSettings?: CompanyOrgSettings | null,
+): CompanyOrgSettings {
+  return {
+    autoCalibrate: orgSettings?.autoCalibrate ?? true,
+    lastAutoCalibratedAt: orgSettings?.lastAutoCalibratedAt,
+    lastAutoCalibrationActions: orgSettings?.lastAutoCalibrationActions ?? [],
+    autonomyPolicy: {
+      ...DEFAULT_AUTONOMY_POLICY,
+      ...(orgSettings?.autonomyPolicy ?? {}),
+    },
+    autonomyState: {
+      lastEngineRunAt: orgSettings?.autonomyState?.lastEngineRunAt,
+      lastEngineActions: orgSettings?.autonomyState?.lastEngineActions ?? [],
+      departmentCounters: normalizeDepartmentCounters(
+        orgSettings?.autonomyState?.departmentCounters,
+      ),
+    },
+  };
+}
+
+export function applyCompanyAutonomyDefaults(company: Company): Company {
+  return {
+    ...company,
+    orgSettings: buildDefaultOrgSettings(company.orgSettings),
+  };
+}

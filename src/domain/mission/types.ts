@@ -24,6 +24,7 @@ export type RequirementAcceptanceStatus =
   | "rejected";
 
 export type WorkItemKind = "strategic" | "execution" | "artifact";
+export type WorkItemExecutionLevel = "company" | "department" | "individual";
 
 export type WorkStepStatus = "pending" | "active" | "done" | "blocked" | "skipped";
 
@@ -93,10 +94,13 @@ export interface WorkItemRecord {
   displayNextAction: string;
   status: WorkItemStatus;
   stageLabel: string;
+  owningDepartmentId?: string | null;
+  executionLevel?: WorkItemExecutionLevel;
   ownerActorId?: string | null;
   ownerLabel: string;
   batonActorId?: string | null;
   batonLabel: string;
+  parentWorkItemId?: string | null;
   roomId?: string | null;
   artifactIds: string[];
   dispatchIds: string[];
@@ -146,12 +150,25 @@ export interface RequirementEvidenceEvent {
   applied: boolean;
 }
 
+export interface DraftRequirementRecord {
+  topicKey: string | null;
+  topicText: string;
+  summary: string;
+  ownerActorId: string | null;
+  ownerLabel: string;
+  stage: string;
+  nextAction: string;
+  promotable: boolean;
+  updatedAt: number;
+}
+
 export interface ConversationStateRecord {
   companyId: string;
   conversationId: string;
   currentWorkKey?: string | null;
   currentWorkItemId?: string | null;
   currentRoundId?: string | null;
+  draftRequirement?: DraftRequirementRecord | null;
   updatedAt: number;
 }
 

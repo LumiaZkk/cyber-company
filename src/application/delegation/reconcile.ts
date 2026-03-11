@@ -77,6 +77,29 @@ function requestSyncRank(syncSource: RequestRecord["syncSource"]): number {
   }
 }
 
+function isInstructionLikeRequest(request: RequestRecord): boolean {
+  const combined = [
+    request.title,
+    request.summary,
+    request.responseSummary,
+    request.responseDetails,
+    ...(request.requiredItems ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n")
+    .trim();
+  if (!combined) {
+    return false;
+  }
+
+  return (
+    /(^|\n)#\s*(?:CEO|CTO|COO|HR)\s*执行准则\b/u.test(combined) ||
+    /(^|\n)#\s*Role:\s*(?:CEO|CTO|COO|HR)\b/i.test(combined) ||
+    (/company-context\.json|当前 roster|委派硬规则|汇报给|最高负责人/u.test(combined) &&
+      /执行准则|Role:/i.test(combined))
+  );
+}
+
 function isNoiseRequest(request: RequestRecord): boolean {
   const texts = [
     request.title,
@@ -84,7 +107,10 @@ function isNoiseRequest(request: RequestRecord): boolean {
     request.responseSummary,
     request.responseDetails,
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-  return texts.length > 0 && texts.every((text) => isPlaceholderOrBridgeText(text));
+  return (
+    isInstructionLikeRequest(request) ||
+    (texts.length > 0 && texts.every((text) => isPlaceholderOrBridgeText(text)))
+  );
 }
 
 function mergeRequests(existing: RequestRecord[], incoming: RequestRecord[]) {

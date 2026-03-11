@@ -17,6 +17,9 @@ import type {
   RequirementRoomRecord,
   RoomConversationBindingRecord,
   WorkItemRecord,
+  SupportRequestRecord,
+  EscalationRecord,
+  DecisionTicketRecord,
 } from "../../infrastructure/company/runtime/types";
 import { resolveConversationPresentation, resolveSessionPresentation } from "../../lib/chat-routes";
 import {
@@ -26,11 +29,14 @@ import {
   resolveSessionUpdatedAt,
 } from "../../lib/sessions";
 import { formatTime } from "../../lib/utils";
+import { inferDepartmentKind, resolveDepartmentMembers } from "../org/department-autonomy";
 
 export type ManagerStatusCard = {
   agentId: string;
   label: string;
   role: string;
+  departmentName: string;
+  departmentKind: "meta" | "support" | "business";
   state: "running" | "idle" | "offline";
   subtitle: string;
 };
@@ -93,6 +99,9 @@ export function buildCeoHomeSnapshot(params: {
   activeRoomRecords: RequirementRoomRecord[];
   activeRoomBindings: RoomConversationBindingRecord[];
   activeWorkItems: WorkItemRecord[];
+  activeSupportRequests: SupportRequestRecord[];
+  activeEscalations: EscalationRecord[];
+  activeDecisionTickets: DecisionTicketRecord[];
 }): CeoHomeSnapshot {
   const {
     company,
@@ -102,6 +111,9 @@ export function buildCeoHomeSnapshot(params: {
     activeRoomRecords,
     activeRoomBindings,
     activeWorkItems,
+    activeSupportRequests,
+    activeEscalations,
+    activeDecisionTickets,
   } = params;
   const companyEmployees = company.employees;
   const companyAgentIds = new Set(companyEmployees.map((employee) => employee.agentId));
@@ -138,25 +150,33 @@ export function buildCeoHomeSnapshot(params: {
     extractText(lastAssistantMessage).split("\n").find((line) => line.trim().length > 0) ??
     retrospective.summary;
 
-  const managerCards: ManagerStatusCard[] = companyEmployees
-    .filter((employee) => employee.metaRole === "hr" || employee.metaRole === "cto" || employee.metaRole === "coo")
-    .map((employee) => {
+  const managerCards: ManagerStatusCard[] = (company.departments ?? [])
+    .filter((department) => !department.archived)
+    .map((department) => {
+      const employee = companyEmployees.find((candidate) => candidate.agentId === department.leadAgentId);
+      if (!employee || employee.metaRole === "ceo") {
+        return null;
+      }
       const latestSession = companySessions.find((session) => session.agentId === employee.agentId);
       const state: ManagerStatusCard["state"] = latestSession
         ? isSessionActive(latestSession, currentTime)
           ? "running"
           : "idle"
         : "offline";
+      const memberCount = resolveDepartmentMembers(company, department.id).length;
       return {
         agentId: employee.agentId,
         label: employee.nickname,
         role: employee.role,
+        departmentName: department.name,
+        departmentKind: inferDepartmentKind(company, department),
         state,
         subtitle: latestSession
           ? `${resolveSessionTitle(latestSession)} · ${formatTime(resolveSessionUpdatedAt(latestSession))}`
-          : "当前待命，尚无最近会话",
+          : `${memberCount} 名成员，当前待命`,
       };
-    });
+    })
+    .filter((card): card is ManagerStatusCard => Boolean(card));
 
   const activityItems = [
     ...companySessions.slice(0, 5).map((session) => ({
@@ -199,7 +219,12 @@ export function buildCeoHomeSnapshot(params: {
     .slice(0, 3);
 
   return {
-    ceoSurface: buildCeoControlSurface(company),
+    ceoSurface: buildCeoControlSurface({
+      company,
+      activeSupportRequests,
+      activeEscalations,
+      activeDecisionTickets,
+    }),
     orgAdvisor: buildOrgAdvisorSnapshot(company),
     companySessions,
     employeeInsights,

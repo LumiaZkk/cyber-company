@@ -44,6 +44,7 @@ export function buildDispatchActions(
 
       const sortedDispatches = next.sort((left, right) => right.updatedAt - left.updatedAt);
       const syncedWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: syncArtifactLinks(
         syncDispatchLinks(activeWorkItems, sortedDispatches),
@@ -69,6 +70,7 @@ export function buildDispatchActions(
 
       const sortedDispatches = [...dispatches].sort((left, right) => right.updatedAt - left.updatedAt);
       const syncedWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: syncArtifactLinks(syncDispatchLinks(activeWorkItems, sortedDispatches), activeArtifacts),
         rooms: activeRoomRecords,
@@ -89,6 +91,7 @@ export function buildDispatchActions(
       const deletedDispatch = activeDispatches.find((dispatch) => dispatch.id === dispatchId) ?? null;
       const next = activeDispatches.filter((dispatch) => dispatch.id !== dispatchId);
       const syncedWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: syncArtifactLinks(syncDispatchLinks(activeWorkItems, next), activeArtifacts),
         rooms: activeRoomRecords,

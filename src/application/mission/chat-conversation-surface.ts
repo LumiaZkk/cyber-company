@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../gateway";
+import { parseDraftRequirementSignals } from "./draft-requirement";
 import { normalizeTruthText } from "./message-truth";
 import { buildChatRequirementState, type ChatRequirementState } from "./chat-requirement-state";
 import { buildChatTaskPlanOverview, buildChatRequirementTeam } from "./chat-requirement-panel";
@@ -155,6 +156,24 @@ function sanitizeConversationText(text: string): string {
   return normalizeTruthText(text);
 }
 
+function replyExplicitlyRequestsNewTask(text: string | null | undefined): boolean {
+  const raw = text?.trim() ?? "";
+  if (!raw) {
+    return false;
+  }
+
+  const structuredDraft = parseDraftRequirementSignals(raw);
+  if (
+    /##\s*📋\s*任务追踪/i.test(raw) ||
+    (structuredDraft.summary && structuredDraft.nextAction)
+  ) {
+    return false;
+  }
+
+  const normalized = sanitizeConversationText(raw);
+  return /(没有收到任何待办任务|没有进行中的工作流|请告诉我：)/.test(normalized);
+}
+
 function buildLatestDirectTurnSummary(
   messages: ChatMessage[],
   isGroup: boolean,
@@ -194,9 +213,9 @@ function buildLatestDirectTurnSummary(
     }
     return {
       state: "answered",
-      questionText: sanitizeConversationText(latestUserText),
+      questionText: latestUserText,
       questionPreview: truncateText(sanitizeConversationText(latestUserText), 96),
-      replyText: sanitizeConversationText(text),
+      replyText: text,
       replyPreview: truncateText(sanitizeConversationText(text), 180),
       replyIndex: index,
       repliedAt: typeof message.timestamp === "number" ? message.timestamp : null,
@@ -205,7 +224,7 @@ function buildLatestDirectTurnSummary(
 
   return {
     state: "waiting",
-    questionText: sanitizeConversationText(latestUserText),
+    questionText: latestUserText,
     questionPreview: truncateText(sanitizeConversationText(latestUserText), 96),
     replyText: null,
     replyPreview: null,
@@ -222,10 +241,7 @@ function buildLatestAssistantRequestsNewTask(messages: ChatMessage[], isGroup: b
     .reverse()
     .map((message) => (message?.role === "assistant" ? extractTextFromChatMessage(message) : ""))
     .find((text) => Boolean(text && text.trim().length > 0));
-  return Boolean(
-    latestAssistantText &&
-      /(没有收到任何待办任务|没有进行中的工作流|请告诉我：)/.test(latestAssistantText),
-  );
+  return replyExplicitlyRequestsNewTask(latestAssistantText);
 }
 
 export function buildChatConversationSurface(
@@ -274,7 +290,7 @@ export function buildChatConversationSurface(
       (latestAssistantRequestsNewTask ||
         (latestDirectTurnSummary?.state === "answered" &&
           latestDirectTurnSummary.replyText &&
-          /(没有收到任何待办任务|没有进行中的工作流|请告诉我：)/.test(latestDirectTurnSummary.replyText))),
+          replyExplicitlyRequestsNewTask(latestDirectTurnSummary.replyText))),
   );
   const hasDirectConversationWorkSignal = Boolean(
     !input.isGroup &&

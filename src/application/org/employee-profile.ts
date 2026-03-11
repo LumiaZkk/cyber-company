@@ -9,6 +9,7 @@ import {
   type ProviderManifest,
 } from "../gateway";
 import { useGatewayStore } from "../gateway";
+import { waitForGatewayChatRunTerminal } from "../gateway/chat-run";
 import { useOrgApp, useOrgQuery } from "./index";
 import type { Department } from "../../domain/org/types";
 import { applyDepartmentLeadConstraints } from "../../domain/org/policies";
@@ -310,11 +311,12 @@ export function useEmployeeProfileCommands(input: {
     setCommandError(null);
     try {
       const result = await gateway.setAgentModelOverride(input.id, input.modelDraft);
+      let sessionSyncNotice: string | null = null;
       const modelToApply =
         input.modelDraft.trim() || input.controlSnapshot?.defaultModel?.trim() || "";
       if (modelToApply) {
         try {
-          await sendTurnToCompanyActor({
+          const ack = await sendTurnToCompanyActor({
             backend: gateway,
             manifest: input.manifest,
             company: input.activeCompany,
@@ -322,12 +324,23 @@ export function useEmployeeProfileCommands(input: {
             message: `/model ${modelToApply}`,
             targetActorIds: [input.id],
           });
+          await waitForGatewayChatRunTerminal({
+            providerSessionKey: ack.providerConversationRef.conversationId,
+            runId: ack.runId,
+          });
         } catch (error) {
           console.warn("Failed to apply session model", error);
+          sessionSyncNotice =
+            error instanceof Error
+              ? `配置已保存，但主会话未确认完成模型切换：${error.message}`
+              : "配置已保存，但主会话未确认完成模型切换。";
         }
       }
       await input.loadDetails(input.id, { silent: true });
-      setNotice(result.updated ? "模型设置已更新。" : "模型设置未发生变化。");
+      setNotice(
+        sessionSyncNotice
+          ?? (result.updated ? "模型设置已更新，并已同步到主会话。" : "模型设置未发生变化，已重新同步主会话。"),
+      );
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error));
     } finally {

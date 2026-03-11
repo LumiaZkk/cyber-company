@@ -44,6 +44,7 @@ export function buildArtifactActions(
 
       const sortedArtifacts = next.sort((left, right) => right.updatedAt - left.updatedAt);
       const syncedWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: syncDispatchLinks(
         syncArtifactLinks(activeWorkItems, sortedArtifacts),
@@ -92,6 +93,7 @@ export function buildArtifactActions(
         (left, right) => right.updatedAt - left.updatedAt,
       );
       const syncedWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: syncDispatchLinks(
         syncArtifactLinks(activeWorkItems, sortedArtifacts),
@@ -116,6 +118,7 @@ export function buildArtifactActions(
       const deletedArtifact = activeArtifacts.find((artifact) => artifact.id === artifactId) ?? null;
       const next = activeArtifacts.filter((artifact) => artifact.id !== artifactId);
       const syncedWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: syncDispatchLinks(syncArtifactLinks(activeWorkItems, next), activeDispatches),
         rooms: activeRoomRecords,

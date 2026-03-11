@@ -333,7 +333,7 @@ export function buildChatSessionContext(input: BuildChatSessionContextInput) {
   const requestHealth = summarizeRequestHealth(requestPreview);
   const ceoSurface =
     input.activeCompany && targetEmployee?.metaRole === "ceo"
-      ? buildCeoControlSurface(input.activeCompany)
+      ? buildCeoControlSurface({ company: input.activeCompany })
       : null;
   const orgAdvisor =
     input.activeCompany && targetEmployee?.metaRole === "ceo"

@@ -2,6 +2,7 @@ import { useEffect, useMemo, type MutableRefObject } from "react";
 import {
   buildRequirementRoomRecordSignature,
 } from "../../../application/delegation/room-routing";
+import { buildConversationDraftRequirement } from "../../../application/mission/draft-requirement";
 import {
   buildConversationMissionTruth,
   buildRequirementTeamRoomTruth,
@@ -13,12 +14,14 @@ import {
 import { areWorkItemRecordsEquivalent } from "../../../application/mission/work-item-equivalence";
 import type { RequirementRoomRecord } from "../../../domain/delegation/types";
 import type {
+  ConversationStateRecord,
   ConversationMissionRecord,
   WorkItemRecord,
 } from "../../../domain/mission/types";
 import type { Company } from "../../../domain/org/types";
 import type { RequirementExecutionOverview } from "../../../application/mission/requirement-overview";
 import type { RequirementSessionSnapshot } from "../../../domain/mission/requirement-snapshot";
+import type { ChatMessage } from "../../../application/gateway";
 
 export function useChatConversationTruth(input: {
   isGroup: boolean;
@@ -42,6 +45,7 @@ export function useChatConversationTruth(input: {
   missionIsCompleted: boolean;
   activeCompany: Company | null;
   activeRoomRecords: RequirementRoomRecord[];
+  activeConversationState: ConversationStateRecord | null;
   requirementTeam:
     | {
         title: string;
@@ -62,7 +66,12 @@ export function useChatConversationTruth(input: {
     workItemId: string | null,
     roundId: string | null,
   ) => void;
+  setConversationDraftRequirement: (
+    conversationId: string,
+    draftRequirement: ConversationStateRecord["draftRequirement"],
+  ) => void;
   conversationStateKey: string | null;
+  messages: ChatMessage[];
   previewConversationWorkItem: WorkItemRecord | null;
   shouldPreferPreviewConversationWorkItem: boolean;
   ceoReplyExplicitlyRequestsNewTask: boolean;
@@ -91,6 +100,7 @@ export function useChatConversationTruth(input: {
     missionIsCompleted,
     activeCompany,
     activeRoomRecords,
+    activeConversationState,
     requirementTeam,
     groupWorkItemId,
     targetAgentId,
@@ -99,7 +109,9 @@ export function useChatConversationTruth(input: {
     upsertWorkItemRecord,
     upsertRoomRecord,
     setConversationCurrentWorkKey,
+    setConversationDraftRequirement,
     conversationStateKey,
+    messages,
     previewConversationWorkItem,
     shouldPreferPreviewConversationWorkItem,
     ceoReplyExplicitlyRequestsNewTask,
@@ -107,9 +119,40 @@ export function useChatConversationTruth(input: {
     lastSyncedRoomSignatureRef,
   } = input;
 
+  const nextDraftRequirement = useMemo(
+    () =>
+      buildConversationDraftRequirement({
+        company: activeCompany,
+        activeConversationState,
+        messages,
+        isGroup,
+        isCeoSession,
+        isArchiveView,
+        hasRuntimePromotionSignal: Boolean(
+          persistedWorkItem ||
+            effectiveRequirementRoom ||
+            activeConversationState?.currentWorkItemId ||
+            activeConversationState?.currentWorkKey,
+        ),
+      }),
+    [
+      activeCompany,
+      activeConversationState,
+      effectiveRequirementRoom,
+      isArchiveView,
+      isCeoSession,
+      isGroup,
+      messages,
+      persistedWorkItem,
+    ],
+  );
+  const allowConversationPersistence =
+    isGroup || !isCeoSession || Boolean(persistedWorkItem || nextDraftRequirement?.promotable);
+
   const conversationTruth = useMemo(
     () =>
       buildConversationMissionTruth({
+        allowConversationPersistence,
         isGroup,
         isCeoSession,
         sessionKey,
@@ -137,6 +180,7 @@ export function useChatConversationTruth(input: {
       effectiveRequirementRoom,
       groupTopicKey,
       hasStableConversationWorkItem,
+      allowConversationPersistence,
       isArchiveView,
       isCeoSession,
       isFreshConversation,
@@ -241,6 +285,20 @@ export function useChatConversationTruth(input: {
       previewConversationWorkItem,
     ],
   );
+
+  useEffect(() => {
+    if (!conversationStateKey || isGroup || !isCeoSession || isArchiveView) {
+      return;
+    }
+    setConversationDraftRequirement(conversationStateKey, nextDraftRequirement ?? null);
+  }, [
+    conversationStateKey,
+    isArchiveView,
+    isCeoSession,
+    isGroup,
+    nextDraftRequirement,
+    setConversationDraftRequirement,
+  ]);
 
   useEffect(() => {
     if (!shouldPersistConversationTruth || !conversationMissionRecord) {

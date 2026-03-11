@@ -42,10 +42,13 @@ export function areWorkItemRecordsEquivalent(left: WorkItemRecord, right: WorkIt
     left.goal !== right.goal ||
     left.status !== right.status ||
     left.stageLabel !== right.stageLabel ||
+    (left.owningDepartmentId ?? null) !== (right.owningDepartmentId ?? null) ||
+    (left.executionLevel ?? null) !== (right.executionLevel ?? null) ||
     (left.ownerActorId ?? null) !== (right.ownerActorId ?? null) ||
     left.ownerLabel !== right.ownerLabel ||
     (left.batonActorId ?? null) !== (right.batonActorId ?? null) ||
     left.batonLabel !== right.batonLabel ||
+    (left.parentWorkItemId ?? null) !== (right.parentWorkItemId ?? null) ||
     (left.roomId ?? null) !== (right.roomId ?? null) ||
     left.startedAt !== right.startedAt ||
     (left.completedAt ?? null) !== (right.completedAt ?? null) ||

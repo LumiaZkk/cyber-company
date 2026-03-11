@@ -40,6 +40,7 @@ type WorkSelection = {
 };
 
 export function buildConversationMissionTruth(input: {
+  allowConversationPersistence: boolean;
   isGroup: boolean;
   isCeoSession: boolean;
   sessionKey: string | null;
@@ -60,7 +61,8 @@ export function buildConversationMissionTruth(input: {
   displayNextBatonAgentId: string | null;
   missionIsCompleted: boolean;
 }) {
-  const shouldPersistConversationTruth = input.isGroup || input.isCeoSession;
+  const shouldPersistConversationTruth =
+    input.isGroup || (input.isCeoSession && input.allowConversationPersistence);
   const conversationMissionUpdatedAt = resolveConversationMissionUpdatedAt({
     latestMessageTimestamp: input.latestMessageTimestamp,
     requirementRoomUpdatedAt: input.effectiveRequirementRoom?.updatedAt,
@@ -122,6 +124,7 @@ export function buildConversationWorkItemTruth(input: {
 
   return reconcileWorkItemRecord({
     companyId: input.activeCompany.id,
+    company: input.activeCompany,
     existingWorkItem: input.persistedWorkItem,
     mission: input.conversationMissionRecord,
     overview: input.requirementOverview,
@@ -216,6 +219,13 @@ export function buildRequirementTeamRoomTruth(input: {
       existingRoom?.topicKey ??
       input.persistedWorkItem?.topicKey ??
       input.requirementTeam.topicKey,
+    scope:
+      existingRoom?.scope ??
+      (input.persistedWorkItem?.parentWorkItemId
+        ? "support_request"
+        : input.persistedWorkItem?.owningDepartmentId
+          ? "department"
+          : "company"),
     createdAt: existingRoom?.createdAt ?? input.persistedWorkItem?.startedAt ?? now,
     updatedAt: existingRoom?.updatedAt ?? now,
   } as const;
@@ -235,6 +245,7 @@ export function buildRequirementTeamRoomTruth(input: {
         memberIds: roomBaseInput.memberIds,
         ownerAgentId: roomBaseInput.ownerAgentId,
         topicKey: roomBaseInput.topicKey,
+        scope: roomBaseInput.scope,
         transcript: existingRoom?.transcript ?? [],
         createdAt: roomBaseInput.createdAt,
         updatedAt: roomBaseInput.updatedAt,

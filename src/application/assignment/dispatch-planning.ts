@@ -1,4 +1,5 @@
 import type { Company, DispatchRecord } from "../../domain";
+import { resolveDefaultDepartmentDispatchTarget } from "../org/department-autonomy";
 
 type AutoDispatchStep = {
   id: string;
@@ -74,11 +75,21 @@ export function buildAutoDispatchPlan(input: {
     return null;
   }
 
-  const targetLabel =
-    preferredTargetAgentId === currentStep.assigneeAgentId
-      ? currentStep.assigneeLabel
-      : nextBatonLabel?.trim() || resolveEmployeeLabel(company, preferredTargetAgentId);
-  const dispatchId = `dispatch:auto:${workItemId}:${currentStep.id}:${preferredTargetAgentId}`;
+  const routedTarget =
+    resolveDefaultDepartmentDispatchTarget({
+      company,
+      fromActorId: currentActorId,
+      preferredTargetAgentId,
+      explicitOverride: false,
+    }) ?? {
+      agentId: preferredTargetAgentId,
+      label:
+        preferredTargetAgentId === currentStep.assigneeAgentId
+          ? currentStep.assigneeLabel
+          : nextBatonLabel?.trim() || resolveEmployeeLabel(company, preferredTargetAgentId),
+    };
+  const targetLabel = routedTarget.label;
+  const dispatchId = `dispatch:auto:${workItemId}:${currentStep.id}:${routedTarget.agentId}`;
   if (hasExistingAutoDispatch(dispatches, dispatchId)) {
     return null;
   }
@@ -94,7 +105,7 @@ export function buildAutoDispatchPlan(input: {
 
   return {
     dispatchId,
-    targetAgentId: preferredTargetAgentId,
+    targetAgentId: routedTarget.agentId,
     targetLabel,
     title: `自动派单 · ${targetLabel}`,
     summary: currentStep.title,

@@ -121,6 +121,7 @@ export function buildMissionActions(
           :
         reconcileWorkItemRecord({
           companyId: activeCompany.id,
+          company: activeCompany,
           existingWorkItem,
           mission,
           room: matchingRoom,

@@ -80,6 +80,9 @@ function createRuntime(companyId: string): AuthorityCompanyRuntimeSnapshot {
     activeArtifacts: [],
     activeDispatches: [],
     activeRoomBindings: [],
+    activeSupportRequests: [],
+    activeEscalations: [],
+    activeDecisionTickets: [],
     updatedAt: Date.now(),
   };
 }

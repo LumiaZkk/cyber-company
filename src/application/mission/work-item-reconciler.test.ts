@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   ArtifactRecord,
+  Company,
   ConversationMissionRecord,
   DispatchRecord,
   RequirementRoomRecord,
@@ -9,6 +10,29 @@ import type {
 import type { RequirementExecutionOverview } from "./requirement-overview";
 import { applyWorkItemDisplayFields, buildRoomRecordIdFromWorkItem } from "./work-item";
 import { reconcileWorkItemRecord } from "./work-item-reconciler";
+
+function createCompany(): Company {
+  return {
+    id: "company-1",
+    name: "测试公司",
+    description: "",
+    icon: "🏢",
+    template: "blank",
+    departments: [
+      { id: "dep-ceo", name: "管理中枢", leadAgentId: "co-ceo", kind: "meta" },
+      { id: "dep-writing", name: "小说创作部", leadAgentId: "writer-lead", kind: "business" },
+      { id: "dep-cto", name: "技术部", leadAgentId: "co-cto", kind: "support" },
+    ],
+    employees: [
+      { agentId: "co-ceo", nickname: "CEO", role: "CEO", isMeta: true, metaRole: "ceo", departmentId: "dep-ceo" },
+      { agentId: "co-cto", nickname: "CTO", role: "CTO", isMeta: true, metaRole: "cto", departmentId: "dep-cto", reportsTo: "co-ceo" },
+      { agentId: "writer-lead", nickname: "主编", role: "创作部经理", isMeta: false, departmentId: "dep-writing", reportsTo: "co-ceo" },
+      { agentId: "writer-a", nickname: "写手", role: "Writer", isMeta: false, departmentId: "dep-writing", reportsTo: "writer-lead" },
+    ],
+    quickPrompts: [],
+    createdAt: 1,
+  };
+}
 
 function createMission(overrides: Partial<ConversationMissionRecord> = {}): ConversationMissionRecord {
   return {
@@ -419,6 +443,41 @@ describe("reconcileWorkItemRecord", () => {
       roomId: buildRoomRecordIdFromWorkItem("topic:mission:netnovel-team"),
       artifactIds: [],
       dispatchIds: [],
+    });
+  });
+
+  it("promotes department mainline ownership to the department manager while keeping the baton on the worker", () => {
+    const reconciled = reconcileWorkItemRecord({
+      companyId: "company-1",
+      company: createCompany(),
+      overview: createOverview({
+        topicKey: "chapter:01",
+        title: "完成第 1 章正文",
+        headline: "当前卡点在写手",
+        summary: "写手正在起稿，主编负责部门收口。",
+        currentOwnerAgentId: "writer-a",
+        currentOwnerLabel: "写手",
+        currentStage: "写手起稿",
+        nextAction: "主编跟进进度并决定是否升级要工具支持。",
+        startedAt: 3_000,
+      }),
+      room: createRoom({
+        workItemId: "topic:chapter:01",
+        id: buildRoomRecordIdFromWorkItem("topic:chapter:01"),
+        ownerActorId: "writer-a",
+        ownerAgentId: "writer-a",
+        memberIds: ["writer-lead", "writer-a", "co-cto"],
+        memberActorIds: ["writer-lead", "writer-a", "co-cto"],
+      }),
+    });
+
+    expect(reconciled).toMatchObject({
+      owningDepartmentId: "dep-writing",
+      executionLevel: "department",
+      ownerActorId: "writer-lead",
+      ownerLabel: "主编",
+      batonActorId: "writer-a",
+      batonLabel: "写手",
     });
   });
 });

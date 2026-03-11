@@ -43,6 +43,9 @@ export function CEOHomePageScreen() {
     activeRoomRecords,
     activeRoomBindings,
     activeWorkItems,
+    activeSupportRequests,
+    activeEscalations,
+    activeDecisionTickets,
     updateCompany,
   } = useCeoCockpitViewModel();
   const connected = useGatewayStore((state) => state.connected);
@@ -78,6 +81,9 @@ export function CEOHomePageScreen() {
       activeRoomRecords,
       activeRoomBindings,
       activeWorkItems,
+      activeSupportRequests,
+      activeEscalations,
+      activeDecisionTickets,
     });
   }, [
     activeCompany,
@@ -87,6 +93,9 @@ export function CEOHomePageScreen() {
     activeRoomRecords,
     activeRoomBindings,
     activeWorkItems,
+    activeSupportRequests,
+    activeEscalations,
+    activeDecisionTickets,
   ]);
 
   if (!activeCompany || !ceo || !homeState) {
@@ -274,9 +283,9 @@ export function CEOHomePageScreen() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <ShieldAlert className="h-4 w-4 text-violet-600" />
-              支持角色状态
+              部门负责人状态
             </CardTitle>
-            <CardDescription>HR / CTO / COO 常驻待命，需要时由 CEO 拉起处理专项工作。</CardDescription>
+            <CardDescription>CEO 默认先对部门经理派单，再由部门内部自治拆解和收口。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {managerCards.map((manager) => (
@@ -284,9 +293,11 @@ export function CEOHomePageScreen() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-slate-900">
-                      {manager.label} · {manager.role}
+                      {manager.label} · {manager.departmentName}
                     </div>
-                    <div className="mt-1 text-xs leading-5 text-slate-500">{manager.subtitle}</div>
+                    <div className="mt-1 text-xs leading-5 text-slate-500">
+                      {manager.role} [{manager.departmentKind}] · {manager.subtitle}
+                    </div>
                   </div>
                   <Badge variant="outline" className={managementStateClass(manager.state)}>
                     {managementStateLabel(manager.state)}
@@ -295,7 +306,7 @@ export function CEOHomePageScreen() {
               </div>
             ))}
             <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-500">
-              只有在扩编、接系统或搭自动化时，才需要切到这些支持角色。默认先把目标交给 CEO。
+              {"默认路径是 CEO -> 部门负责人 -> 部门成员。只有 CEO 明确 override 时，才直接绕过部门经理派给个人。"}
             </div>
           </CardContent>
         </Card>
@@ -379,12 +390,18 @@ export function CEOHomePageScreen() {
                 <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
                   SLA {ceoSurface.overdueItems}
                 </Badge>
+                <Badge variant="outline" className="border-orange-200 bg-orange-50 text-orange-700">
+                  升级 {ceoSurface.openEscalations}
+                </Badge>
+                <Badge variant="outline" className="border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700">
+                  人类决策 {ceoSurface.pendingHumanDecisions}
+                </Badge>
                 <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
                   接管 {ceoSurface.manualTakeovers}
                 </Badge>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-                如果没有明显异常，直接继续和 CEO 对话；需要排障时再进入工作看板或运营大厅。
+                CEO 首页默认只聚焦升级项和真正需要拍板的事项。普通部门推进和支持协作留在部门内部或运营大厅处理。
                 <div className="mt-3 text-xs leading-5 text-slate-500">
                   完成率 {outcomeReport.completionRate}% · 交接闭环 {outcomeReport.handoffCompletionRate}% · {retrospective.summary}
                 </div>

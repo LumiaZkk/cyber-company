@@ -83,6 +83,25 @@ function isToolMessage(message: ChatMessage): boolean {
   });
 }
 
+function getMessageProvenance(message: ChatMessage): Record<string, unknown> | null {
+  return typeof message.provenance === "object" && message.provenance
+    ? (message.provenance as Record<string, unknown>)
+    : null;
+}
+
+function resolveProgressActorAgentId(message: ChatMessage): string | null {
+  if (typeof message.senderAgentId === "string" && message.senderAgentId.trim().length > 0) {
+    return message.senderAgentId.trim();
+  }
+  if (typeof message.roomAgentId === "string" && message.roomAgentId.trim().length > 0) {
+    return message.roomAgentId.trim();
+  }
+  const provenance = getMessageProvenance(message);
+  return provenance && typeof provenance.sourceActorId === "string" && provenance.sourceActorId.trim().length > 0
+    ? provenance.sourceActorId.trim()
+    : null;
+}
+
 function stripChatControlMetadata(text: string): string {
   return text.replace(/<!--\s*chat-control:[\s\S]*?-->/gi, "").trim();
 }
@@ -256,7 +275,12 @@ export function buildSessionProgressEvents(input: {
       if (isToolMessage(message)) {
         return null;
       }
-      if (message.role === "assistant" && input.includeOwnerAssistantEvents === false) {
+      const actorAgentId = resolveProgressActorAgentId(message);
+      const isOwnerAssistantMessage = message.role === "assistant" && !actorAgentId;
+      if (isOwnerAssistantMessage && input.includeOwnerAssistantEvents === false) {
+        return null;
+      }
+      if (message.role === "user" && !actorAgentId) {
         return null;
       }
 
@@ -270,33 +294,23 @@ export function buildSessionProgressEvents(input: {
         return null;
       }
 
-      const provenance =
-        typeof message.provenance === "object" && message.provenance
-          ? (message.provenance as Record<string, unknown>)
-          : null;
-      const sourceAgentId =
-        provenance && typeof provenance.sourceActorId === "string"
-          ? provenance.sourceActorId
-          : null;
       const actorLabel =
-        message.role === "assistant"
-          ? input.ownerLabel
-          : sourceAgentId
-            ? formatAgentLabel(input.company, sourceAgentId)
-            : "协作者";
+        actorAgentId
+          ? formatAgentLabel(input.company, actorAgentId)
+          : input.ownerLabel;
       const timestamp = typeof message.timestamp === "number" ? message.timestamp : Date.now() + index;
 
       return {
         id: `${message.role}:${timestamp}:${index}`,
         timestamp,
         actorLabel,
-        title: message.role === "assistant" ? "目标会话新进展" : "协作者状态回传",
+        title: actorAgentId ? "协作者状态回传" : "目标会话新进展",
         summary: summary.summary,
         detail: summary.detail,
         tone: resolveProgressTone([summary.summary, summary.detail].filter(Boolean).join(" ")),
         source: "session",
         category: "status",
-        actorAgentId: sourceAgentId ?? undefined,
+        actorAgentId: actorAgentId ?? undefined,
       } satisfies FocusProgressEvent;
     });
   return events.filter((event): event is FocusProgressEvent => event !== null);

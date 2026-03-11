@@ -5,9 +5,11 @@ import {
 import type {
   Company,
   CompanyRuntimeState,
+  EscalationRecord,
   HandoffRecord,
   RequestRecord,
   SharedKnowledgeItem,
+  SupportRequestRecord,
   TrackedTask,
 } from "./types";
 import { createEmptyProductState } from "./bootstrap";
@@ -18,6 +20,10 @@ import {
   getAuthorityCompanyRuntime,
   switchAuthorityCompany,
 } from "../../../application/gateway/authority-control";
+import {
+  isSupportRequestActive,
+  normalizeSupportRequestRecord,
+} from "../../../domain/delegation/support-request";
 
 type RuntimeSet = (partial: Partial<CompanyRuntimeState>) => void;
 type RuntimeGet = () => CompanyRuntimeState;
@@ -39,6 +45,12 @@ function upsertTimestampedRecord<T extends { id: string; updatedAt: number }>(
   return [...existingItems, incomingItem];
 }
 
+function filterOpenEscalations(escalations: EscalationRecord[] | null | undefined): EscalationRecord[] {
+  return (escalations ?? []).filter(
+    (item) => item.status === "open" || item.status === "acknowledged",
+  );
+}
+
 export function buildCompanyConfigActions(
   set: RuntimeSet,
   get: RuntimeGet,
@@ -52,6 +64,7 @@ export function buildCompanyConfigActions(
   | "upsertTask"
   | "upsertHandoff"
   | "upsertRequest"
+  | "upsertSupportRequest"
   | "upsertKnowledgeItem"
 > {
   return {
@@ -83,6 +96,9 @@ export function buildCompanyConfigActions(
           activeArtifacts: [],
           activeDispatches: [],
           activeRoomBindings: [],
+          activeSupportRequests: [],
+          activeEscalations: [],
+          activeDecisionTickets: [],
           loading: false,
           bootstrapPhase: "missing",
         });
@@ -101,6 +117,9 @@ export function buildCompanyConfigActions(
           activeArtifacts: [],
           activeDispatches: [],
           activeRoomBindings: [],
+          activeSupportRequests: [],
+          activeEscalations: [],
+          activeDecisionTickets: [],
           loading: false,
           bootstrapPhase: "error",
         });
@@ -258,6 +277,35 @@ export function buildCompanyConfigActions(
         return;
       }
       await get().updateCompany({ requests: nextRequests });
+    },
+
+    upsertSupportRequest: async (request: SupportRequestRecord) => {
+      const { activeCompany } = get();
+      if (!activeCompany) {
+        return;
+      }
+      const normalizedRequest = normalizeSupportRequestRecord(request);
+      const nextRequests = upsertTimestampedRecord(
+        get().activeSupportRequests,
+        normalizedRequest,
+      );
+      if (!nextRequests) {
+        return;
+      }
+      set({
+        activeSupportRequests: nextRequests,
+        activeCompany: {
+          ...activeCompany,
+          supportRequests: nextRequests.filter(isSupportRequestActive),
+        },
+      });
+      await get().updateCompany({
+        supportRequests: nextRequests.filter(isSupportRequestActive),
+        escalations: filterOpenEscalations(get().activeEscalations),
+        decisionTickets: get().activeDecisionTickets.filter(
+          (ticket) => ticket.status === "open" || ticket.status === "pending_human",
+        ),
+      });
     },
 
     upsertKnowledgeItem: async (knowledgeItem: SharedKnowledgeItem) => {

@@ -1,5 +1,11 @@
 import type { SharedKnowledgeItem } from "../artifact/types";
-import type { HandoffRecord, RequestRecord } from "../delegation/types";
+import type {
+  DecisionTicketRecord,
+  EscalationRecord,
+  HandoffRecord,
+  RequestRecord,
+  SupportRequestRecord,
+} from "../delegation/types";
 import type { TrackedTask } from "../mission/types";
 import type { RetrospectiveRecord } from "../governance/types";
 
@@ -25,6 +31,9 @@ export interface Company {
   tasks?: TrackedTask[];
   handoffs?: HandoffRecord[];
   requests?: RequestRecord[];
+  supportRequests?: SupportRequestRecord[];
+  escalations?: EscalationRecord[];
+  decisionTickets?: DecisionTicketRecord[];
   knowledgeItems?: SharedKnowledgeItem[];
   retrospectives?: RetrospectiveRecord[];
   createdAt: number;
@@ -40,14 +49,43 @@ export interface CompanyOrgSettings {
   autoCalibrate?: boolean;
   lastAutoCalibratedAt?: number;
   lastAutoCalibrationActions?: string[];
+  autonomyPolicy?: CompanyAutonomyPolicy;
+  autonomyState?: CompanyAutonomyState;
+}
+
+export interface CompanyAutonomyPolicy {
+  autoApproveInternalReassignments?: boolean;
+  autoApproveSupportRequests?: boolean;
+  humanApprovalRequiredForLayoffs?: boolean;
+  humanApprovalRequiredForDepartmentCreateRemove?: boolean;
+  maxAutoHeadcountDelta?: number;
+  maxAutoBudgetDelta?: number;
+  supportSlaHours?: number;
+  departmentBlockerEscalationHours?: number;
+}
+
+export interface CompanyDepartmentAutonomyCounter {
+  departmentId: string;
+  overloadStreak: number;
+  underloadStreak: number;
+  lastLoadScore: number;
+  updatedAt: number;
+}
+
+export interface CompanyAutonomyState {
+  lastEngineRunAt?: number;
+  lastEngineActions?: string[];
+  departmentCounters?: CompanyDepartmentAutonomyCounter[];
 }
 
 export interface Department {
   id: string;
   name: string;
   leadAgentId: string;
+  kind?: "meta" | "support" | "business";
   color?: string;
   order?: number;
+  missionPolicy?: "support_only" | "manager_delegated" | "direct_execution";
   archived?: boolean;
 }
 

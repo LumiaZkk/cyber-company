@@ -77,6 +77,7 @@ export function normalizeRoomRecordForState(
         ? `room:${normalizedRoomId}`
         : room.sessionKey,
     topicKey: normalizedIdentity.topicKey ?? room.topicKey,
+    scope: room.scope ?? "company",
     ownerActorId: room.ownerActorId ?? room.ownerAgentId ?? null,
     batonActorId: room.batonActorId ?? null,
     memberIds: mergeRoomMemberIds(room.memberIds, []),
@@ -157,6 +158,7 @@ export function buildRoomActions(
           workItemId: normalizedRoom.workItemId ?? existing.workItemId,
           ownerActorId: normalizedRoom.ownerActorId ?? existing.ownerActorId ?? normalizedRoom.ownerAgentId ?? existing.ownerAgentId ?? null,
           batonActorId: normalizedRoom.batonActorId ?? existing.batonActorId ?? null,
+          scope: normalizedRoom.scope ?? existing.scope ?? "company",
           memberActorIds: mergeRoomMemberIds(existing.memberActorIds ?? existing.memberIds, normalizedRoom.memberActorIds ?? normalizedRoom.memberIds),
           status: normalizedRoom.status ?? existing.status ?? "active",
           headline: normalizedRoom.headline ?? existing.headline ?? normalizedRoom.title ?? existing.title,
@@ -182,6 +184,7 @@ export function buildRoomActions(
           workItemId: normalizedRoom.workItemId,
           ownerActorId: normalizedRoom.ownerActorId ?? normalizedRoom.ownerAgentId ?? null,
           batonActorId: normalizedRoom.batonActorId ?? null,
+          scope: normalizedRoom.scope ?? "company",
           memberActorIds: mergeRoomMemberIds(normalizedRoom.memberActorIds ?? normalizedRoom.memberIds, normalizedRoom.memberIds),
           status: normalizedRoom.status ?? "active",
           headline: normalizedRoom.headline ?? normalizedRoom.title,
@@ -195,6 +198,7 @@ export function buildRoomActions(
       const sorted = sanitizeRequirementRoomRecords(activeCompany.id, next);
       const roomRecord = sorted.find((item) => item.id === canonicalRoomId) ?? nextRoomRecord;
       const reconciledWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: activeWorkItems,
         rooms: sorted,
@@ -261,6 +265,7 @@ export function buildRoomActions(
           companyId: meta?.companyId ?? activeCompany.id,
           workItemId: meta?.workItemId,
           topicKey: meta?.topicKey,
+          scope: meta?.scope ?? "company",
           ownerActorId: meta?.ownerActorId ?? meta?.ownerAgentId ?? null,
           batonActorId: meta?.batonActorId ?? null,
           memberActorIds: mergeRoomMemberIds(meta?.memberActorIds ?? meta?.memberIds ?? [], meta?.memberIds ?? []),
@@ -303,6 +308,7 @@ export function buildRoomActions(
           workItemId: draftRoom.workItemId ?? existing.workItemId,
           ownerActorId: draftRoom.ownerActorId ?? existing.ownerActorId ?? existing.ownerAgentId ?? null,
           batonActorId: draftRoom.batonActorId ?? existing.batonActorId ?? null,
+          scope: draftRoom.scope ?? existing.scope ?? "company",
           memberActorIds: mergeRoomMemberIds(existing.memberActorIds ?? existing.memberIds, draftRoom.memberActorIds ?? draftRoom.memberIds ?? []),
           status: draftRoom.status ?? existing.status ?? "active",
           headline: draftRoom.headline ?? existing.headline ?? draftRoom.title ?? existing.title,
@@ -334,6 +340,7 @@ export function buildRoomActions(
       const sorted = sanitizeRequirementRoomRecords(activeCompany.id, next);
       const roomRecord = sorted.find((room) => room.id === canonicalRoomId) ?? null;
       const reconciledWorkItems = reconcileStoredWorkItems({
+        company: activeCompany,
         companyId: activeCompany.id,
         workItems: activeWorkItems,
         rooms: sorted,

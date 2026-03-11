@@ -4,6 +4,7 @@ import {
 } from "./room-routing";
 import { recordDispatchSent } from "./closed-loop";
 import { gateway, sendTurnToCompanyActor, type ProviderManifest } from "../gateway";
+import { resolveDefaultDepartmentDispatchTarget } from "../org/department-autonomy";
 import type {
   DispatchRecord,
   RequirementRoomMessage,
@@ -103,12 +104,23 @@ export async function executeChatSend(input: ExecuteChatSendInput): Promise<Chat
     input.requirementTeamOwnerAgentId ??
     input.requirementRoomTargetAgentIds[0] ??
     null;
+  const routedDefaultTargetAgentId =
+    resolveDefaultDepartmentDispatchTarget({
+      company: input.company,
+      fromActorId:
+        input.targetAgentId ??
+        input.effectiveRequirementRoom?.ownerActorId ??
+        input.requirementTeamOwnerAgentId ??
+        null,
+      preferredTargetAgentId: defaultRoomTargetAgentId,
+      explicitOverride: false,
+    })?.agentId ?? defaultRoomTargetAgentId;
   const targetAgentIds: string[] = input.roomBroadcastMode
     ? input.requirementRoomTargetAgentIds
     : mentionedTargets.length > 0
       ? mentionedTargets
-      : defaultRoomTargetAgentId
-        ? [defaultRoomTargetAgentId]
+      : routedDefaultTargetAgentId
+        ? [routedDefaultTargetAgentId]
         : [];
 
   if (targetAgentIds.length === 0) {
@@ -224,6 +236,7 @@ export async function executeChatSend(input: ExecuteChatSendInput): Promise<Chat
       companyId: input.company.id,
       workItemId: workItemId ?? undefined,
       title: input.effectiveRequirementRoom?.title ?? input.groupTitle,
+      scope: input.effectiveRequirementRoom?.scope ?? "company",
       memberActorIds: input.effectiveRequirementRoom?.memberActorIds ?? input.requirementRoomTargetAgentIds,
       memberIds: input.effectiveRequirementRoom?.memberIds ?? input.requirementRoomTargetAgentIds,
       ownerActorId:

@@ -103,6 +103,7 @@ export function ChatPageScreen() {
     upsertRoomConversationBindings,
     upsertMissionRecord,
     setConversationCurrentWorkKey,
+    setConversationDraftRequirement,
     clearConversationState,
     upsertWorkItemRecord,
     upsertDispatchRecord,
@@ -702,6 +703,7 @@ export function ChatPageScreen() {
     missionIsCompleted,
     activeCompany,
     activeRoomRecords,
+    activeConversationState,
     requirementTeam: requirementTeam
       ? {
           title: requirementTeam.title,
@@ -717,7 +719,9 @@ export function ChatPageScreen() {
     upsertWorkItemRecord,
     upsertRoomRecord,
     setConversationCurrentWorkKey,
+    setConversationDraftRequirement,
     conversationStateKey,
+    messages,
     previewConversationWorkItem,
     shouldPreferPreviewConversationWorkItem,
     ceoReplyExplicitlyRequestsNewTask,

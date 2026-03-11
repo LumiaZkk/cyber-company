@@ -23,6 +23,9 @@ export type LoadedCompanyProductState = {
   loadedArtifacts: ArtifactRecord[];
   loadedDispatches: DispatchRecord[];
   loadedRoomBindings: RoomConversationBindingRecord[];
+  loadedSupportRequests: CompanyRuntimeStateBootstrap["activeSupportRequests"];
+  loadedEscalations: CompanyRuntimeStateBootstrap["activeEscalations"];
+  loadedDecisionTickets: CompanyRuntimeStateBootstrap["activeDecisionTickets"];
   loadedRequirementAggregates: RequirementAggregateRecord[];
   loadedRequirementEvidence: RequirementEvidenceEvent[];
   primaryRequirementId: string | null;
@@ -42,6 +45,9 @@ export function loadProductState(companyId: string): LoadedCompanyProductState {
     loadedArtifacts: state.activeArtifacts,
     loadedDispatches: state.activeDispatches,
     loadedRoomBindings: state.activeRoomBindings,
+    loadedSupportRequests: state.activeSupportRequests,
+    loadedEscalations: state.activeEscalations,
+    loadedDecisionTickets: state.activeDecisionTickets,
     loadedRequirementAggregates: state.activeRequirementAggregates,
     loadedRequirementEvidence: state.activeRequirementEvidence,
     primaryRequirementId: state.primaryRequirementId,
@@ -61,6 +67,9 @@ export function createEmptyProductState(): Pick<
   | "activeArtifacts"
   | "activeDispatches"
   | "activeRoomBindings"
+  | "activeSupportRequests"
+  | "activeEscalations"
+  | "activeDecisionTickets"
 > {
   return {
     activeRoomRecords: [],
@@ -74,6 +83,9 @@ export function createEmptyProductState(): Pick<
     activeArtifacts: [],
     activeDispatches: [],
     activeRoomBindings: [],
+    activeSupportRequests: [],
+    activeEscalations: [],
+    activeDecisionTickets: [],
   };
 }
 
@@ -97,6 +109,9 @@ export function loadInitialCompanyState() {
     activeArtifacts: state?.loadedArtifacts ?? [],
     activeDispatches: state?.loadedDispatches ?? [],
     activeRoomBindings: state?.loadedRoomBindings ?? [],
+    activeSupportRequests: state?.loadedSupportRequests ?? [],
+    activeEscalations: state?.loadedEscalations ?? [],
+    activeDecisionTickets: state?.loadedDecisionTickets ?? [],
     bootstrapPhase: activeCompany ? ("ready" as const) : config ? ("missing" as const) : ("idle" as const),
   };
 }

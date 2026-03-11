@@ -33,6 +33,7 @@ export function buildRequirementRoomRecordSignature(
     room.title,
     room.headline ?? "",
     room.topicKey ?? "",
+    room.scope ?? "company",
     room.ownerAgentId ?? "",
     room.sessionKey,
     buildRoomMembersSignature(room),

@@ -26,6 +26,9 @@ export function selectMissionBoardState(state: CompanyRuntimeState) {
     activeRequirementEvidence: state.activeRequirementEvidence,
     primaryRequirementId: state.primaryRequirementId,
     activeArtifacts: state.activeArtifacts,
+    activeSupportRequests: state.activeSupportRequests,
+    activeEscalations: state.activeEscalations,
+    activeDecisionTickets: state.activeDecisionTickets,
   };
 }
 
@@ -43,6 +46,9 @@ export function selectConversationWorkspaceState(state: CompanyRuntimeState) {
     activeArtifacts: state.activeArtifacts,
     activeDispatches: state.activeDispatches,
     activeRoomBindings: state.activeRoomBindings,
+    activeSupportRequests: state.activeSupportRequests,
+    activeEscalations: state.activeEscalations,
+    activeDecisionTickets: state.activeDecisionTickets,
   };
 }
 
@@ -65,6 +71,9 @@ export function selectCeoCockpitState(state: CompanyRuntimeState) {
     activeWorkItems: state.activeWorkItems,
     activeRequirementAggregates: state.activeRequirementAggregates,
     primaryRequirementId: state.primaryRequirementId,
+    activeSupportRequests: state.activeSupportRequests,
+    activeEscalations: state.activeEscalations,
+    activeDecisionTickets: state.activeDecisionTickets,
   };
 }
 
@@ -78,6 +87,9 @@ export function selectExceptionInboxState(state: CompanyRuntimeState) {
     activeWorkItems: state.activeWorkItems,
     activeRequirementAggregates: state.activeRequirementAggregates,
     primaryRequirementId: state.primaryRequirementId,
+    activeSupportRequests: state.activeSupportRequests,
+    activeEscalations: state.activeEscalations,
+    activeDecisionTickets: state.activeDecisionTickets,
   };
 }
 
