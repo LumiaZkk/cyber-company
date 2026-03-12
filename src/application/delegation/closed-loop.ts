@@ -215,6 +215,7 @@ export async function recordDispatchSent(input: {
 }) {
   return recordDelegationEvent({
     companyId: input.companyId,
+    eventId: `dispatch_sent:${input.dispatchId}`,
     kind: "dispatch_sent",
     dispatchId: input.dispatchId,
     workItemId: input.workItemId,
@@ -235,6 +236,84 @@ export async function recordDispatchSent(input: {
   });
 }
 
+export async function recordDispatchEnqueued(input: {
+  companyId: string;
+  dispatchId: string;
+  workItemId: string;
+  topicKey?: string | null;
+  roomId?: string | null;
+  fromActorId: string;
+  targetActorId: string;
+  sessionKey?: string;
+  createdAt?: number;
+  title: string;
+  message: string;
+  summary?: string;
+  sourceStepId?: string;
+  handoff?: boolean;
+}) {
+  return recordDelegationEvent({
+    companyId: input.companyId,
+    eventId: `dispatch_enqueued:${input.dispatchId}`,
+    kind: "dispatch_enqueued",
+    dispatchId: input.dispatchId,
+    workItemId: input.workItemId,
+    topicKey: input.topicKey ?? undefined,
+    roomId: input.roomId ?? undefined,
+    fromActorId: input.fromActorId,
+    targetActorId: input.targetActorId,
+    sessionKey: input.sessionKey,
+    createdAt: input.createdAt,
+    payload: buildDispatchPayload({
+      title: input.title,
+      message: input.message,
+      summary: input.summary,
+      sourceStepId: input.sourceStepId,
+      handoff: input.handoff,
+    }),
+  });
+}
+
+export async function recordDispatchUnconfirmed(input: {
+  companyId: string;
+  dispatchId: string;
+  workItemId: string;
+  topicKey?: string | null;
+  roomId?: string | null;
+  fromActorId: string;
+  targetActorId: string;
+  sessionKey?: string;
+  createdAt?: number;
+  title: string;
+  message: string;
+  summary?: string;
+  sourceStepId?: string;
+  handoff?: boolean;
+  error?: string;
+}) {
+  return recordDelegationEvent({
+    companyId: input.companyId,
+    eventId: `dispatch_unconfirmed:${input.dispatchId}`,
+    kind: "dispatch_unconfirmed",
+    dispatchId: input.dispatchId,
+    workItemId: input.workItemId,
+    topicKey: input.topicKey ?? undefined,
+    roomId: input.roomId ?? undefined,
+    fromActorId: input.fromActorId,
+    targetActorId: input.targetActorId,
+    sessionKey: input.sessionKey,
+    createdAt: input.createdAt,
+    payload: buildDispatchPayload({
+      title: input.title,
+      message: input.message,
+      summary: input.summary,
+      sourceStepId: input.sourceStepId,
+      handoff: input.handoff,
+      error: input.error,
+    }),
+  });
+}
+
 export async function recordDispatchBlocked(input: {
   companyId: string;
   dispatchId: string;
@@ -251,6 +330,7 @@ export async function recordDispatchBlocked(input: {
 }) {
   return recordDelegationEvent({
     companyId: input.companyId,
+    eventId: `dispatch_blocked:${input.dispatchId}`,
     kind: "dispatch_blocked",
     dispatchId: input.dispatchId,
     workItemId: input.workItemId,

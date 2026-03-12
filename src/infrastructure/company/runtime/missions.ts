@@ -50,6 +50,10 @@ export function isSameMissionRecord(
     left.topicKey === right.topicKey &&
     left.roomId === right.roomId &&
     left.startedAt === right.startedAt &&
+    left.promotionState === right.promotionState &&
+    (left.promotionReason ?? null) === (right.promotionReason ?? null) &&
+    left.lifecyclePhase === right.lifecyclePhase &&
+    left.stageGateStatus === right.stageGateStatus &&
     left.title === right.title &&
     left.statusLabel === right.statusLabel &&
     left.progressLabel === right.progressLabel &&

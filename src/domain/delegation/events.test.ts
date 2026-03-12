@@ -83,6 +83,7 @@ describe("projectCompanyCommunicationFromEvents", () => {
     expect(projected.dispatches[0]).toMatchObject({
       id: dispatchId,
       status: "answered",
+      deliveryState: "answered",
       title: "Deliver architecture update",
       summary: "Please draft the architecture update.",
       fromActorId: "live-co-ceo",
@@ -94,7 +95,9 @@ describe("projectCompanyCommunicationFromEvents", () => {
     expect(projected.requests).toHaveLength(1);
     expect(projected.requests[0]).toMatchObject({
       id: "handoff:dispatch:123:request",
+      dispatchId,
       status: "answered",
+      deliveryState: "answered",
       resolution: "complete",
       responseSummary: "Architecture update is complete.",
       requiredItems: ["deck", "tradeoff-table"],
@@ -108,6 +111,228 @@ describe("projectCompanyCommunicationFromEvents", () => {
       fromAgentId: "live-co-ceo",
       toAgentIds: ["live-co-cto"],
       syncSource: "event",
+    });
+  });
+
+  it("allows answered reports to arrive without a prior acknowledged report", () => {
+    const company = createCompany();
+    const dispatchId = "dispatch:answer-first";
+    const projected = projectCompanyCommunicationFromEvents({
+      company,
+      events: [
+        createCompanyEvent({
+          eventId: "event-1",
+          companyId: company.id,
+          kind: "dispatch_enqueued",
+          dispatchId,
+          workItemId: "work:answer-first",
+          topicKey: "topic:answer-first",
+          fromActorId: "live-co-ceo",
+          targetActorId: "live-co-cto",
+          sessionKey: "agent:live-co-cto:main",
+          createdAt: 100,
+          payload: {
+            title: "Prepare delivery",
+            message: "Please prepare the delivery and report back.",
+            handoff: true,
+          },
+        }),
+        createCompanyEvent({
+          eventId: "event-2",
+          companyId: company.id,
+          kind: "report_answered",
+          dispatchId,
+          workItemId: "work:answer-first",
+          topicKey: "topic:answer-first",
+          fromActorId: "live-co-cto",
+          targetActorId: "live-co-ceo",
+          createdAt: 200,
+          payload: {
+            summary: "Delivery is complete.",
+            resolution: "complete",
+          },
+        }),
+      ],
+    });
+
+    expect(projected.dispatches).toMatchObject([
+      {
+        id: dispatchId,
+        status: "answered",
+        deliveryState: "answered",
+      },
+    ]);
+    expect(projected.requests).toMatchObject([
+      {
+        id: "handoff:dispatch:answer-first:request",
+        status: "answered",
+        deliveryState: "answered",
+        resolution: "complete",
+        responseSummary: "Delivery is complete.",
+      },
+    ]);
+  });
+
+  it("tracks sent-but-not-yet-answered dispatches as pending requests", () => {
+    const company = createCompany();
+    const projected = projectCompanyCommunicationFromEvents({
+      company,
+      events: [
+        createCompanyEvent({
+          eventId: "event-1",
+          companyId: company.id,
+          kind: "dispatch_sent",
+          dispatchId: "dispatch:pending",
+          workItemId: "work:pending",
+          topicKey: "topic:pending",
+          fromActorId: "live-co-ceo",
+          targetActorId: "live-co-cto",
+          sessionKey: "agent:live-co-cto:main",
+          createdAt: 100,
+          payload: {
+            title: "Draft proposal",
+            message: "Please draft the proposal.",
+            handoff: true,
+          },
+        }),
+      ],
+    });
+
+    expect(projected.requests).toMatchObject([
+      {
+        id: "handoff:dispatch:pending:request",
+        status: "pending",
+        deliveryState: "sent",
+        transport: "company_report",
+      },
+    ]);
+  });
+
+  it("keeps timed-out transport confirmations pending until a later report arrives", () => {
+    const company = createCompany();
+    const dispatchId = "dispatch:unconfirmed";
+    const projected = projectCompanyCommunicationFromEvents({
+      company,
+      events: [
+        createCompanyEvent({
+          eventId: "event-1",
+          companyId: company.id,
+          kind: "dispatch_enqueued",
+          dispatchId,
+          workItemId: "work:unconfirmed",
+          topicKey: "topic:unconfirmed",
+          fromActorId: "live-co-ceo",
+          targetActorId: "live-co-cto",
+          sessionKey: "agent:live-co-cto:main",
+          createdAt: 100,
+          payload: {
+            title: "Long-running job",
+            message: "Start the long-running job.",
+            handoff: true,
+          },
+        }),
+        createCompanyEvent({
+          eventId: "event-2",
+          companyId: company.id,
+          kind: "dispatch_unconfirmed",
+          dispatchId,
+          workItemId: "work:unconfirmed",
+          topicKey: "topic:unconfirmed",
+          fromActorId: "live-co-ceo",
+          targetActorId: "live-co-cto",
+          sessionKey: "agent:live-co-cto:main",
+          createdAt: 30_100,
+          payload: {
+            title: "Long-running job",
+            message: "Start the long-running job.",
+            handoff: true,
+          },
+        }),
+        createCompanyEvent({
+          eventId: "event-3",
+          companyId: company.id,
+          kind: "report_answered",
+          dispatchId,
+          workItemId: "work:unconfirmed",
+          topicKey: "topic:unconfirmed",
+          fromActorId: "live-co-cto",
+          targetActorId: "live-co-ceo",
+          createdAt: 10 * 60_000,
+          payload: {
+            summary: "The long-running job finished successfully.",
+            resolution: "complete",
+          },
+        }),
+      ],
+    });
+
+    expect(projected.dispatches).toMatchObject([
+      {
+        id: dispatchId,
+        status: "answered",
+        deliveryState: "answered",
+      },
+    ]);
+    expect(projected.requests).toMatchObject([
+      {
+        id: "handoff:dispatch:unconfirmed:request",
+        status: "answered",
+        deliveryState: "answered",
+        responseSummary: "The long-running job finished successfully.",
+      },
+    ]);
+  });
+
+  it("supersedes older open dispatches when a manual retry creates a newer dispatch for the same target", () => {
+    const company = createCompany();
+    const projected = projectCompanyCommunicationFromEvents({
+      company,
+      events: [
+        createCompanyEvent({
+          eventId: "event-1",
+          companyId: company.id,
+          kind: "dispatch_enqueued",
+          dispatchId: "dispatch:retry:1",
+          workItemId: "work:retry",
+          topicKey: "topic:retry",
+          fromActorId: "live-co-ceo",
+          targetActorId: "live-co-cto",
+          sessionKey: "agent:live-co-cto:main",
+          createdAt: 100,
+          payload: {
+            title: "Retryable task",
+            message: "Please handle this task.",
+            handoff: true,
+          },
+        }),
+        createCompanyEvent({
+          eventId: "event-2",
+          companyId: company.id,
+          kind: "dispatch_enqueued",
+          dispatchId: "dispatch:retry:2",
+          workItemId: "work:retry",
+          topicKey: "topic:retry",
+          fromActorId: "live-co-ceo",
+          targetActorId: "live-co-cto",
+          sessionKey: "agent:live-co-cto:main",
+          createdAt: 400,
+          payload: {
+            title: "Retryable task",
+            message: "Please handle this task.",
+            handoff: true,
+          },
+        }),
+      ],
+    });
+
+    const dispatchById = new Map(projected.dispatches.map((dispatch) => [dispatch.id, dispatch] as const));
+    expect(dispatchById.get("dispatch:retry:2")).toMatchObject({
+      id: "dispatch:retry:2",
+      status: "pending",
+    });
+    expect(dispatchById.get("dispatch:retry:1")).toMatchObject({
+      id: "dispatch:retry:1",
+      status: "superseded",
     });
   });
 });

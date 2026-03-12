@@ -91,6 +91,7 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
     );
 
     let status: RequestRecord["status"];
+    let deliveryState: RequestRecord["deliveryState"];
     let resolution: RequestRecord["resolution"];
     let responseSummary: string | undefined;
     let responseDetails: string | undefined;
@@ -99,6 +100,7 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
 
     if (handoff.status === "completed" || latestAnsweredMessage) {
       status = "answered";
+      deliveryState = "answered";
       resolution = latestAnsweredMessage ? "complete" : "partial";
       responseSummary = summarizeReportText(latestAnsweredMessage?.text ?? handoff.summary);
       responseDetails = latestAnsweredMessage?.text;
@@ -106,6 +108,7 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
       transport = inferReportTransport(latestAnsweredMessage?.text ?? handoff.summary);
     } else if (handoff.status === "blocked" || latestBlockedMessage) {
       status = "blocked";
+      deliveryState = "blocked";
       resolution =
         latestBlockedMessage && /人工接管|手动接管|manual takeover|请(?:你|用户).{0,8}(?:执行|处理|发布|接管)/i.test(latestBlockedMessage.text)
           ? "manual_takeover"
@@ -116,6 +119,7 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
       transport = inferReportTransport(latestBlockedMessage?.text ?? handoff.summary);
     } else if (handoff.status === "acknowledged" || latestAckMessage) {
       status = "acknowledged";
+      deliveryState = "acknowledged";
       resolution = "pending";
       responseSummary = summarizeReportText(latestAckMessage?.text ?? handoff.summary);
       responseDetails = latestAckMessage?.text;
@@ -123,6 +127,7 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
       transport = inferReportTransport(latestAckMessage?.text ?? handoff.summary);
     } else {
       status = "pending";
+      deliveryState = "delivered";
       resolution = "pending";
       transport = "inferred";
     }
@@ -135,6 +140,9 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
 
     return {
       id: `${handoff.id}:request`,
+      dispatchId: handoff.id.startsWith("handoff:dispatch:")
+        ? handoff.id.slice("handoff:".length)
+        : undefined,
       sessionKey: input.sessionKey,
       topicKey,
       taskId: handoff.taskId ?? input.relatedTask?.id,
@@ -144,6 +152,7 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
       title: handoff.title,
       summary: handoff.summary,
       status,
+      deliveryState,
       resolution,
       requiredItems:
         handoff.missingItems && handoff.missingItems.length > 0
@@ -151,6 +160,14 @@ export function buildRequestRecords(input: BuildRequestRecordsInput): RequestRec
           : handoff.checklist,
       responseSummary,
       responseDetails,
+      consumedAt:
+        status === "answered" || status === "blocked"
+          ? responseMessageTs ?? updatedAt
+          : null,
+      consumerSessionKey:
+        handoff.fromAgentId?.trim()
+          ? `agent:${handoff.fromAgentId.trim()}:main`
+          : null,
       sourceMessageTs: handoff.sourceMessageTs ?? handoff.createdAt,
       responseMessageTs,
       transport,

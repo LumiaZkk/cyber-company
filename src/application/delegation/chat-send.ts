@@ -2,8 +2,8 @@ import {
   createOutgoingRequirementRoomMessage,
   resolveRequirementRoomMentionTargets,
 } from "./room-routing";
-import { recordDispatchSent } from "./closed-loop";
-import { gateway, sendTurnToCompanyActor, type ProviderManifest } from "../gateway";
+import { enqueueDelegationDispatch } from "./async-dispatch";
+import { gateway, startTurnToCompanyActor, type ProviderManifest } from "../gateway";
 import { resolveDefaultDepartmentDispatchTarget } from "../org/department-autonomy";
 import type {
   DispatchRecord,
@@ -137,43 +137,8 @@ export async function executeChatSend(input: ExecuteChatSendInput): Promise<Chat
 
   const audienceAgentIds = [...new Set(targetAgentIds)];
   const dispatchStartedAt = Date.now();
-  const results = await Promise.allSettled(
-    audienceAgentIds.map((agentId) =>
-      sendTurnToCompanyActor({
-        backend: gateway,
-        manifest: input.providerManifest,
-        company: input.company!,
-        actorId: agentId,
-        message: input.text,
-        kind: "direct",
-        timeoutMs: 300_000,
-        attachments: apiAttachments,
-        targetActorIds: audienceAgentIds,
-      }),
-    ),
-  );
-  if (!results.some((result) => result.status === "fulfilled")) {
-    throw new Error("团队成员都没有接住这条指令");
-  }
-
-  const fulfilledDispatches = results
-    .filter(
-      (
-        result,
-      ): result is PromiseFulfilledResult<Awaited<ReturnType<typeof sendTurnToCompanyActor>>> =>
-        result.status === "fulfilled",
-    )
-    .map((result) => result.value);
   const roomId = input.productRoomId ?? input.effectiveRequirementRoom?.id ?? null;
   const workItemId = input.currentConversationWorkItemId;
-  input.upsertRoomConversationBindings(
-    fulfilledDispatches.map((dispatch) => ({
-      roomId: roomId ?? "room:unknown",
-      ...dispatch.providerConversationRef,
-      updatedAt: dispatchStartedAt,
-    })),
-  );
-
   const dispatchTitle = buildAudienceTitle(
     input.company,
     audienceAgentIds,
@@ -188,6 +153,71 @@ export async function executeChatSend(input: ExecuteChatSendInput): Promise<Chat
     audienceAgentIds,
     timestamp: dispatchStartedAt,
   });
+  const results = await Promise.allSettled(
+    audienceAgentIds.map(async (agentId) => {
+      if (workItemId && dispatchId) {
+        return await enqueueDelegationDispatch({
+          backend: gateway,
+          manifest: input.providerManifest,
+          company: input.company,
+          actorId: agentId,
+          dispatchId: `${dispatchId}:${agentId}`,
+          workItemId,
+          title: dispatchTitle,
+          message: input.text,
+          summary: input.text,
+          fromActorId:
+            input.targetAgentId ??
+            input.effectiveRequirementRoom?.ownerActorId ??
+            "unknown",
+          targetActorIds: audienceAgentIds,
+          topicKey: input.currentConversationTopicKey,
+          roomId,
+          sourceMessageId: outgoingRoomMessage.id,
+          sourceStepId: outgoingRoomMessage.id,
+          attachments: apiAttachments,
+          handoff: true,
+          createdAt: dispatchStartedAt,
+        });
+      }
+
+      const prepared = await startTurnToCompanyActor({
+        backend: gateway,
+        manifest: input.providerManifest,
+        company: input.company,
+        actorId: agentId,
+        message: input.text,
+        kind: "direct",
+        timeoutMs: 300_000,
+        attachments: apiAttachments,
+        targetActorIds: audienceAgentIds,
+      });
+      void prepared.send.catch((error) => {
+        console.error("Async group dispatch failed", error);
+      });
+      return {
+        dispatch: null,
+        actorRef: prepared.actorRef,
+        conversationRef: prepared.conversationRef,
+        providerConversationRef: prepared.providerConversationRef,
+      };
+    }),
+  );
+  if (!results.some((result) => result.status === "fulfilled")) {
+    throw new Error("团队成员都没有受理这条指令");
+  }
+
+  const fulfilledDispatches = results
+    .flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+
+  input.upsertRoomConversationBindings(
+    fulfilledDispatches.map((dispatch) => ({
+      roomId: roomId ?? "room:unknown",
+      ...dispatch.providerConversationRef,
+      updatedAt: dispatchStartedAt,
+    })),
+  );
+
   if (dispatchId && workItemId) {
     input.upsertDispatchRecord({
       id: dispatchId,
@@ -197,35 +227,13 @@ export async function executeChatSend(input: ExecuteChatSendInput): Promise<Chat
       summary: input.text,
       fromActorId: input.targetAgentId ?? input.effectiveRequirementRoom?.ownerActorId ?? null,
       targetActorIds: audienceAgentIds,
-      status: "sent",
+      status: "pending",
+      deliveryState: "pending",
       sourceMessageId: outgoingRoomMessage.id,
-      providerRunId: fulfilledDispatches[0]?.runId,
       topicKey: input.currentConversationTopicKey ?? undefined,
       createdAt: dispatchStartedAt,
       updatedAt: dispatchStartedAt,
     });
-    await Promise.all(
-      audienceAgentIds.map((agentId) =>
-        recordDispatchSent({
-          companyId: input.company!.id,
-          dispatchId: `${dispatchId}:${agentId}`,
-          workItemId,
-          roomId,
-          topicKey: input.currentConversationTopicKey,
-          fromActorId:
-            input.targetAgentId ??
-            input.effectiveRequirementRoom?.ownerActorId ??
-            "unknown",
-          targetActorId: agentId,
-          sessionKey: `agent:${agentId}:main`,
-          providerRunId: fulfilledDispatches[0]?.runId,
-          createdAt: dispatchStartedAt,
-          title: dispatchTitle,
-          message: input.text,
-          handoff: true,
-        }),
-      ),
-    );
   }
 
   input.appendRoomMessages(
@@ -253,7 +261,7 @@ export async function executeChatSend(input: ExecuteChatSendInput): Promise<Chat
 
   return {
     ok: true,
-    runId: fulfilledDispatches[0]?.runId ?? null,
+    runId: null,
     roomAudienceAgentIds: audienceAgentIds,
     resetRoomBroadcastMode: true,
   };

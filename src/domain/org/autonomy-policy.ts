@@ -1,6 +1,7 @@
 import type {
   Company,
   CompanyAutonomyPolicy,
+  CompanyCollaborationPolicy,
   CompanyDepartmentAutonomyCounter,
   CompanyOrgSettings,
 } from "./types";
@@ -14,6 +15,16 @@ export const DEFAULT_AUTONOMY_POLICY: Required<CompanyAutonomyPolicy> = {
   maxAutoBudgetDelta: 1,
   supportSlaHours: 6,
   departmentBlockerEscalationHours: 4,
+};
+
+export const DEFAULT_COLLABORATION_POLICY: Required<CompanyCollaborationPolicy> = {
+  globalDispatchMetaRoles: ["ceo", "hr"],
+  allowDepartmentLeadToDispatchWithinDepartment: true,
+  allowDepartmentLeadToDispatchToSupportLeads: true,
+  allowDepartmentLeadToDispatchToCeo: true,
+  allowDepartmentMembersWithinDepartment: true,
+  allowDepartmentMembersToManager: true,
+  explicitEdges: [],
 };
 
 function normalizeDepartmentCounters(
@@ -49,6 +60,14 @@ export function buildDefaultOrgSettings(
       departmentCounters: normalizeDepartmentCounters(
         orgSettings?.autonomyState?.departmentCounters,
       ),
+    },
+    collaborationPolicy: {
+      ...DEFAULT_COLLABORATION_POLICY,
+      ...(orgSettings?.collaborationPolicy ?? {}),
+      globalDispatchMetaRoles:
+        orgSettings?.collaborationPolicy?.globalDispatchMetaRoles ??
+        DEFAULT_COLLABORATION_POLICY.globalDispatchMetaRoles,
+      explicitEdges: orgSettings?.collaborationPolicy?.explicitEdges ?? [],
     },
   };
 }

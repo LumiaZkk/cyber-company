@@ -36,6 +36,11 @@ export function deriveStrategicRequirementTitle(
   const hasConsistency = /一致性|约束驱动|规则层|校验器|validator|rules\.yaml/i.test(corpus);
   const hasReader = /阅读系统|阅读预览|审阅|审稿|内部阅读|阅读页/i.test(corpus);
   const hasExecution = /开工任务单|执行方案|立项|MVP|里程碑|验收/i.test(corpus);
+  const hasAiNovelSystem =
+    (/全自动\s*AI\s*小说创作系统|AI\s*小说创作系统|小说创作系统|NovelCraft/i.test(corpus) ||
+      (/小说创作|小说生成|网文创作/i.test(corpus) &&
+        /自动发布|平台发布|选题|题材探索|去AI味|一致性|前后文不一致/i.test(corpus))) &&
+    /小说|创作|发布|选题/i.test(corpus);
   const hasExplicitTeamBootstrap =
     /从头开始搭建\s*AI\s*小说创作团队|从头开始搭建小说创作团队|从头开始.*创作团队/i.test(
       corpus,
@@ -47,6 +52,9 @@ export function deriveStrategicRequirementTitle(
 
   if (hasExplicitTeamBootstrap || hasTeamBootstrapSignals) {
     return "从头开始搭建 AI 小说创作团队";
+  }
+  if (hasAiNovelSystem) {
+    return "全自动AI小说创作系统";
   }
 
   if (hasConsistency && hasReader) {

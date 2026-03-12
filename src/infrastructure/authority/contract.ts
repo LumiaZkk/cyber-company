@@ -15,7 +15,7 @@ import type {
   RoundRecord,
   WorkItemRecord,
 } from "../../domain/mission/types";
-import type { Company, CyberCompanyConfig } from "../../domain/org/types";
+import type { Company, CyberCompanyConfig, Department } from "../../domain/org/types";
 import type {
   AgentListEntry,
   CostUsageSummary,
@@ -158,6 +158,31 @@ export type AuthorityCreateCompanyResponse = {
   runtime: AuthorityCompanyRuntimeSnapshot;
 };
 
+export type AuthorityHireEmployeeRequest = {
+  companyId: string;
+  role: string;
+  description: string;
+  nickname?: string;
+  reportsTo?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  departmentKind?: Department["kind"];
+  departmentColor?: string | null;
+  makeDepartmentLead?: boolean;
+  avatarJobId?: string;
+  modelTier?: "standard" | "reasoning" | "ultra";
+  traits?: string;
+  budget?: number;
+};
+
+export type AuthorityHireEmployeeResponse = {
+  company: Company;
+  config: CyberCompanyConfig;
+  runtime: AuthorityCompanyRuntimeSnapshot;
+  employee: Company["employees"][number];
+  warnings: string[];
+};
+
 export type AuthoritySwitchCompanyRequest = {
   companyId: string;
 };
@@ -171,6 +196,7 @@ export type AuthorityChatSendRequest = {
   actorId: string;
   sessionKey?: string | null;
   message: string;
+  timeoutMs?: number;
   attachments?: Array<{ type: string; mimeType: string; content: string }>;
 };
 
@@ -195,6 +221,11 @@ export type AuthorityAppendRoomRequest = {
   room: RequirementRoomRecord;
 };
 
+export type AuthorityRoomBindingsUpsertRequest = {
+  companyId: string;
+  bindings: RoomConversationBindingRecord[];
+};
+
 export type AuthorityDispatchUpsertRequest = {
   companyId: string;
   dispatch: DispatchRecord;
@@ -208,6 +239,41 @@ export type AuthorityCompanyEventsResponse = {
   companyId: string;
   events: CompanyEvent[];
   nextCursor: string | null;
+};
+
+export type AuthorityCollaborationActor = {
+  agentId: string;
+  nickname: string;
+  role: string;
+  metaRole: "ceo" | "hr" | "cto" | "coo" | null;
+  isMeta: boolean;
+  isDepartmentManager: boolean;
+  departmentId: string | null;
+  departmentName: string | null;
+  departmentKind: "meta" | "support" | "business" | null;
+};
+
+export type AuthorityCollaborationTarget = AuthorityCollaborationActor & {
+  reason:
+    | "global_dispatch"
+    | "department_peer"
+    | "department_manager"
+    | "support_lead"
+    | "ceo"
+    | "explicit_edge"
+    | "report_chain"
+    | "escalation";
+};
+
+export type AuthorityCollaborationScopeResponse = {
+  scopeVersion: number;
+  generatedAt: number;
+  self: AuthorityCollaborationActor;
+  manager: AuthorityCollaborationActor | null;
+  allowedDispatchTargets: AuthorityCollaborationTarget[];
+  defaultReportChain: AuthorityCollaborationActor[];
+  supportTargets: AuthorityCollaborationTarget[];
+  escalationTargets: AuthorityCollaborationTarget[];
 };
 
 export type AuthoritySessionHistoryResponse = {

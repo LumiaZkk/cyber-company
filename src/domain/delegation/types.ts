@@ -6,6 +6,17 @@ export type DispatchStatus =
   | "blocked"
   | "superseded";
 
+export type DispatchDeliveryState =
+  | "unknown"
+  | "pending"
+  | "sent"
+  | "delivered"
+  | "acknowledged"
+  | "answered"
+  | "blocked"
+  | "consumed"
+  | "failed";
+
 export type RoomVisibility = "public" | "system" | "debug";
 
 export type RoomMessageSource =
@@ -39,10 +50,14 @@ export interface DispatchRecord {
   fromActorId?: string | null;
   targetActorIds: string[];
   status: DispatchStatus;
+  deliveryState?: DispatchDeliveryState;
   sourceMessageId?: string;
   responseMessageId?: string;
   providerRunId?: string;
   topicKey?: string;
+  latestEventId?: string;
+  consumedAt?: number | null;
+  consumerSessionKey?: string | null;
   syncSource?: "event" | "history";
   createdAt: number;
   updatedAt: number;
@@ -136,6 +151,7 @@ export type RequestResolution = "pending" | "complete" | "partial" | "manual_tak
 
 export interface RequestRecord {
   id: string;
+  dispatchId?: string;
   sessionKey: string;
   topicKey?: string;
   taskId?: string;
@@ -145,10 +161,14 @@ export interface RequestRecord {
   title: string;
   summary: string;
   status: RequestStatus;
+  deliveryState?: DispatchDeliveryState;
   resolution: RequestResolution;
   requiredItems?: string[];
   responseSummary?: string;
   responseDetails?: string;
+  eventId?: string;
+  consumedAt?: number | null;
+  consumerSessionKey?: string | null;
   sourceMessageTs?: number;
   responseMessageTs?: number;
   syncSource?: "event" | "history" | "normalized";
@@ -209,7 +229,9 @@ export type DecisionTicketType =
   | "headcount"
   | "strategy"
   | "legal"
-  | "priority_conflict";
+  | "priority_conflict"
+  | "requirement_gate"
+  | "requirement_change";
 export type DecisionTicketStatus = "open" | "pending_human" | "resolved" | "cancelled";
 
 export interface DecisionTicketOptionRecord {
@@ -221,7 +243,12 @@ export interface DecisionTicketOptionRecord {
 export interface DecisionTicketRecord {
   id: string;
   companyId: string;
-  escalationId: string;
+  sourceType: "escalation" | "requirement";
+  sourceId: string;
+  escalationId?: string | null;
+  aggregateId?: string | null;
+  workItemId?: string | null;
+  sourceConversationId?: string | null;
   decisionOwnerActorId: string;
   decisionType: DecisionTicketType;
   summary: string;
@@ -229,6 +256,7 @@ export interface DecisionTicketRecord {
   requiresHuman: boolean;
   status: DecisionTicketStatus;
   resolution?: string | null;
+  resolutionOptionId?: string | null;
   roomId?: string | null;
   createdAt: number;
   updatedAt: number;

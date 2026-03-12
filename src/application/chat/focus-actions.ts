@@ -10,6 +10,7 @@ export type FocusActionButton = {
   preferResolvedSession?: boolean;
   href?: string;
   message?: string;
+  confirmMessage?: string;
 };
 
 export type FocusActionWatch = {

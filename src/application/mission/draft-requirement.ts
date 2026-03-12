@@ -1,7 +1,14 @@
 import { inferMissionTopicKey, inferRequestTopicKey } from "../delegation/request-topic";
 import { normalizeTruthText } from "./message-truth";
 import type { ChatMessage } from "../gateway";
-import type { Company, ConversationStateRecord, DraftRequirementRecord } from "../../domain";
+import type {
+  AssistantControlRequirementDraft,
+  Company,
+  ConversationStateRecord,
+  DraftRequirementRecord,
+  PromotionReason,
+} from "../../domain";
+import { readAssistantControlEnvelope } from "../../domain";
 
 type ParsedDraftSignals = {
   summary: string | null;
@@ -9,6 +16,7 @@ type ParsedDraftSignals = {
   canProceed: boolean | null;
   ownerLabel: string | null;
   stage: string | null;
+  stageGateStatus: DraftRequirementRecord["stageGateStatus"];
 };
 
 const DRAFT_REQUIREMENT_LABELS = [
@@ -87,6 +95,7 @@ function isContinuationUserText(text: string | null | undefined): boolean {
 function findLatestAnsweredTurn(messages: ChatMessage[]): {
   userText: string;
   userTimestamp: number;
+  assistantMessage: ChatMessage;
   assistantText: string;
   assistantTimestamp: number;
 } | null {
@@ -112,6 +121,7 @@ function findLatestAnsweredTurn(messages: ChatMessage[]): {
         userText: normalizeTruthText(userText),
         userTimestamp:
           typeof userMessage.timestamp === "number" ? userMessage.timestamp : Date.now(),
+        assistantMessage,
         assistantText,
         assistantTimestamp:
           typeof assistantMessage.timestamp === "number" ? assistantMessage.timestamp : Date.now(),
@@ -164,6 +174,10 @@ function normalizeCanProceed(value: string | null): boolean | null {
   return null;
 }
 
+function readStructuredDraftPayload(message: ChatMessage): AssistantControlRequirementDraft | null {
+  return readAssistantControlEnvelope(message)?.requirementDraft ?? null;
+}
+
 export function parseDraftRequirementSignals(text: string): ParsedDraftSignals {
   const normalized = text.trim();
   const summary = extractLabeledBlock(normalized, ["当前理解", "当前判断"]);
@@ -178,15 +192,8 @@ export function parseDraftRequirementSignals(text: string): ParsedDraftSignals {
     canProceed,
     ownerLabel,
     stage,
+    stageGateStatus: null,
   };
-}
-
-function buildDraftSummary(text: string, parsed: ParsedDraftSignals): string | null {
-  if (parsed.summary) {
-    return parsed.summary;
-  }
-  const firstLine = normalizeTruthText(text).split("\n").find((line) => line.trim().length > 0) ?? "";
-  return firstLine.length > 0 ? firstLine : null;
 }
 
 function inferTopicKey(text: string): string | null {
@@ -203,7 +210,10 @@ function resolveCeoLabel(company: Company | null): { actorId: string | null; lab
 
 function shouldPromoteFromFollowup(
   previousDraft: DraftRequirementRecord | null,
-  nextDraft: Omit<DraftRequirementRecord, "promotable">,
+  nextDraft: Pick<
+    DraftRequirementRecord,
+    "topicKey" | "summary" | "ownerActorId" | "stage" | "nextAction"
+  >,
 ): boolean {
   if (!previousDraft) {
     return false;
@@ -214,9 +224,22 @@ function shouldPromoteFromFollowup(
       : previousDraft.summary === nextDraft.summary) &&
     previousDraft.ownerActorId === nextDraft.ownerActorId &&
     previousDraft.stage === nextDraft.stage &&
-    previousDraft.nextAction === nextDraft.nextAction &&
-    previousDraft.updatedAt < nextDraft.updatedAt
+    previousDraft.nextAction === nextDraft.nextAction
   );
+}
+
+function resolveAutoPromotionReason(input: {
+  hasMultiActorDispatchSignal: boolean;
+  hasTaskBoardSignal: boolean;
+  hasRequirementTeamSignal: boolean;
+}): PromotionReason | null {
+  if (input.hasTaskBoardSignal) {
+    return "task_board_detected";
+  }
+  if (input.hasMultiActorDispatchSignal || input.hasRequirementTeamSignal) {
+    return "multi_actor_dispatch";
+  }
+  return null;
 }
 
 export function buildConversationDraftRequirement(input: {
@@ -227,6 +250,9 @@ export function buildConversationDraftRequirement(input: {
   isCeoSession: boolean;
   isArchiveView: boolean;
   hasRuntimePromotionSignal: boolean;
+  hasMultiActorDispatchSignal?: boolean;
+  hasTaskBoardSignal?: boolean;
+  hasRequirementTeamSignal?: boolean;
 }): DraftRequirementRecord | null {
   if (input.isGroup || !input.isCeoSession || input.isArchiveView) {
     return null;
@@ -237,33 +263,86 @@ export function buildConversationDraftRequirement(input: {
     return input.activeConversationState?.draftRequirement ?? null;
   }
 
-  const parsed = parseDraftRequirementSignals(latestTurn.assistantText);
-  const summary = buildDraftSummary(latestTurn.assistantText, parsed);
-  const nextAction = parsed.nextAction?.trim();
-  if (!summary || !nextAction) {
+  const structuredPayload = readStructuredDraftPayload(latestTurn.assistantMessage);
+  if (!structuredPayload) {
     return input.activeConversationState?.draftRequirement ?? null;
   }
 
   const ceo = resolveCeoLabel(input.company);
   const previousDraft = input.activeConversationState?.draftRequirement ?? null;
   const shouldReusePreviousTopic = previousDraft && isContinuationUserText(latestTurn.userText);
-  const nextDraftBase: Omit<DraftRequirementRecord, "promotable"> = {
-    topicKey: shouldReusePreviousTopic ? previousDraft.topicKey : inferTopicKey(latestTurn.userText),
+  const nextDraftBase = {
+    topicKey:
+      structuredPayload.topicKey ??
+      (shouldReusePreviousTopic ? previousDraft.topicKey : inferTopicKey(latestTurn.userText)),
     topicText: shouldReusePreviousTopic ? previousDraft.topicText : latestTurn.userText,
-    summary,
-    ownerActorId: ceo.actorId,
-    ownerLabel: parsed.ownerLabel?.trim() || ceo.label,
-    stage: parsed.stage?.trim() || "CEO 正在收敛目标和推进方式",
-    nextAction,
+    summary: structuredPayload.summary,
+    ownerActorId: structuredPayload.ownerActorId ?? ceo.actorId,
+    ownerLabel: structuredPayload.ownerLabel?.trim() || ceo.label,
+    stage: structuredPayload.stage?.trim() || "CEO 正在收敛目标和推进方式",
+    nextAction: structuredPayload.nextAction,
+    stageGateStatus:
+      structuredPayload.stageGateStatus !== "none"
+        ? structuredPayload.stageGateStatus
+        : previousDraft?.stageGateStatus ?? null,
     updatedAt: latestTurn.assistantTimestamp,
   };
-  const canProceed = parsed.canProceed ?? Boolean(summary && nextAction);
-  const promotable =
-    input.hasRuntimePromotionSignal ||
-    (canProceed && (!previousDraft || shouldPromoteFromFollowup(previousDraft, nextDraftBase)));
+  const canProceed = structuredPayload.canProceed ?? true;
+  const sameDraftChain = shouldPromoteFromFollowup(previousDraft, nextDraftBase);
+  const autoPromotionReason = resolveAutoPromotionReason({
+    hasMultiActorDispatchSignal: Boolean(input.hasMultiActorDispatchSignal),
+    hasTaskBoardSignal: Boolean(input.hasTaskBoardSignal),
+    hasRequirementTeamSignal: Boolean(input.hasRequirementTeamSignal),
+  });
+
+  let state: DraftRequirementRecord["state"] = "draft_ready";
+  let promotionReason: DraftRequirementRecord["promotionReason"] = null;
+
+  if (input.hasRuntimePromotionSignal) {
+    state = "active_requirement";
+    promotionReason =
+      previousDraft?.promotionReason ?? autoPromotionReason ?? null;
+  } else if (
+    previousDraft?.state === "promoted_manual" &&
+    (!canProceed || sameDraftChain)
+  ) {
+    state = "promoted_manual";
+    promotionReason = "manual_confirmation";
+  } else if (autoPromotionReason) {
+    state = "promoted_auto";
+    promotionReason = autoPromotionReason;
+  } else if (
+    previousDraft?.state === "promoted_auto" &&
+    (!canProceed || sameDraftChain)
+  ) {
+    state = "promoted_auto";
+    promotionReason = previousDraft.promotionReason ?? "multi_actor_dispatch";
+  } else if (
+    previousDraft?.state === "active_requirement" &&
+    (!canProceed || sameDraftChain)
+  ) {
+    state = "active_requirement";
+    promotionReason = previousDraft.promotionReason ?? null;
+  } else if (
+    previousDraft?.state === "draft_ready" &&
+    canProceed &&
+    sameDraftChain
+  ) {
+    state = "awaiting_promotion_choice";
+  } else if (
+    previousDraft?.state === "awaiting_promotion_choice" &&
+    canProceed &&
+    sameDraftChain
+  ) {
+    state = "awaiting_promotion_choice";
+  }
+
+  const promotable = ["promoted_manual", "promoted_auto", "active_requirement"].includes(state);
 
   return {
     ...nextDraftBase,
+    state,
+    promotionReason,
     promotable,
   };
 }

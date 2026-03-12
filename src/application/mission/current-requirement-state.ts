@@ -17,6 +17,7 @@ import {
 } from "./work-item-signal";
 import { isArtifactRequirementTopic, isStrategicRequirementTopic } from "./requirement-kind";
 import { isSyntheticWorkflowPromptText } from "./message-truth";
+import { isStrategicInstructionText } from "../../domain/mission/requirement-topic";
 import type {
   Company,
   ConversationStateRecord,
@@ -82,6 +83,34 @@ function findLatestStrategicWorkItem(items: WorkItemRecord[]): WorkItemRecord | 
   );
 }
 
+function findBestRequirementInstructionHint(
+  snapshot: RequirementSessionSnapshot | undefined,
+): RequirementInstructionHint | null {
+  const userMessages = [...(snapshot?.messages ?? [])]
+    .filter(
+      (message) =>
+        message.role === "user" &&
+        message.text.trim().length > 12 &&
+        !isSyntheticWorkflowPromptText(message.text),
+    )
+    .map((message) => ({
+      text: message.text,
+      timestamp: message.timestamp,
+    }));
+  if (userMessages.length === 0) {
+    return null;
+  }
+
+  const strategicMessage = [...userMessages]
+    .reverse()
+    .find((message) => isStrategicInstructionText(message.text));
+  if (strategicMessage) {
+    return strategicMessage;
+  }
+
+  return userMessages[userMessages.length - 1] ?? null;
+}
+
 export function buildCurrentRequirementState(params: {
   company: Company;
   activeConversationStates: ConversationStateRecord[];
@@ -110,20 +139,7 @@ export function buildCurrentRequirementState(params: {
     ceoAgentId
       ? (() => {
           const ceoSnapshot = companySessionSnapshots.find((snapshot) => snapshot.agentId === ceoAgentId);
-          const latestUserMessage = [...(ceoSnapshot?.messages ?? [])]
-            .reverse()
-            .find(
-              (message) =>
-                message.role === "user" &&
-                message.text.trim().length > 12 &&
-                !isSyntheticWorkflowPromptText(message.text),
-            );
-          return latestUserMessage
-            ? {
-                text: latestUserMessage.text,
-                timestamp: latestUserMessage.timestamp,
-              }
-            : null;
+          return findBestRequirementInstructionHint(ceoSnapshot);
         })()
       : null;
 

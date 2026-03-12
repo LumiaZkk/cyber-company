@@ -1,11 +1,17 @@
 import { gateway } from "./index";
 import type {
+  AuthorityAppendRoomRequest,
+  AuthorityDispatchUpsertRequest,
+  AuthorityRequirementTransitionRequest,
+  AuthorityRoomBindingsUpsertRequest,
   AuthorityBootstrapSnapshot,
   AuthorityCompanyRuntimeSnapshot,
   AuthorityCreateCompanyRequest,
   AuthorityCreateCompanyResponse,
   AuthorityExecutorConfig,
   AuthorityExecutorConfigPatch,
+  AuthorityHireEmployeeRequest,
+  AuthorityHireEmployeeResponse,
 } from "../../infrastructure/authority/contract";
 
 export function getAuthorityBootstrap() {
@@ -18,6 +24,10 @@ export function saveAuthorityConfig(config: AuthorityBootstrapSnapshot["config"]
 
 export function createAuthorityCompany(input: AuthorityCreateCompanyRequest) {
   return gateway.request<AuthorityCreateCompanyResponse>("authority.company.create", input);
+}
+
+export function hireAuthorityEmployee(input: AuthorityHireEmployeeRequest) {
+  return gateway.request<AuthorityHireEmployeeResponse>("authority.company.employee.hire", input);
 }
 
 export function switchAuthorityCompany(companyId: string) {
@@ -37,6 +47,22 @@ export function syncAuthorityCompanyRuntime(snapshot: AuthorityCompanyRuntimeSna
     companyId: snapshot.companyId,
     snapshot,
   });
+}
+
+export function transitionAuthorityRequirement(input: AuthorityRequirementTransitionRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.requirement.transition", input);
+}
+
+export function appendAuthorityRoom(input: AuthorityAppendRoomRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.room.append", input);
+}
+
+export function upsertAuthorityRoomBindings(input: AuthorityRoomBindingsUpsertRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.room-bindings.upsert", input);
+}
+
+export function upsertAuthorityDispatch(input: AuthorityDispatchUpsertRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.dispatch.create", input);
 }
 
 export function getAuthorityExecutorConfig() {

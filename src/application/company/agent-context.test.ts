@@ -5,6 +5,7 @@ import {
   buildDepartmentContextSnapshot,
   buildDepartmentOperationsGuide,
 } from "./agent-context";
+import { buildCollaborationContextSnapshot } from "./collaboration-context";
 import type { Company, WorkItemRecord } from "../../domain";
 
 function createCompany(): Company {
@@ -75,6 +76,8 @@ function createWorkItem(): WorkItemRecord {
     displayOwnerLabel: "CEO",
     displayNextAction: "让 CTO 输出执行方案。",
     status: "active",
+    lifecyclePhase: "active_requirement",
+    stageGateStatus: "confirmed",
     stageLabel: "CEO 收口",
     owningDepartmentId: "dep-writing",
     executionLevel: "department",
@@ -119,6 +122,8 @@ describe("buildCompanyContextSnapshot", () => {
         {
           id: "decision-1",
           companyId: "company-1",
+          sourceType: "escalation",
+          sourceId: "esc-1",
           escalationId: "esc-1",
           decisionOwnerActorId: "co-ceo",
           decisionType: "headcount",
@@ -214,5 +219,138 @@ describe("buildDepartmentOperationsGuide", () => {
     expect(guide).toContain("部门负责人执行准则");
     expect(guide).toContain("部门主线 owner 默认是你");
     expect(guide).toContain("向对应支持部门提出支持请求");
+  });
+
+  it("adds authority-first hiring rules for HR managers", () => {
+    const company = {
+      ...createCompany(),
+      employees: [
+        ...createCompany().employees,
+        {
+          agentId: "co-hr",
+          nickname: "HR",
+          role: "Human Resources Director",
+          isMeta: true,
+          metaRole: "hr" as const,
+          reportsTo: "co-ceo",
+          departmentId: "dep-hr",
+        },
+      ],
+      departments: [
+        ...(createCompany().departments ?? []),
+        { id: "dep-hr", name: "人力资源部", leadAgentId: "co-hr", kind: "support" as const },
+      ],
+    };
+
+    const guide = buildDepartmentOperationsGuide({
+      company,
+      managerAgentId: "co-hr",
+    });
+
+    expect(guide).toContain("HR 招聘硬规则");
+    expect(guide).toContain("authority.company.employee.hire");
+    expect(guide).toContain("不要走 `agents.create` + 手工补文件的旧流程");
+  });
+});
+
+describe("buildCollaborationContextSnapshot", () => {
+  it("grants department members scoped collaboration targets and report chain", () => {
+    const snapshot = buildCollaborationContextSnapshot({
+      company: createCompany(),
+      agentId: "writer-a",
+    });
+
+    expect(snapshot.self).toMatchObject({
+      agentId: "writer-a",
+      departmentId: "dep-writing",
+    });
+    expect(snapshot.manager).toMatchObject({
+      agentId: "writer-lead",
+    });
+    expect(snapshot.allowedDispatchTargets.map((target) => target.agentId)).toEqual([
+      "writer-b",
+      "writer-lead",
+    ]);
+    expect(snapshot.defaultReportChain.map((target) => target.agentId)).toEqual([
+      "writer-lead",
+      "co-ceo",
+    ]);
+    expect(snapshot.supportTargets.map((target) => target.agentId)).toEqual([
+      "co-coo",
+      "co-cto",
+    ]);
+    expect(snapshot.escalationTargets.map((target) => target.agentId)).toEqual([
+      "co-ceo",
+      "writer-lead",
+    ]);
+  });
+
+  it("lets a global dispatch role reach the full company roster", () => {
+    const snapshot = buildCollaborationContextSnapshot({
+      company: createCompany(),
+      agentId: "co-ceo",
+    });
+
+    expect(snapshot.allowedDispatchTargets.map((target) => target.agentId)).toEqual([
+      "co-coo",
+      "co-cto",
+      "writer-a",
+      "writer-b",
+      "writer-lead",
+    ]);
+  });
+
+  it("expands explicit department edges into allowed dispatch targets", () => {
+    const snapshot = buildCollaborationContextSnapshot({
+      company: {
+        ...createCompany(),
+        orgSettings: {
+          collaborationPolicy: {
+            explicitEdges: [
+              {
+                fromDepartmentId: "dep-writing",
+                toDepartmentId: "dep-coo",
+              },
+            ],
+          },
+        },
+      },
+      agentId: "writer-a",
+    });
+
+    expect(snapshot.allowedDispatchTargets.map((target) => target.agentId)).toEqual([
+      "co-coo",
+      "writer-b",
+      "writer-lead",
+    ]);
+    expect(snapshot.allowedDispatchTargets.find((target) => target.agentId === "co-coo")?.reason).toBe(
+      "explicit_edge",
+    );
+  });
+
+  it("automatically includes newly added department peers without editing policy", () => {
+    const company = createCompany();
+    company.employees.push({
+      agentId: "writer-c",
+      nickname: "小周",
+      role: "审核",
+      isMeta: false,
+      reportsTo: "writer-lead",
+      departmentId: "dep-writing",
+    });
+
+    const snapshot = buildCollaborationContextSnapshot({
+      company,
+      agentId: "writer-a",
+    });
+
+    expect(snapshot.allowedDispatchTargets.map((target) => target.agentId)).toEqual([
+      "writer-b",
+      "writer-c",
+      "writer-lead",
+    ]);
+    expect(snapshot.allowedDispatchTargets.find((target) => target.agentId === "writer-c")?.reason).toBe(
+      "department_peer",
+    );
   });
 });

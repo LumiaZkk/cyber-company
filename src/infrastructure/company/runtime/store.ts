@@ -20,6 +20,7 @@ const initialCompanyState = loadInitialCompanyState();
 export const useCompanyRuntimeStore = create<CompanyRuntimeState>((set, get) => ({
   config: initialCompanyState.config,
   activeCompany: initialCompanyState.activeCompany,
+  authorityBackedState: initialCompanyState.authorityBackedState,
   activeRoomRecords: initialCompanyState.activeRoomRecords,
   activeMissionRecords: initialCompanyState.activeMissionRecords,
   activeConversationStates: initialCompanyState.activeConversationStates,

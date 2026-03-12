@@ -15,6 +15,7 @@ import type {
 } from "./types";
 
 export type LoadedCompanyProductState = {
+  authorityBackedState: boolean;
   loadedRooms: CompanyRuntimeStateBootstrap["activeRoomRecords"];
   loadedMissions: ConversationMissionRecord[];
   loadedConversationStates: ConversationStateRecord[];
@@ -37,6 +38,7 @@ export function loadProductState(companyId: string): LoadedCompanyProductState {
   const snapshot = readCachedAuthorityRuntimeSnapshot(companyId);
   const state = runtimeStateFromAuthorityRuntimeSnapshot(snapshot);
   return {
+    authorityBackedState: state.authorityBackedState,
     loadedRooms: state.activeRoomRecords,
     loadedMissions: state.activeMissionRecords,
     loadedConversationStates: state.activeConversationStates,
@@ -56,6 +58,7 @@ export function loadProductState(companyId: string): LoadedCompanyProductState {
 
 export function createEmptyProductState(): Pick<
   CompanyRuntimeState,
+  | "authorityBackedState"
   | "activeRoomRecords"
   | "activeMissionRecords"
   | "activeConversationStates"
@@ -72,6 +75,7 @@ export function createEmptyProductState(): Pick<
   | "activeDecisionTickets"
 > {
   return {
+    authorityBackedState: false,
     activeRoomRecords: [],
     activeMissionRecords: [],
     activeConversationStates: [],
@@ -98,6 +102,7 @@ export function loadInitialCompanyState() {
   return {
     config: config ?? null,
     activeCompany,
+    authorityBackedState: state?.authorityBackedState ?? Boolean(activeCompany),
     activeRoomRecords: state?.loadedRooms ?? [],
     activeMissionRecords: state?.loadedMissions ?? [],
     activeConversationStates: state?.loadedConversationStates ?? [],

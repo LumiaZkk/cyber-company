@@ -35,11 +35,47 @@ function isLowSignalWorkItemTitle(value: string | null | undefined): boolean {
   return ["当前规划/任务", "当前任务", "当前需求", "本轮规划/任务", "CEO"].includes(normalized);
 }
 
+function stripRepeatedRoundSuffix(value: string): string {
+  return value.replace(/(?:@\d+)+$/g, "");
+}
+
+function unwrapAggregateWrappers(value: string): string {
+  let current = stripRepeatedRoundSuffix(value.trim());
+  while (current.length > 0) {
+    if (/^topic:aggregate:/i.test(current)) {
+      current = current.slice("topic:aggregate:".length);
+      continue;
+    }
+    if (/^aggregate:topic:/i.test(current)) {
+      current = current.slice("aggregate:".length);
+      continue;
+    }
+    if (/^aggregate:/i.test(current)) {
+      current = current.slice("aggregate:".length);
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+function normalizeProductTopicKey(topicKey: string | null | undefined): string | null {
+  const normalized = topicKey?.trim() ?? "";
+  if (!normalized) {
+    return null;
+  }
+  const unwrapped = unwrapAggregateWrappers(normalized);
+  const withoutTopicPrefix = /^topic:/i.test(unwrapped)
+    ? unwrapped.slice("topic:".length)
+    : unwrapped;
+  return withoutTopicPrefix.trim() || null;
+}
+
 export function buildStableStrategicTopicKey(input: {
   topicKey?: string | null;
   title?: string | null;
 }): string | null {
-  const normalizedTopicKey = input.topicKey?.trim() || null;
+  const normalizedTopicKey = normalizeProductTopicKey(input.topicKey);
   if (normalizedTopicKey && !isEphemeralStrategicTopicKey(normalizedTopicKey)) {
     return normalizedTopicKey;
   }
@@ -60,11 +96,11 @@ export function normalizeProductWorkItemIdentity(input: {
   topicKey: string | null;
 } {
   const normalizedWorkItemId = normalizeStrategicWorkItemId(input.workItemId);
-  const normalizedTopicKey = input.topicKey?.trim() || null;
+  const normalizedTopicKey = normalizeProductTopicKey(input.topicKey);
   const inferredStrategicTopicKey =
     normalizedTopicKey ??
     (normalizedWorkItemId?.startsWith("topic:")
-      ? normalizedWorkItemId.slice("topic:".length)
+      ? normalizeProductTopicKey(normalizedWorkItemId)
       : null);
   const kind = buildWorkItemKind(inferredStrategicTopicKey);
   if (kind !== "strategic") {
@@ -76,10 +112,12 @@ export function normalizeProductWorkItemIdentity(input: {
     };
   }
 
-  const stableTopicKey = buildStableStrategicTopicKey({
-    topicKey: inferredStrategicTopicKey,
-    title: input.title,
-  });
+  const stableTopicKey =
+    inferredStrategicTopicKey ??
+    buildStableStrategicTopicKey({
+      topicKey: null,
+      title: input.title,
+    });
   const workKey = stableTopicKey ? `topic:${stableTopicKey}` : normalizedWorkItemId ?? null;
   return {
     workItemId: workKey,
@@ -125,12 +163,38 @@ export function normalizeStrategicWorkItemId(
   if (!normalized) {
     return null;
   }
+  const unwrapped = unwrapAggregateWrappers(normalized);
+  if (/^topic:mission:/i.test(unwrapped)) {
+    return unwrapped;
+  }
+  if (/^mission:/i.test(unwrapped)) {
+    return `topic:${unwrapped}`;
+  }
   const match = normalized.match(/^topic:([^@]+)@\d+$/);
   if (!match) {
     return normalized;
   }
   const topicKey = match[1] ?? "";
   return /^mission:/i.test(topicKey) ? `topic:${topicKey}` : normalized;
+}
+
+export function normalizeStrategicRoundId(
+  roundId: string | null | undefined,
+): string | null {
+  const normalized = roundId?.trim();
+  if (!normalized) {
+    return null;
+  }
+  const workItemId = normalizeStrategicWorkItemId(normalized);
+  if (!workItemId) {
+    return null;
+  }
+  if (workItemId === normalized) {
+    return normalized;
+  }
+  const timestampMatches = [...normalized.matchAll(/@(\d+)/g)];
+  const lastTimestamp = timestampMatches[timestampMatches.length - 1]?.[1] ?? null;
+  return lastTimestamp ? `${workItemId}@${lastTimestamp}` : workItemId;
 }
 
 export function deriveWorkKeyFromWorkItemId(

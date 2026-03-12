@@ -1,7 +1,7 @@
 import type { AutoDispatchPlan } from "../assignment/dispatch-planning";
-import { sendTurnToCompanyActor, type ProviderManifest } from "../gateway";
 import { gateway } from "../gateway";
-import { recordDispatchBlocked, recordDispatchSent } from "./closed-loop";
+import type { ProviderManifest } from "../gateway";
+import { enqueueDelegationDispatch } from "./async-dispatch";
 import type { DispatchRecord } from "../../domain/delegation/types";
 import type { Company } from "../../domain/org/types";
 import type { FocusProgressEvent } from "../governance/chat-progress";
@@ -26,56 +26,33 @@ export async function executeAutoDispatchPlan(
 ): Promise<AutoDispatchResult> {
   const startedAt = input.createdAt ?? Date.now();
   try {
-    const ack = await sendTurnToCompanyActor({
+    const enqueued = await enqueueDelegationDispatch({
       backend: gateway,
-      manifest: input.providerManifest,
       company: input.company,
+      manifest: input.providerManifest,
       actorId: input.plan.targetAgentId,
-      message: input.plan.message,
-      timeoutMs: 300_000,
-      targetActorIds: [input.plan.targetAgentId],
-    });
-
-    const dispatch: DispatchRecord = {
-      id: input.plan.dispatchId,
+      dispatchId: input.plan.dispatchId,
       workItemId: input.workItemId,
-      roomId: null,
       title: input.plan.title,
+      message: input.plan.message,
       summary: input.plan.summary,
       fromActorId: input.fromActorId,
       targetActorIds: [input.plan.targetAgentId],
-      status: "sent",
-      sourceMessageId: input.plan.sourceStepId,
-      providerRunId: ack.runId,
-      topicKey: input.topicKey ?? undefined,
-      createdAt: startedAt,
-      updatedAt: startedAt,
-    };
-
-    await recordDispatchSent({
-      companyId: input.company.id,
-      dispatchId: input.plan.dispatchId,
-      workItemId: input.workItemId,
       topicKey: input.topicKey,
-      fromActorId: input.fromActorId,
-      targetActorId: input.plan.targetAgentId,
-      sessionKey: `agent:${input.plan.targetAgentId}:main`,
-      providerRunId: ack.runId,
-      createdAt: startedAt,
-      title: input.plan.title,
-      message: input.plan.message,
+      sourceMessageId: input.plan.sourceStepId,
       sourceStepId: input.plan.sourceStepId,
+      createdAt: startedAt,
     });
 
     return {
-      dispatch,
+      dispatch: enqueued.dispatch satisfies DispatchRecord,
       progressEvent: {
         id: `auto-dispatch:${input.plan.dispatchId}`,
         timestamp: startedAt,
         actorLabel: "系统",
         actorAgentId: input.plan.targetAgentId,
-        title: `已自动派单给 ${input.plan.targetLabel}`,
-        summary: `已把当前主线的第一棒真实发给 ${input.plan.targetLabel}，后续会按回执继续推进。`,
+        title: `已受理自动派单给 ${input.plan.targetLabel}`,
+        summary: `已把当前主线交给 ${input.plan.targetLabel}，正在后台确认投递并等待对方回执。`,
         detail: input.plan.summary,
         tone: "indigo",
         category: "receipt",
@@ -98,20 +75,6 @@ export async function executeAutoDispatchPlan(
       createdAt: startedAt,
       updatedAt: startedAt,
     };
-
-    await recordDispatchBlocked({
-      companyId: input.company.id,
-      dispatchId: input.plan.dispatchId,
-      workItemId: input.workItemId,
-      topicKey: input.topicKey,
-      fromActorId: input.fromActorId,
-      targetActorId: input.plan.targetAgentId,
-      createdAt: startedAt,
-      title: input.plan.title,
-      message: input.plan.message,
-      sourceStepId: input.plan.sourceStepId,
-      error: message,
-    });
 
     return {
       dispatch,

@@ -118,10 +118,15 @@ describe("company-executor-sync", () => {
 
     expect(files.map((file) => `${file.agentId}:${file.name}`)).toEqual([
       "company-1-ceo:SOUL.md",
+      "company-1-ceo:collaboration-context.json",
       "company-1-hr:SOUL.md",
+      "company-1-hr:collaboration-context.json",
       "company-1-cto:SOUL.md",
+      "company-1-cto:collaboration-context.json",
       "company-1-coo:SOUL.md",
+      "company-1-coo:collaboration-context.json",
       "company-1-designer:SOUL.md",
+      "company-1-designer:collaboration-context.json",
       "company-1-ceo:company-context.json",
       "company-1-ceo:OPERATIONS.md",
       "company-1-hr:department-context.json",
@@ -135,12 +140,24 @@ describe("company-executor-sync", () => {
     ]);
     expect(files.find((file) => file.name === "company-context.json")?.content).toContain('"id": "company-1"');
     expect(files.find((file) => file.name === "company-context.json")?.content).toContain('"organization"');
+    expect(files.find((file) => file.agentId === "company-1-cto" && file.name === "collaboration-context.json")?.content).toContain(
+      '"allowedDispatchTargets"',
+    );
+    expect(files.find((file) => file.agentId === "company-1-designer" && file.name === "collaboration-context.json")?.content).toContain(
+      '"manager"',
+    );
     expect(files.find((file) => file.name === "OPERATIONS.md")?.content).toContain("当前 roster");
     expect(files.find((file) => file.agentId === "company-1-ceo" && file.name === "SOUL.md")?.content).toContain(
       "业务归属先判定",
     );
     expect(files.find((file) => file.agentId === "company-1-hr" && file.name === "SOUL.md")?.content).toContain(
       "HR Director",
+    );
+    expect(files.find((file) => file.agentId === "company-1-hr" && file.name === "SOUL.md")?.content).toContain(
+      "authority.company.employee.hire",
+    );
+    expect(files.find((file) => file.agentId === "company-1-hr" && file.name === "SOUL.md")?.content).toContain(
+      "严禁把 `agents.create` 当作正式招聘入口",
     );
     expect(files.find((file) => file.agentId === "company-1-cto" && file.name === "SOUL.md")?.content).toContain(
       "你不直接承担文章、小说",
@@ -153,6 +170,9 @@ describe("company-executor-sync", () => {
     );
     expect(files.find((file) => file.agentId === "company-1-designer" && file.name === "DEPARTMENT-OPERATIONS.md")?.content).toContain(
       "部门负责人执行准则",
+    );
+    expect(files.find((file) => file.agentId === "company-1-hr" && file.name === "DEPARTMENT-OPERATIONS.md")?.content).toContain(
+      "authority.company.employee.hire",
     );
   });
 

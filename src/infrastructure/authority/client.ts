@@ -5,6 +5,7 @@ import type {
   AuthorityBootstrapSnapshot,
   AuthorityChatSendRequest,
   AuthorityChatSendResponse,
+  AuthorityCollaborationScopeResponse,
   AuthorityCompanyEventsResponse,
   AuthorityCompanyRuntimeSnapshot,
   AuthorityCreateCompanyRequest,
@@ -14,7 +15,10 @@ import type {
   AuthorityExecutorConfig,
   AuthorityExecutorConfigPatch,
   AuthorityHealthSnapshot,
+  AuthorityHireEmployeeRequest,
+  AuthorityHireEmployeeResponse,
   AuthorityRequirementTransitionRequest,
+  AuthorityRoomBindingsUpsertRequest,
   AuthorityRuntimeSyncRequest,
   AuthoritySessionHistoryResponse,
   AuthoritySessionListResponse,
@@ -150,6 +154,17 @@ export class AuthorityClient {
     });
   }
 
+  async hireEmployee(body: AuthorityHireEmployeeRequest) {
+    return requestJson<AuthorityHireEmployeeResponse>(
+      this.baseUrl,
+      `/companies/${encodeURIComponent(body.companyId)}/employees`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
   async deleteCompany(companyId: string) {
     return requestJson<AuthorityBootstrapSnapshot>(this.baseUrl, `/companies/${encodeURIComponent(companyId)}`, {
       method: "DELETE",
@@ -213,6 +228,13 @@ export class AuthorityClient {
     });
   }
 
+  async upsertRoomBindings(body: AuthorityRoomBindingsUpsertRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/room-bindings.upsert", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   async upsertDispatch(body: AuthorityDispatchUpsertRequest) {
     return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/dispatch.create", {
       method: "POST",
@@ -232,6 +254,13 @@ export class AuthorityClient {
     return requestJson<AuthorityCompanyEventsResponse>(
       this.baseUrl,
       `/companies/${encodeURIComponent(companyId)}/events${suffix}`,
+    );
+  }
+
+  async getCollaborationScope(companyId: string, agentId: string) {
+    return requestJson<AuthorityCollaborationScopeResponse>(
+      this.baseUrl,
+      `/companies/${encodeURIComponent(companyId)}/collaboration-scope/${encodeURIComponent(agentId)}`,
     );
   }
 

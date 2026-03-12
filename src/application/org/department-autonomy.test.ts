@@ -52,6 +52,8 @@ function createWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord
     displayOwnerLabel: "CEO",
     displayNextAction: "判断组织承接方式。",
     status: "active",
+    lifecyclePhase: "active_requirement",
+    stageGateStatus: "confirmed",
     stageLabel: "CEO intake",
     ownerActorId: "co-ceo",
     ownerLabel: "CEO",

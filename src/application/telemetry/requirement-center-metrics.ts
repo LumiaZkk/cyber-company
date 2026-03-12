@@ -3,6 +3,7 @@ export type RequirementMetricName =
   | "requirement_collaboration_opened"
   | "requirement_workspace_opened"
   | "requirement_ops_opened"
+  | "requirement_change_requested"
   | "requirement_acceptance_requested"
   | "requirement_accepted"
   | "requirement_reopened";

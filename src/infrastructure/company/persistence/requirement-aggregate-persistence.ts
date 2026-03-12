@@ -1,7 +1,9 @@
 import type {
   RequirementAcceptanceStatus,
   RequirementAggregateRecord,
+  RequirementLifecyclePhase,
   RequirementLifecycleState,
+  RequirementStageGateStatus,
 } from "./types";
 
 const REQUIREMENT_AGGREGATE_LIMIT = 64;
@@ -18,6 +20,18 @@ function isRequirementLifecycleState(value: unknown): value is RequirementLifecy
     value === "completed" ||
     value === "archived"
   );
+}
+
+function isRequirementLifecyclePhase(value: unknown): value is RequirementLifecyclePhase {
+  return (
+    value === "pre_requirement" ||
+    value === "active_requirement" ||
+    value === "completed"
+  );
+}
+
+function isRequirementStageGateStatus(value: unknown): value is RequirementStageGateStatus {
+  return value === "none" || value === "waiting_confirmation" || value === "confirmed";
 }
 
 function isRequirementAcceptanceStatus(value: unknown): value is RequirementAcceptanceStatus {
@@ -41,6 +55,9 @@ function isRequirementAggregateRecord(value: unknown): value is RequirementAggre
     typeof candidate.primary === "boolean" &&
     Array.isArray(candidate.memberIds) &&
     typeof candidate.ownerLabel === "string" &&
+    (candidate.lifecyclePhase == null || isRequirementLifecyclePhase(candidate.lifecyclePhase)) &&
+    (candidate.stageGateStatus == null ||
+      isRequirementStageGateStatus(candidate.stageGateStatus)) &&
     typeof candidate.stage === "string" &&
     typeof candidate.summary === "string" &&
     typeof candidate.nextAction === "string" &&
@@ -70,6 +87,12 @@ export function sanitizeRequirementAggregateRecords(
         roomId: record.roomId?.trim() || null,
         ownerActorId: record.ownerActorId?.trim() || null,
         sourceConversationId: record.sourceConversationId?.trim() || null,
+        lifecyclePhase: isRequirementLifecyclePhase(record.lifecyclePhase)
+          ? record.lifecyclePhase
+          : "active_requirement",
+        stageGateStatus: isRequirementStageGateStatus(record.stageGateStatus)
+          ? record.stageGateStatus
+          : "none",
         memberIds: [...new Set(record.memberIds.filter(Boolean))].sort((left, right) =>
           left.localeCompare(right),
         ),

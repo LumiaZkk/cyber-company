@@ -243,7 +243,12 @@ export function mergeRequirementRoomRecordFromSessions(input: {
   providerId?: string;
 }): RequirementRoomRecord {
   const existingRoom = input.room ?? null;
-  const syncFloor = Math.max(0, (existingRoom?.lastSourceSyncAt ?? 0) - 5_000);
+  const hasExistingVisibleTranscript = Boolean(
+    existingRoom?.transcript?.some((message) => isVisibleRequirementRoomMessage(message)),
+  );
+  const syncFloor = hasExistingVisibleTranscript
+    ? Math.max(0, (existingRoom?.lastSourceSyncAt ?? 0) - 5_000)
+    : 0;
   const incomingMessages = input.sessions.flatMap((session) =>
     session.messages
       .filter((message) => {
@@ -310,7 +315,12 @@ export function mergeRequirementRoomRecordFromSnapshots(input: {
   snapshots: RequirementSessionSnapshot[];
 }): RequirementRoomRecord {
   const existingRoom = input.room ?? null;
-  const syncFloor = Math.max(0, (existingRoom?.lastSourceSyncAt ?? 0) - 5_000);
+  const hasExistingVisibleTranscript = Boolean(
+    existingRoom?.transcript?.some((message) => isVisibleRequirementRoomMessage(message)),
+  );
+  const syncFloor = hasExistingVisibleTranscript
+    ? Math.max(0, (existingRoom?.lastSourceSyncAt ?? 0) - 5_000)
+    : 0;
   const incomingMessages = input.snapshots.flatMap((snapshot) =>
     snapshot.messages
       .filter((message) => {
@@ -386,6 +396,40 @@ export function buildRoomConversationBindingsFromSessions(input: {
     nativeRoom: session.sessionKey.includes(":group:"),
     updatedAt,
   }));
+}
+
+export function buildRoomConversationBindingKey(
+  binding: Pick<RoomConversationBindingRecord, "roomId" | "providerId" | "conversationId" | "actorId">,
+): string {
+  return `${binding.roomId}:${binding.providerId}:${binding.conversationId}:${binding.actorId ?? ""}`;
+}
+
+export function mergeRoomConversationBindings(input: {
+  existing: RoomConversationBindingRecord[];
+  incoming: RoomConversationBindingRecord[];
+}): RoomConversationBindingRecord[] {
+  const next = new Map(
+    input.existing.map((binding) => [buildRoomConversationBindingKey(binding), binding] as const),
+  );
+  for (const binding of input.incoming) {
+    const normalized: RoomConversationBindingRecord = {
+      ...binding,
+      updatedAt: binding.updatedAt ?? Date.now(),
+    };
+    const key = buildRoomConversationBindingKey(normalized);
+    const previous = next.get(key);
+    next.set(
+      key,
+      previous
+        ? {
+            ...previous,
+            ...normalized,
+            updatedAt: Math.max(previous.updatedAt, normalized.updatedAt),
+          }
+        : normalized,
+    );
+  }
+  return [...next.values()].sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
 export function appendRequirementRoomMessages(input: {

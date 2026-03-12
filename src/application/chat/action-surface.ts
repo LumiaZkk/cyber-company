@@ -41,7 +41,6 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     groupWorkItemId,
     groupTopicKey,
     targetAgentId,
-    sessionKey,
     isGroup,
     isCeoSession,
     isFreshConversation,
@@ -49,11 +48,9 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     isSummaryOpen,
     summaryPanelView,
     currentTime,
-    actionWatches,
     workbenchOpenAction,
     focusActions,
     summaryRecoveryAction,
-    latestStageGate,
     taskPlanOverview,
     canonicalNextBatonAgentId,
     canonicalNextBatonLabel,
@@ -185,54 +182,10 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     return displayOpenAction;
   })();
 
-  const stagePlanningAction: FocusActionButton | null =
-    !isCeoSession ||
-    isGroup ||
-    latestStageGate ||
-    !(shouldAdvanceToNextPhase || shouldDispatchPublish || shouldDirectToTechDispatch)
-      ? null
-      : {
-          id: `stage-plan:${taskPlanOverview?.currentStep?.id ?? requirementOverview?.topicKey ?? "current"}`,
-          label: "让 CEO 给阶段反馈和计划",
-          description: "先让 CEO 总结本阶段结果并给出下一阶段 plan，等你确认后再正式启动。",
-          kind: "message",
-          tone: "primary",
-          targetAgentId: targetAgentId ?? undefined,
-          message:
-            "先不要直接进入下一阶段。请你基于当前结果，先给我阶段反馈和下一阶段计划，并严格按这个格式回复：\n【本阶段结论】已完成 / 未完成\n【阶段总结】一句话总结本阶段产出、结果和当前判断\n【风险与问题】列出仍需我关注的风险，没有就写“无”\n【下一阶段计划】\n1. 下一阶段的目标\n2. 负责人和关键步骤\n3. 你预计下一次回传给我的结果\n【等待你确认】是",
-        };
+  const stagePlanningAction: FocusActionButton | null = null;
+  const stageConfirmAction: FocusActionButton | null = null;
 
-  const stageConfirmAction: FocusActionButton | null =
-    isCeoSession && !isGroup && latestStageGate?.status === "waiting_confirmation"
-      ? {
-          id: `stage-confirm:${latestStageGate.sourceTimestamp}`,
-          label: "确认进入下一阶段",
-          description: "把你的确认明确发给 CEO，让他按当前计划正式启动下一阶段。",
-          kind: "message",
-          tone: "primary",
-          targetAgentId: targetAgentId ?? undefined,
-          message: latestStageGate.confirmMessage,
-        }
-      : null;
-
-  const hasCurrentOwnerWatch = actionWatches.some(
-    (watch) => watch.kind === "owner" && watch.sessionKey === (sessionKey ?? ""),
-  );
-  const stageLaunchReminderAction: FocusActionButton | null =
-    !isCeoSession ||
-    isGroup ||
-    latestStageGate?.status !== "confirmed" ||
-    hasCurrentOwnerWatch
-      ? null
-      : {
-          id: `stage-launch:${latestStageGate.sourceTimestamp}`,
-          label: "催 CEO 启动当前阶段",
-          description: "只有 CEO 在收到确认后还没真正启动时，才需要补这一步提醒。",
-          kind: "message",
-          tone: "secondary",
-          targetAgentId: targetAgentId ?? undefined,
-          message: latestStageGate.launchMessage,
-        };
+  const stageLaunchReminderAction: FocusActionButton | null = null;
 
   const advancePhaseAction: FocusActionButton | null = !shouldAdvanceToNextPhase
     ? null
@@ -344,9 +297,6 @@ export function buildChatActionSurface(input: BuildChatActionSurfaceInput) {
     }
     if (isGroup) {
       return requirementRoomSummary?.primaryAction ?? displayOpenAction;
-    }
-    if (latestStageGate?.status === "confirmed") {
-      return null;
     }
     if (stageConfirmAction) {
       return stageConfirmAction;

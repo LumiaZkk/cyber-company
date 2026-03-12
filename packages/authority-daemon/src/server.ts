@@ -17,13 +17,29 @@ import {
   StrongCompanyDeleteError,
   waitForExecutorAgentsAbsent,
 } from "./company-delete";
+import {
+  mergeAuthorityControlledRuntimeSlices,
+  reconcileAuthorityRequirementRuntime,
+  runtimeRequirementControlChanged,
+} from "./requirement-control-runtime";
+import { createManagedFileMirrorQueue } from "./managed-file-mirror";
 import { createOpenClawExecutorBridge } from "./openclaw-bridge";
 import { resolveLocalOpenClawGatewayToken } from "./openclaw-local-auth";
 import { parseCompanyBlueprint } from "../../../src/application/company/blueprint";
+import { buildCollaborationContextSnapshot } from "../../../src/application/company/collaboration-context";
+import {
+  buildRoomConversationBindingKey,
+  mergeRoomConversationBindings,
+} from "../../../src/application/delegation/room-records";
+import {
+  buildRequirementWorkflowEvidence,
+  resolveRequirementWorkflowEventKind,
+} from "../../../src/application/mission/requirement-workflow";
 import { COMPANY_TEMPLATES } from "../../../src/application/company/templates";
 import { normalizeWorkItemDepartmentOwnership } from "../../../src/application/org/department-autonomy";
+import { reconcileStoredWorkItems } from "../../../src/infrastructure/company/runtime/work-items";
 import { isSupportRequestActive, normalizeSupportRequestRecord } from "../../../src/domain/delegation/support-request";
-import type { CompanyEvent } from "../../../src/domain/delegation/events";
+import { createCompanyEvent, type CompanyEvent } from "../../../src/domain/delegation/events";
 import type {
   DecisionTicketRecord,
   DispatchRecord,
@@ -42,6 +58,7 @@ import type {
   WorkItemRecord,
 } from "../../../src/domain/mission/types";
 import { buildDefaultOrgSettings } from "../../../src/domain/org/autonomy-policy";
+import { planHiredEmployee } from "../../../src/domain/org/hiring";
 import {
   buildDefaultMainCompany,
   isReservedSystemCompany,
@@ -53,6 +70,7 @@ import type {
   AuthorityBootstrapSnapshot,
   AuthorityChatSendRequest,
   AuthorityChatSendResponse,
+  AuthorityCollaborationScopeResponse,
   AuthorityCompanyEventsResponse,
   AuthorityCompanyRuntimeSnapshot,
   AuthorityCreateCompanyRequest,
@@ -63,12 +81,17 @@ import type {
   AuthorityExecutorConfigPatch,
   AuthorityExecutorStatus,
   AuthorityHealthSnapshot,
+  AuthorityHireEmployeeRequest,
+  AuthorityHireEmployeeResponse,
   AuthorityRequirementTransitionRequest,
+  AuthorityRoomBindingsUpsertRequest,
   AuthorityRuntimeSyncRequest,
   AuthoritySessionHistoryResponse,
   AuthoritySessionListResponse,
   AuthoritySwitchCompanyRequest,
 } from "../../../src/infrastructure/authority/contract";
+import type { ChatMessage } from "../../../src/infrastructure/gateway/openclaw/sessions";
+import { sanitizeRequirementEvidenceEvents } from "../../../src/infrastructure/company/persistence/requirement-evidence-persistence";
 
 type StoredChatMessage = {
   role: "user" | "assistant" | "system" | "toolResult";
@@ -249,6 +272,35 @@ function stringifyError(error: unknown): string {
 
 function isAgentAlreadyExistsError(error: unknown) {
   return stringifyError(error).includes("already exists");
+}
+
+function buildEmployeeBootstrapFile(input: AuthorityHireEmployeeRequest & { agentId: string }) {
+  const lines = [
+    `# ${input.nickname?.trim() || input.role.trim()}`,
+    "",
+    `## Role`,
+    input.role.trim(),
+    "",
+    `## Responsibilities`,
+    input.description.trim(),
+  ];
+
+  if (input.traits?.trim()) {
+    lines.push("", "## Traits", input.traits.trim());
+  }
+  if (typeof input.budget === "number") {
+    lines.push("", "## Budget", `Daily budget target: ${input.budget} USD`);
+  }
+  if (input.modelTier) {
+    lines.push("", "## Model Tier", input.modelTier);
+  }
+
+  lines.push("", "## Reporting", "Follow company dispatch and use `company_report` for structured status replies.");
+  return {
+    agentId: input.agentId,
+    name: "ROLE.md",
+    content: lines.join("\n"),
+  };
 }
 
 function isAgentNotFoundError(error: unknown) {
@@ -996,10 +1048,19 @@ class AuthorityRepository {
       | { snapshot_json?: string }
       | undefined;
     if (row?.snapshot_json) {
-      return normalizeRuntimeSnapshot(
+      const normalized = normalizeRuntimeSnapshot(
         company,
         parseJson<AuthorityCompanyRuntimeSnapshot>(row.snapshot_json, EMPTY_RUNTIME(companyId)),
       );
+      const reconciled = reconcileAuthorityRequirementRuntime({
+        company,
+        runtime: normalized,
+      });
+      if (runtimeRequirementControlChanged(normalized, reconciled.runtime)) {
+        this.saveRuntime(reconciled.runtime);
+        return reconciled.runtime;
+      }
+      return normalized;
     }
 
     const snapshot = normalizeRuntimeSnapshot(company, {
@@ -1044,7 +1105,7 @@ class AuthorityRepository {
           : table === "conversation_states"
             ? (record as ConversationStateRecord).conversationId
             : table === "room_bindings"
-              ? `${(record as RoomConversationBindingRecord).roomId}:${(record as RoomConversationBindingRecord).conversationId}`
+              ? buildRoomConversationBindingKey(record as RoomConversationBindingRecord)
               : crypto.randomUUID();
       const updatedAt =
         typeof recordMeta.updatedAt === "number"
@@ -1059,8 +1120,15 @@ class AuthorityRepository {
 
   saveRuntime(snapshot: AuthorityCompanyRuntimeSnapshot) {
     const company = this.loadCompanyById(snapshot.companyId);
+    const reconciled = reconcileAuthorityRequirementRuntime({
+      company,
+      runtime: normalizeRuntimeSnapshot(company, {
+        ...snapshot,
+        updatedAt: Date.now(),
+      }),
+    });
     const normalized = normalizeRuntimeSnapshot(company, {
-      ...snapshot,
+      ...reconciled.runtime,
       updatedAt: Date.now(),
     });
     this.replacePayloadTable("missions", snapshot.companyId, normalized.activeMissionRecords);
@@ -1416,6 +1484,36 @@ class AuthorityRepository {
     return context;
   }
 
+  applyAssistantControlMessage(sessionKey: string, message: StoredChatMessage) {
+    const context = this.getConversationContext(sessionKey);
+    if (!context) {
+      return {
+        context: null,
+        changed: false,
+        violations: [] as string[],
+      };
+    }
+    const currentRuntime = this.loadRuntime(context.companyId);
+    const reconciled = reconcileAuthorityRequirementRuntime({
+      company: this.loadCompanyById(context.companyId),
+      runtime: currentRuntime,
+      controlUpdate: {
+        sessionKey,
+        message: message as unknown as ChatMessage,
+        timestamp: typeof message.timestamp === "number" ? message.timestamp : Date.now(),
+      },
+    });
+    const changed = runtimeRequirementControlChanged(currentRuntime, reconciled.runtime);
+    if (changed) {
+      this.saveRuntime(reconciled.runtime);
+    }
+    return {
+      context,
+      changed,
+      violations: reconciled.violations,
+    };
+  }
+
   appendCompanyEvent(event: CompanyEvent) {
     this.db.prepare(`
       INSERT INTO event_log (event_id, company_id, kind, timestamp, payload_json)
@@ -1452,24 +1550,103 @@ class AuthorityRepository {
     };
   }
 
+  getCollaborationScope(companyId: string, agentId: string): AuthorityCollaborationScopeResponse {
+    const company = this.loadCompanyById(companyId);
+    if (!company) {
+      throw new Error(`Unknown company: ${companyId}`);
+    }
+    return buildCollaborationContextSnapshot({
+      company,
+      agentId,
+    });
+  }
+
   transitionRequirement(input: AuthorityRequirementTransitionRequest) {
     const runtime = this.loadRuntime(input.companyId);
-    const nextAggregates = runtime.activeRequirementAggregates.map((aggregate) =>
-      aggregate.id === input.aggregateId
-        ? {
-            ...aggregate,
-            ...input.changes,
-            revision: aggregate.revision + 1,
-            updatedAt: input.timestamp ?? Date.now(),
-          }
-        : aggregate,
-    );
+    const previousAggregate =
+      runtime.activeRequirementAggregates.find((aggregate) => aggregate.id === input.aggregateId) ?? null;
+    if (!previousAggregate) {
+      throw new Error(`Unknown requirement aggregate: ${input.aggregateId}`);
+    }
+    const timestamp = input.timestamp ?? Date.now();
+    const nextAggregates = runtime.activeRequirementAggregates.map((aggregate) => {
+      if (aggregate.id !== input.aggregateId) {
+        return aggregate;
+      }
+      return {
+        ...aggregate,
+        ...input.changes,
+        revision: aggregate.revision + 1,
+        updatedAt: Math.max(aggregate.updatedAt, timestamp, input.changes.updatedAt ?? 0),
+        lastEvidenceAt:
+          input.changes.lastEvidenceAt ??
+          timestamp ??
+          aggregate.lastEvidenceAt ??
+          null,
+      };
+    });
+    const nextAggregate =
+      nextAggregates.find((aggregate) => aggregate.id === input.aggregateId) ?? null;
+    const nextEvidence =
+      nextAggregate
+        ? sanitizeRequirementEvidenceEvents(input.companyId, [
+            buildRequirementWorkflowEvidence({
+              companyId: input.companyId,
+              eventType: resolveRequirementWorkflowEventKind({
+                previousAggregate,
+                nextAggregate,
+                changes: input.changes,
+              }),
+              aggregate: nextAggregate,
+              previousAggregate,
+              actorId: input.changes.ownerActorId ?? previousAggregate.ownerActorId,
+              timestamp,
+              source: input.source,
+            }),
+            ...runtime.activeRequirementEvidence,
+          ])
+        : runtime.activeRequirementEvidence;
     const nextRuntime = this.saveRuntime({
       ...runtime,
       activeRequirementAggregates: nextAggregates,
+      activeRequirementEvidence: nextEvidence,
       primaryRequirementId:
         nextAggregates.find((aggregate) => aggregate.primary)?.id ?? runtime.primaryRequirementId,
     });
+    if (nextAggregate) {
+      this.appendCompanyEvent(
+        createCompanyEvent({
+          companyId: input.companyId,
+          kind: resolveRequirementWorkflowEventKind({
+            previousAggregate,
+            nextAggregate,
+            changes: input.changes,
+          }),
+          workItemId: nextAggregate.workItemId ?? undefined,
+          topicKey: nextAggregate.topicKey ?? undefined,
+          roomId: nextAggregate.roomId ?? undefined,
+          fromActorId:
+            input.changes.ownerActorId ??
+            previousAggregate.ownerActorId ??
+            "system:requirement-aggregate",
+          targetActorId: nextAggregate.ownerActorId ?? undefined,
+          sessionKey: nextAggregate.sourceConversationId ?? undefined,
+          payload: {
+            ownerActorId: nextAggregate.ownerActorId,
+            ownerLabel: nextAggregate.ownerLabel,
+            stage: nextAggregate.stage,
+            summary: nextAggregate.summary,
+            nextAction: nextAggregate.nextAction,
+            memberIds: nextAggregate.memberIds,
+            status: nextAggregate.status,
+            stageGateStatus: nextAggregate.stageGateStatus,
+            acceptanceStatus: nextAggregate.acceptanceStatus,
+            acceptanceNote: nextAggregate.acceptanceNote ?? null,
+            revision: nextAggregate.revision,
+          },
+        }),
+      );
+    }
     return nextRuntime;
   }
 
@@ -1482,13 +1659,40 @@ class AuthorityRepository {
     return this.saveRuntime({ ...runtime, activeRoomRecords: nextRooms });
   }
 
+  upsertRoomBindings(input: AuthorityRoomBindingsUpsertRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const nextBindings = mergeRoomConversationBindings({
+      existing: runtime.activeRoomBindings,
+      incoming: input.bindings,
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeRoomBindings: nextBindings,
+    });
+  }
+
   upsertDispatch(input: AuthorityDispatchUpsertRequest) {
     const runtime = this.loadRuntime(input.companyId);
     const nextDispatches = [
       input.dispatch,
       ...runtime.activeDispatches.filter((dispatch) => dispatch.id !== input.dispatch.id),
     ];
-    return this.saveRuntime({ ...runtime, activeDispatches: nextDispatches });
+    const nextWorkItems = reconcileStoredWorkItems({
+      company: this.loadCompanyById(input.companyId),
+      companyId: input.companyId,
+      workItems: runtime.activeWorkItems,
+      rooms: runtime.activeRoomRecords,
+      artifacts: runtime.activeArtifacts,
+      dispatches: nextDispatches,
+      targetWorkItemIds: [input.dispatch.workItemId],
+      targetRoomIds: [input.dispatch.roomId],
+      targetTopicKeys: [input.dispatch.topicKey],
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeWorkItems: nextWorkItems,
+      activeDispatches: nextDispatches,
+    });
   }
 
 }
@@ -1666,6 +1870,63 @@ function buildCompanyDefinition(input: AuthorityCreateCompanyRequest): {
   return { company: normalizeCompany(company), agentFiles: buildManagedExecutorFilesForCompany(normalizeCompany(company)) };
 }
 
+async function hireCompanyEmployeeStrongConsistency(input: AuthorityHireEmployeeRequest): Promise<AuthorityHireEmployeeResponse> {
+  const currentConfig = repository.loadConfig();
+  if (!currentConfig) {
+    throw new Error("当前没有可用的公司配置。");
+  }
+
+  const currentCompany = currentConfig.companies.find((company) => company.id === input.companyId) ?? null;
+  if (!currentCompany) {
+    throw new Error(`Unknown company: ${input.companyId}`);
+  }
+
+  const planned = planHiredEmployee(currentCompany, input);
+  const nextConfig: CyberCompanyConfig = {
+    ...currentConfig,
+    companies: currentConfig.companies.map((company) =>
+      company.id === input.companyId ? planned.company : company,
+    ),
+    activeCompanyId:
+      currentConfig.activeCompanyId === input.companyId ? input.companyId : currentConfig.activeCompanyId,
+  };
+
+  await runManagedExecutorMutation(async () => {
+    repository.saveConfig(nextConfig);
+    try {
+      await ensureManagedCompanyExecutorProvisioned(
+        planned.company,
+        repository.loadRuntime(planned.company.id),
+        "company.employee.hire",
+      );
+      const bootstrapFile = buildEmployeeBootstrapFile({
+        ...input,
+        agentId: planned.employee.agentId,
+      });
+      repository.setAgentFile(bootstrapFile.agentId, bootstrapFile.name, bootstrapFile.content);
+      await syncAgentFileToExecutor(bootstrapFile);
+    } catch (error) {
+      try {
+        await deleteManagedAgentFromExecutor(planned.employee.agentId);
+        repository.clearManagedExecutorAgent(planned.employee.agentId);
+      } catch {
+        // Best-effort rollback for partially provisioned hires.
+      }
+      repository.saveConfig(currentConfig);
+      throw error;
+    }
+  });
+
+  return {
+    company:
+      repository.loadConfig()?.companies.find((company) => company.id === input.companyId) ?? planned.company,
+    config: repository.loadConfig() ?? nextConfig,
+    runtime: repository.loadRuntime(input.companyId),
+    employee: planned.employee,
+    warnings: planned.warnings,
+  };
+}
+
 function buildDefaultMainCompanyDefinition(): {
   company: Company;
   agentFiles: Array<{ agentId: string; name: string; content: string }>;
@@ -1700,6 +1961,9 @@ const companyOpsEngine = new CompanyOpsEngine(
 const executorBridge = createOpenClawExecutorBridge(repository.loadExecutorConfig(), {
   resolveFallbackToken: () => resolveLocalOpenClawGatewayToken(),
 });
+const managedFileMirrorQueue = createManagedFileMirrorQueue((file) =>
+  executorBridge.request("agents.files.set", file)
+);
 let lastExecutorConnectionState = executorBridge.snapshot().connectionState;
 syncAuthorityAgentFileMirror = (file) => {
   void syncAgentFileToExecutor(file).catch((error) => {
@@ -1784,7 +2048,7 @@ function normalizeChatPayload(payload: unknown): Extract<AuthorityEvent, { type:
 }
 
 async function syncAgentFileToExecutor(input: { agentId: string; name: string; content: string }) {
-  return executorBridge.request("agents.files.set", input);
+  return managedFileMirrorQueue.sync(input);
 }
 
 async function deleteManagedAgentFromExecutor(agentId: string) {
@@ -2119,6 +2383,26 @@ async function proxyGatewayRequest<T>(method: string, params?: unknown): Promise
     } as T;
   }
 
+  if (method === "sessions.resolve") {
+    const sessionKey = isRecord(params) ? readString(params.key) : null;
+    try {
+      return await executorBridge.request<T>(method, params ?? {});
+    } catch (error) {
+      if (
+        sessionKey &&
+        error instanceof Error &&
+        error.message.includes("No session found")
+      ) {
+        return {
+          ok: true,
+          key: sessionKey,
+          error: error.message,
+        } as T;
+      }
+      throw error;
+    }
+  }
+
   if (method === "sessions.reset") {
     const sessionKey = isRecord(params) ? readString(params.key) : null;
     const result = await executorBridge.request<T>(method, params ?? {});
@@ -2171,6 +2455,20 @@ executorBridge.onEvent((event) => {
   if (payload.state === "final" && payload.message) {
     repository.appendAssistantMessage(payload.sessionKey, payload.message as StoredChatMessage);
     repository.updateExecutorRun(payload.runId, "completed", { response: payload.message });
+    const controlUpdate = repository.applyAssistantControlMessage(
+      payload.sessionKey,
+      payload.message as StoredChatMessage,
+    );
+    if (controlUpdate.violations.length > 0) {
+      console.warn("Assistant control contract violations", controlUpdate.violations);
+    }
+    if (controlUpdate.changed && controlUpdate.context?.companyId) {
+      broadcast({
+        type: "company.updated",
+        companyId: controlUpdate.context.companyId,
+        timestamp: Date.now(),
+      });
+    }
   } else if (payload.state === "error") {
     repository.updateExecutorRun(payload.runId, "error", {
       errorMessage: payload.errorMessage ?? "OpenClaw run failed",
@@ -2338,6 +2636,20 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && /\/companies\/[^/]+\/employees$/.test(url.pathname)) {
+      const companyId = decodeURIComponent(url.pathname.split("/")[2] ?? "");
+      const body = await readJsonBody<AuthorityHireEmployeeRequest>(request);
+      const payload = await hireCompanyEmployeeStrongConsistency({
+        ...body,
+        companyId,
+      });
+      companyOpsEngine.schedule("company.employee.hire", companyId);
+      sendJson(response, 200, payload);
+      broadcast({ type: "bootstrap.updated", companyId, timestamp: Date.now() });
+      broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
+      return;
+    }
+
     if (request.method === "DELETE" && url.pathname.startsWith("/companies/")) {
       const companyId = decodeURIComponent(url.pathname.slice("/companies/".length));
       try {
@@ -2398,7 +2710,12 @@ const server = createServer(async (request, response) => {
     if (request.method === "PUT" && url.pathname.startsWith("/companies/") && url.pathname.endsWith("/runtime")) {
       const companyId = decodeURIComponent(url.pathname.split("/")[2] ?? "");
       const body = await readJsonBody<AuthorityRuntimeSyncRequest>(request);
-      sendJson(response, 200, repository.saveRuntime({ ...body.snapshot, companyId }));
+      const currentRuntime = repository.loadRuntime(companyId);
+      const mergedSnapshot = mergeAuthorityControlledRuntimeSlices({
+        currentRuntime,
+        incomingRuntime: { ...body.snapshot, companyId },
+      });
+      sendJson(response, 200, repository.saveRuntime(mergedSnapshot));
       companyOpsEngine.schedule("runtime.sync", companyId);
       broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
       return;
@@ -2411,6 +2728,16 @@ const server = createServer(async (request, response) => {
         ? Number.parseInt(url.searchParams.get("since") ?? "", 10)
         : undefined;
       sendJson(response, 200, repository.listCompanyEvents(companyId, cursor, since));
+      return;
+    }
+
+    const collaborationScopeMatch = url.pathname.match(
+      /^\/companies\/([^/]+)\/collaboration-scope\/([^/]+)$/,
+    );
+    if (request.method === "GET" && collaborationScopeMatch) {
+      const companyId = decodeURIComponent(collaborationScopeMatch[1] ?? "");
+      const agentId = decodeURIComponent(collaborationScopeMatch[2] ?? "");
+      sendJson(response, 200, repository.getCollaborationScope(companyId, agentId));
       return;
     }
 
@@ -2512,6 +2839,7 @@ const server = createServer(async (request, response) => {
         sessionKey: dispatch.sessionKey,
         message: body.message,
         deliver: false,
+        ...(typeof body.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}),
         ...(body.attachments ? { attachments: body.attachments } : {}),
         idempotencyKey: crypto.randomUUID(),
       });
@@ -2547,6 +2875,14 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody<AuthorityAppendRoomRequest>(request);
       sendJson(response, 200, repository.upsertRoom(body));
       companyOpsEngine.schedule("room.append", body.companyId);
+      broadcast({ type: "room.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/room-bindings.upsert") {
+      const body = await readJsonBody<AuthorityRoomBindingsUpsertRequest>(request);
+      sendJson(response, 200, repository.upsertRoomBindings(body));
+      companyOpsEngine.schedule("room-bindings.upsert", body.companyId);
       broadcast({ type: "room.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }

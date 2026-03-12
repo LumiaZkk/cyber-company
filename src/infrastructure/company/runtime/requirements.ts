@@ -1,6 +1,11 @@
 import { createCompanyEvent } from "../../../domain/delegation/events";
 import { gateway } from "../../../application/gateway";
 import {
+  buildRequirementWorkflowEvidence,
+  resolveRequirementWorkflowEventKind,
+  type RequirementWorkflowEventKind,
+} from "../../../application/mission/requirement-workflow";
+import {
   applyRequirementEvidenceToAggregates,
   reconcileRequirementAggregateState,
   sanitizeRequirementAggregateRecords,
@@ -14,6 +19,10 @@ import {
   persistRequirementEvidenceEvents,
   sanitizeRequirementEvidenceEvents,
 } from "../persistence/requirement-evidence-persistence";
+import {
+  applyAuthorityRuntimeCommandError,
+  applyAuthorityRuntimeSnapshotToStore,
+} from "../../authority/runtime-command";
 import type {
   CompanyRuntimeState,
   RequirementAggregateRecord,
@@ -21,17 +30,7 @@ import type {
   RuntimeGet,
   RuntimeSet,
 } from "./types";
-
-type RequirementWorkflowEventKind =
-  | "requirement_seeded"
-  | "requirement_promoted"
-  | "requirement_progressed"
-  | "requirement_owner_changed"
-  | "requirement_room_bound"
-  | "requirement_completed"
-  | "requirement_acceptance_requested"
-  | "requirement_accepted"
-  | "requirement_reopened";
+import { transitionAuthorityRequirement } from "../../../application/gateway/authority-control";
 
 export function emitRequirementCompanyEvent(input: {
   companyId: string;
@@ -57,6 +56,7 @@ export function emitRequirementCompanyEvent(input: {
         nextAction: input.aggregate.nextAction,
         memberIds: input.aggregate.memberIds,
         status: input.aggregate.status,
+        stageGateStatus: input.aggregate.stageGateStatus,
         acceptanceStatus: input.aggregate.acceptanceStatus,
         acceptanceNote: input.aggregate.acceptanceNote ?? null,
         revision: input.aggregate.revision,
@@ -108,65 +108,6 @@ export function reconcileActiveRequirementState(input: {
   });
 }
 
-function resolveRequirementCompanyEventKind(input: {
-  previousAggregate: RequirementAggregateRecord;
-  nextAggregate: RequirementAggregateRecord;
-  changes: Partial<
-    Omit<RequirementAggregateRecord, "id" | "companyId" | "primary" | "revision">
-  >;
-}): RequirementWorkflowEventKind {
-  const { previousAggregate, nextAggregate, changes } = input;
-  if (nextAggregate.acceptanceStatus === "accepted") {
-    return "requirement_accepted";
-  }
-  if (
-    nextAggregate.acceptanceStatus === "pending" &&
-    previousAggregate.acceptanceStatus !== "pending"
-  ) {
-    return "requirement_acceptance_requested";
-  }
-  if (
-    nextAggregate.acceptanceStatus === "rejected" ||
-    (previousAggregate.acceptanceStatus === "accepted" && nextAggregate.status === "active")
-  ) {
-    return "requirement_reopened";
-  }
-  if (nextAggregate.status === "completed" || nextAggregate.status === "archived") {
-    return "requirement_completed";
-  }
-  if (changes.roomId && changes.roomId !== previousAggregate.roomId) {
-    return "requirement_room_bound";
-  }
-  if (changes.ownerActorId && changes.ownerActorId !== previousAggregate.ownerActorId) {
-    return "requirement_owner_changed";
-  }
-  return "requirement_progressed";
-}
-
-function buildRequirementEvidencePayload(input: {
-  previousAggregate: RequirementAggregateRecord | null;
-  nextAggregate: RequirementAggregateRecord;
-}) {
-  const { previousAggregate, nextAggregate } = input;
-  return {
-    ownerActorId: nextAggregate.ownerActorId,
-    ownerLabel: nextAggregate.ownerLabel,
-    stage: nextAggregate.stage,
-    summary: nextAggregate.summary,
-    nextAction: nextAggregate.nextAction,
-    memberIds: nextAggregate.memberIds,
-    status: nextAggregate.status,
-    acceptanceStatus: nextAggregate.acceptanceStatus,
-    acceptanceNote: nextAggregate.acceptanceNote ?? null,
-    revision: nextAggregate.revision,
-    workItemId: nextAggregate.workItemId,
-    topicKey: nextAggregate.topicKey,
-    roomId: nextAggregate.roomId,
-    previousStatus: previousAggregate?.status ?? null,
-    previousAcceptanceStatus: previousAggregate?.acceptanceStatus ?? null,
-  };
-}
-
 export function buildRequirementLocalEvidence(input: {
   companyId: string;
   eventType: RequirementWorkflowEventKind;
@@ -176,21 +117,7 @@ export function buildRequirementLocalEvidence(input: {
   timestamp: number;
   source?: RequirementEvidenceEvent["source"];
 }): RequirementEvidenceEvent {
-  return {
-    id: `local:${input.aggregate.id}:${input.eventType}:${input.aggregate.revision}`,
-    companyId: input.companyId,
-    aggregateId: input.aggregate.id,
-    source: input.source ?? "local-command",
-    sessionKey: input.aggregate.sourceConversationId ?? null,
-    actorId: input.actorId ?? input.aggregate.ownerActorId ?? null,
-    eventType: input.eventType,
-    timestamp: input.timestamp,
-    payload: buildRequirementEvidencePayload({
-      previousAggregate: input.previousAggregate,
-      nextAggregate: input.aggregate,
-    }),
-    applied: true,
-  };
+  return buildRequirementWorkflowEvidence(input);
 }
 
 export function appendRequirementLocalEvidence(input: {
@@ -285,6 +212,7 @@ export function buildRequirementActions(
     applyRequirementTransition: (transition) => {
       const {
         activeCompany,
+        authorityBackedState,
         activeRequirementAggregates,
         activeRequirementEvidence,
         primaryRequirementId,
@@ -295,6 +223,33 @@ export function buildRequirementActions(
 
       const target = activeRequirementAggregates.find((aggregate) => aggregate.id === transition.aggregateId);
       if (!target) {
+        return;
+      }
+
+      if (authorityBackedState) {
+        void transitionAuthorityRequirement({
+          companyId: activeCompany.id,
+          aggregateId: transition.aggregateId,
+          changes: transition.changes,
+          timestamp: transition.timestamp,
+          source: transition.source,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "requirement.transition",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to transition requirement through authority",
+            });
+          });
         return;
       }
 
@@ -328,7 +283,7 @@ export function buildRequirementActions(
         nextAggregates.find((aggregate) => aggregate.id === transition.aggregateId) ?? null;
       const timestamp = transition.timestamp ?? Date.now();
       const kind = nextAggregate
-        ? resolveRequirementCompanyEventKind({
+        ? resolveRequirementWorkflowEventKind({
             previousAggregate: target,
             nextAggregate,
             changes: transition.changes,
@@ -394,8 +349,10 @@ export function buildRequirementActions(
 
       const applied = applyRequirementEvidenceToAggregates({
         company: activeCompany,
+        activeConversationStates: get().activeConversationStates,
         activeRequirementAggregates,
         activeRoomRecords,
+        activeWorkItems: get().activeWorkItems,
         primaryRequirementId,
         event: normalizedEvent,
       });
@@ -412,6 +369,7 @@ export function buildRequirementActions(
       set({
         activeRequirementAggregates: applied.activeRequirementAggregates,
         activeRequirementEvidence: updatedEvidence,
+        primaryRequirementId: applied.primaryRequirementId,
       });
       persistActiveRequirementEvidence(activeCompany.id, updatedEvidence);
       persistActiveRequirementAggregates(activeCompany.id, applied.activeRequirementAggregates);

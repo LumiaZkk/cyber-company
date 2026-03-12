@@ -49,6 +49,7 @@ export type CompanyBootstrapPhase = "idle" | "restoring" | "ready" | "missing" |
 export interface CompanyRuntimeState {
   config: CyberCompanyConfig | null;
   activeCompany: Company | null;
+  authorityBackedState: boolean;
   activeRoomRecords: RequirementRoomRecord[];
   activeMissionRecords: ConversationMissionRecord[];
   activeConversationStates: ConversationStateRecord[];
@@ -90,6 +91,7 @@ export interface CompanyRuntimeState {
     messages: RequirementRoomMessage[],
     meta?: Partial<Omit<RequirementRoomRecord, "id" | "transcript">>,
   ) => void;
+  ensureRequirementRoomForAggregate: (aggregateId: string) => RequirementRoomRecord | null;
   upsertRoomConversationBindings: (bindings: RoomConversationBindingRecord[]) => void;
   deleteRoomRecord: (roomId: string) => void;
   upsertMissionRecord: (mission: ConversationMissionRecord) => void;

@@ -1,4 +1,10 @@
-import type { WorkItemRecord, WorkStepRecord, WorkItemStatus } from "./types";
+import type {
+  RequirementLifecyclePhase,
+  RequirementStageGateStatus,
+  WorkItemRecord,
+  WorkStepRecord,
+  WorkItemStatus,
+} from "./types";
 import { isCanonicalProductWorkItemRecord } from "../../../application/mission/work-item-signal";
 import { isStrategicRequirementTopic } from "../../../application/mission/requirement-kind";
 import { parseAgentIdFromSessionKey } from "../../../lib/sessions";
@@ -6,6 +12,8 @@ import {
   applyWorkItemDisplayFields,
   buildRoomRecordIdFromWorkItem,
   buildWorkItemIdentity,
+  normalizeProductWorkItemIdentity,
+  normalizeStrategicRoundId,
   normalizeStrategicWorkItemId,
 } from "../../../application/mission/work-item";
 
@@ -31,6 +39,22 @@ function isWorkItemStatus(value: unknown): value is WorkItemStatus {
     value === "completed" ||
     value === "blocked" ||
     value === "archived"
+  );
+}
+
+function isRequirementLifecyclePhase(value: unknown): value is RequirementLifecyclePhase {
+  return (
+    value === "pre_requirement" ||
+    value === "active_requirement" ||
+    value === "completed"
+  );
+}
+
+function isRequirementStageGateStatus(value: unknown): value is RequirementStageGateStatus {
+  return (
+    value === "none" ||
+    value === "waiting_confirmation" ||
+    value === "confirmed"
   );
 }
 
@@ -75,6 +99,10 @@ function isWorkItemRecord(value: unknown): value is WorkItemRecord {
     (typeof candidate.displayOwnerLabel === "string" || candidate.displayOwnerLabel == null) &&
     (typeof candidate.displayNextAction === "string" || candidate.displayNextAction == null) &&
     typeof candidate.stageLabel === "string" &&
+    (candidate.lifecyclePhase == null ||
+      isRequirementLifecyclePhase(candidate.lifecyclePhase)) &&
+    (candidate.stageGateStatus == null ||
+      isRequirementStageGateStatus(candidate.stageGateStatus)) &&
     typeof candidate.ownerLabel === "string" &&
     typeof candidate.batonLabel === "string" &&
     Array.isArray(candidate.artifactIds) &&
@@ -204,17 +232,43 @@ export function sanitizeWorkItemRecords(records: WorkItemRecord[]): WorkItemReco
       continue;
     }
 
-    const normalizedIdentity = buildWorkItemIdentity({
+    const normalizedProductIdentity = normalizeProductWorkItemIdentity({
+      workItemId: record.id,
       topicKey: record.topicKey,
       title: record.title,
-      fallbackId: normalizeStrategicWorkItemId(record.id) ?? record.id,
+    });
+    const roundAnchor =
+      (typeof record.startedAt === "number" && record.startedAt > 0 ? record.startedAt : null) ??
+      (typeof record.updatedAt === "number" && record.updatedAt > 0 ? record.updatedAt : null) ??
+      Date.now();
+    const normalizedIdentity = buildWorkItemIdentity({
+      topicKey: normalizedProductIdentity.topicKey ?? record.topicKey,
+      title: record.title,
+      fallbackId:
+        normalizedProductIdentity.workItemId ??
+        normalizeStrategicWorkItemId(record.id) ??
+        record.id,
       startedAt: record.startedAt,
       updatedAt: record.updatedAt,
     });
+    const canonicalId = normalizedProductIdentity.workItemId ?? normalizedIdentity.id;
+    const canonicalWorkKey = normalizedProductIdentity.workKey ?? normalizedIdentity.workKey;
+    const canonicalTopicKey = normalizedProductIdentity.topicKey ?? normalizedIdentity.topicKey;
     const normalizedRecord = applyWorkItemDisplayFields({
       ...record,
       ...normalizedIdentity,
-      topicKey: normalizedIdentity.topicKey ?? undefined,
+      id: canonicalId,
+      workKey: canonicalWorkKey,
+      roundId:
+        normalizeStrategicRoundId(record.roundId) ??
+        (canonicalWorkKey ? `${canonicalWorkKey}@${Math.floor(roundAnchor)}` : normalizedIdentity.roundId),
+      topicKey: canonicalTopicKey ?? undefined,
+      lifecyclePhase: isRequirementLifecyclePhase(record.lifecyclePhase)
+        ? record.lifecyclePhase
+        : "active_requirement",
+      stageGateStatus: isRequirementStageGateStatus(record.stageGateStatus)
+        ? record.stageGateStatus
+        : "none",
       sourceActorId:
         record.sourceActorId ??
         parseAgentIdFromSessionKey(record.sourceConversationId ?? "") ??

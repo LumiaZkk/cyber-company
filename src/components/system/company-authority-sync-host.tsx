@@ -4,18 +4,14 @@ import {
   getAuthorityCompanyRuntime,
   syncAuthorityCompanyRuntime,
 } from "../../application/gateway/authority-control";
-import { isSupportRequestActive } from "../../domain/delegation/support-request";
 import type { AuthorityCompanyRuntimeSnapshot } from "../../infrastructure/authority/contract";
-import { writeCachedAuthorityRuntimeSnapshot } from "../../infrastructure/authority/runtime-cache";
-import { runtimeStateFromAuthorityRuntimeSnapshot } from "../../infrastructure/authority/runtime-snapshot";
+import { applyAuthorityRuntimeSnapshotToStore } from "../../infrastructure/authority/runtime-command";
+import {
+  buildAuthorityRuntimeSignature,
+  getLastAppliedAuthorityRuntimeSignature,
+  recordAuthorityRuntimeSyncError,
+} from "../../infrastructure/authority/runtime-sync-store";
 import { useCompanyRuntimeStore } from "../../infrastructure/company/runtime/store";
-
-function buildRuntimeSignature(snapshot: AuthorityCompanyRuntimeSnapshot) {
-  return JSON.stringify({
-    ...snapshot,
-    updatedAt: 0,
-  });
-}
 
 function buildSnapshot(): AuthorityCompanyRuntimeSnapshot | null {
   const state = useCompanyRuntimeStore.getState();
@@ -43,28 +39,8 @@ function buildSnapshot(): AuthorityCompanyRuntimeSnapshot | null {
   };
 }
 
-function hydrateRuntimeSnapshot(snapshot: AuthorityCompanyRuntimeSnapshot) {
-  const current = useCompanyRuntimeStore.getState();
-  useCompanyRuntimeStore.setState({
-    ...runtimeStateFromAuthorityRuntimeSnapshot(snapshot),
-    activeCompany: current.activeCompany
-      ? {
-          ...current.activeCompany,
-          supportRequests: snapshot.activeSupportRequests.filter(isSupportRequestActive),
-          escalations: snapshot.activeEscalations.filter(
-            (item) => item.status === "open" || item.status === "acknowledged",
-          ),
-          decisionTickets: snapshot.activeDecisionTickets.filter(
-            (item) => item.status === "open" || item.status === "pending_human",
-          ),
-        }
-      : current.activeCompany,
-  });
-}
-
 export function CompanyAuthoritySyncHost() {
   const connected = useGatewayStore((state) => state.connected);
-  const lastSignatureRef = useRef<string | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const pullInFlightRef = useRef(false);
@@ -83,19 +59,23 @@ export function CompanyAuthoritySyncHost() {
       if (!snapshot) {
         return;
       }
-      const signature = buildRuntimeSignature(snapshot);
-      if (signature === lastSignatureRef.current) {
+      const signature = buildAuthorityRuntimeSignature(snapshot);
+      if (signature === getLastAppliedAuthorityRuntimeSignature()) {
         return;
       }
       inFlightRef.current = true;
       void syncAuthorityCompanyRuntime(snapshot)
         .then((saved) => {
-          writeCachedAuthorityRuntimeSnapshot(saved);
-          hydrateRuntimeSnapshot(saved);
-          lastSignatureRef.current = buildRuntimeSignature(saved);
+          applyAuthorityRuntimeSnapshotToStore({
+            operation: "push",
+            snapshot: saved,
+            set: useCompanyRuntimeStore.setState,
+            get: useCompanyRuntimeStore.getState,
+          });
         })
         .catch((error) => {
           console.warn("Failed to sync runtime snapshot to authority", error);
+          recordAuthorityRuntimeSyncError("push", error);
         })
         .finally(() => {
           inFlightRef.current = false;
@@ -113,12 +93,16 @@ export function CompanyAuthoritySyncHost() {
       pullInFlightRef.current = true;
       void getAuthorityCompanyRuntime(activeCompany.id)
         .then((snapshot) => {
-          writeCachedAuthorityRuntimeSnapshot(snapshot);
-          hydrateRuntimeSnapshot(snapshot);
-          lastSignatureRef.current = buildRuntimeSignature(snapshot);
+          applyAuthorityRuntimeSnapshotToStore({
+            operation: "pull",
+            snapshot,
+            set: useCompanyRuntimeStore.setState,
+            get: useCompanyRuntimeStore.getState,
+          });
         })
         .catch((error) => {
           console.warn("Failed to refresh runtime snapshot from authority", error);
+          recordAuthorityRuntimeSyncError("pull", error);
         })
         .finally(() => {
           pullInFlightRef.current = false;
@@ -154,7 +138,13 @@ export function CompanyAuthoritySyncHost() {
         void useCompanyRuntimeStore.getState().loadConfig();
         return;
       }
-      if (eventName === "company.updated") {
+      if (
+        eventName === "company.updated" ||
+        eventName === "requirement.updated" ||
+        eventName === "room.updated" ||
+        eventName === "dispatch.updated" ||
+        eventName === "artifact.updated"
+      ) {
         refreshRemoteRuntime();
       }
     });

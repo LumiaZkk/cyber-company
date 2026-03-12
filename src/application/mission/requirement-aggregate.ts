@@ -5,6 +5,7 @@ import type {
   Company,
   RequirementAcceptanceStatus,
   ConversationStateRecord,
+  DraftRequirementRecord,
   RequirementAggregateRecord,
   RequirementEvidenceEvent,
   RequirementLifecycleState,
@@ -12,6 +13,16 @@ import type {
 } from "../../domain";
 import { isArtifactRequirementTopic, isStrategicRequirementTopic } from "./requirement-kind";
 import { isCanonicalProductWorkItemRecord } from "./work-item-signal";
+import {
+  resolveRequirementLifecyclePhase,
+  resolveRequirementStageGateStatus,
+} from "./requirement-lifecycle";
+import { isVisibleRequirementRoomMessage } from "../delegation/room-routing";
+import {
+  buildRoomRecordIdFromWorkItem,
+  normalizeProductWorkItemIdentity,
+  normalizeStrategicWorkItemId,
+} from "./work-item";
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -28,12 +39,70 @@ function uniqueIds(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.map((value) => readString(value)).filter((value): value is string => Boolean(value)))];
 }
 
+function hasStableDraftRequirement(
+  draftRequirement: ConversationStateRecord["draftRequirement"] | null | undefined,
+): draftRequirement is DraftRequirementRecord {
+  return Boolean(
+    draftRequirement &&
+      readString(draftRequirement.summary) &&
+      readString(draftRequirement.nextAction),
+  );
+}
+
 function sortIds(values: string[]) {
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
 function inferRequirementKind(topicKey: string | null | undefined): RequirementAggregateRecord["kind"] {
   return isStrategicRequirementTopic(topicKey) ? "strategic" : "execution";
+}
+
+function normalizeRequirementTopicKey(
+  topicKey: string | null | undefined,
+  workItemId?: string | null,
+  title?: string | null,
+): string | null {
+  return normalizeProductWorkItemIdentity({
+    workItemId,
+    topicKey,
+    title,
+  }).topicKey;
+}
+
+function normalizeRequirementAggregateRecord(
+  record: RequirementAggregateRecord,
+): RequirementAggregateRecord {
+  const normalizedId = normalizeStrategicWorkItemId(record.id) ?? record.id;
+  const normalizedIdentity = normalizeProductWorkItemIdentity({
+    workItemId: record.workItemId ?? (normalizedId.startsWith("topic:") ? normalizedId : null),
+    topicKey: record.topicKey,
+    title: record.summary,
+  });
+  const normalizedWorkItemId =
+    normalizedIdentity.workItemId ??
+    normalizeStrategicWorkItemId(record.workItemId) ??
+    (normalizedId.startsWith("topic:") ? normalizedId : null);
+  const normalizedTopicKey =
+    normalizedIdentity.topicKey ??
+    normalizeRequirementTopicKey(
+      normalizedId.startsWith("topic:") ? normalizedId.slice("topic:".length) : null,
+      normalizedWorkItemId,
+      record.summary,
+    ) ??
+    null;
+
+  return {
+    ...record,
+    id: normalizedId,
+    topicKey: normalizedTopicKey,
+    workItemId: normalizedWorkItemId,
+    roomId:
+      normalizedWorkItemId
+        ? buildRoomRecordIdFromWorkItem(normalizedWorkItemId)
+        : readString(record.roomId),
+    ownerActorId: readString(record.ownerActorId),
+    sourceConversationId: readString(record.sourceConversationId),
+  };
 }
 
 function deriveRequirementAcceptanceStatus(input: {
@@ -160,19 +229,33 @@ function buildAggregateId(input: {
   workItem?: WorkItemRecord | null;
   room?: RequirementRoomRecord | null;
   topicKey?: string | null;
+  fallbackId?: string | null;
 }): string | null {
-  if (readString(input.existingId)) {
-    return readString(input.existingId);
+  const workItemId = normalizeStrategicWorkItemId(input.workItem?.id) ?? readString(input.workItem?.id);
+  if (workItemId) {
+    return workItemId;
   }
-  if (readString(input.workItem?.id)) {
-    return readString(input.workItem?.id);
+  const roomWorkItemId =
+    normalizeStrategicWorkItemId(input.room?.workItemId) ?? readString(input.room?.workItemId);
+  if (roomWorkItemId) {
+    return roomWorkItemId;
   }
-  if (readString(input.room?.workItemId)) {
-    return readString(input.room?.workItemId);
-  }
-  const topicKey = readString(input.topicKey) ?? readString(input.room?.topicKey);
+  const topicKey =
+    normalizeRequirementTopicKey(
+      readString(input.topicKey) ?? readString(input.room?.topicKey),
+      workItemId ?? roomWorkItemId,
+    ) ??
+    null;
   if (topicKey) {
     return `topic:${topicKey}`;
+  }
+  const existingId = normalizeStrategicWorkItemId(input.existingId) ?? readString(input.existingId);
+  if (existingId) {
+    return existingId;
+  }
+  const fallbackId = normalizeStrategicWorkItemId(input.fallbackId) ?? readString(input.fallbackId);
+  if (fallbackId) {
+    return fallbackId;
   }
   return readString(input.room?.id);
 }
@@ -225,16 +308,150 @@ function findLatestEvidenceTimestamp(
   aggregateId: string,
   evidence: RequirementEvidenceEvent[],
 ): number | null {
+  const normalizedAggregateId = normalizeStrategicWorkItemId(aggregateId) ?? aggregateId;
   const latest = evidence
-    .filter((event) => event.aggregateId === aggregateId)
+    .filter((event) => (normalizeStrategicWorkItemId(event.aggregateId) ?? event.aggregateId) === normalizedAggregateId)
     .reduce((max, event) => Math.max(max, event.timestamp), 0);
   return latest > 0 ? latest : null;
+}
+
+function readSourceConversationActorId(sessionKey: string | null | undefined): string | null {
+  const normalized = readString(sessionKey);
+  if (!normalized || !normalized.startsWith("agent:")) {
+    return null;
+  }
+  const parts = normalized.split(":");
+  const actorId = parts[1]?.trim();
+  return actorId && actorId.length > 0 ? actorId : null;
+}
+
+function roomHasVisibleTranscript(room: RequirementRoomRecord | null | undefined): boolean {
+  return Boolean(room?.transcript?.some((message) => isVisibleRequirementRoomMessage(message)));
+}
+
+function isRoomShellDerivedAggregate(
+  aggregate: RequirementAggregateRecord | null,
+  room: RequirementRoomRecord | null,
+): boolean {
+  if (!aggregate || !room || roomHasVisibleTranscript(room)) {
+    return false;
+  }
+  const roomHeadline = readString(room.headline) ?? readString(room.title);
+  const roomProgress = readString(room.progress);
+  return Boolean(
+    roomHeadline &&
+      roomProgress &&
+      aggregate.summary === roomHeadline &&
+      aggregate.stage === roomProgress &&
+      aggregate.nextAction === roomProgress,
+  );
+}
+
+function resolveAggregateOwnerActorId(input: {
+  workItem: WorkItemRecord | null;
+  room: RequirementRoomRecord | null;
+  draftRequirement?: ConversationStateRecord["draftRequirement"] | null;
+  existing: RequirementAggregateRecord | null;
+}): string | null {
+  const existingLooksShellDerived = isRoomShellDerivedAggregate(input.existing, input.room);
+  const sourceConversationActorId =
+    readSourceConversationActorId(input.draftRequirement ? null : input.existing?.sourceConversationId) ??
+    readSourceConversationActorId(input.room?.sessionKey) ??
+    readSourceConversationActorId(input.workItem?.sourceConversationId) ??
+    readSourceConversationActorId(input.workItem?.sessionKey) ??
+    null;
+  const trustedRoomOwnerActorId = roomHasVisibleTranscript(input.room)
+    ? readString(input.room?.ownerActorId) ?? readString(input.room?.ownerAgentId)
+    : null;
+  return (
+    readString(input.workItem?.ownerActorId) ??
+    readString(input.draftRequirement?.ownerActorId) ??
+    (existingLooksShellDerived ? null : readString(input.existing?.ownerActorId)) ??
+    sourceConversationActorId ??
+    trustedRoomOwnerActorId ??
+    null
+  );
+}
+
+function resolveAggregateOwnerLabel(input: {
+  workItem: WorkItemRecord | null;
+  room: RequirementRoomRecord | null;
+  draftRequirement?: ConversationStateRecord["draftRequirement"] | null;
+  existing: RequirementAggregateRecord | null;
+}): string {
+  const existingLooksShellDerived = isRoomShellDerivedAggregate(input.existing, input.room);
+  const trustedRoomTitle = roomHasVisibleTranscript(input.room) ? readString(input.room?.title) : null;
+  return (
+    readString(input.workItem?.ownerLabel) ??
+    readString(input.draftRequirement?.ownerLabel) ??
+    (existingLooksShellDerived ? null : readString(input.existing?.ownerLabel)) ??
+    trustedRoomTitle ??
+    "当前负责人"
+  );
+}
+
+function buildAggregateIdFromConversationState(
+  state: ConversationStateRecord,
+): string | null {
+  const currentWorkItemId =
+    normalizeStrategicWorkItemId(state.currentWorkItemId) ?? readString(state.currentWorkItemId);
+  if (currentWorkItemId) {
+    return currentWorkItemId;
+  }
+  const currentWorkKey =
+    normalizeStrategicWorkItemId(state.currentWorkKey) ?? readString(state.currentWorkKey);
+  if (currentWorkKey) {
+    return currentWorkKey;
+  }
+  const draftTopicKey = normalizeRequirementTopicKey(readString(state.draftRequirement?.topicKey));
+  if (draftTopicKey) {
+    return `topic:${draftTopicKey}`;
+  }
+  return readString(state.conversationId);
+}
+
+function findMatchingConversationState(
+  aggregate: RequirementAggregateRecord | null,
+  conversationStates: ConversationStateRecord[],
+  workItem: WorkItemRecord | null,
+): ConversationStateRecord | null {
+  return (
+    conversationStates.find((state) => state.currentWorkItemId === workItem?.id) ??
+    conversationStates.find((state) => state.currentWorkKey === workItem?.workKey) ??
+    conversationStates.find((state) => state.conversationId === aggregate?.sourceConversationId) ??
+    (aggregate?.topicKey
+      ? conversationStates.find((state) => state.draftRequirement?.topicKey === aggregate.topicKey)
+      : null) ??
+    conversationStates.find((state) => {
+      const draft = state.draftRequirement;
+      return (
+        hasStableDraftRequirement(draft) &&
+        (draft.ownerActorId === aggregate?.ownerActorId ||
+          draft.summary === aggregate?.summary)
+      );
+    }) ??
+    null
+  );
+}
+
+function resolveDraftRequirementStatus(input: {
+  existing: RequirementAggregateRecord | null;
+  draftRequirement: ConversationStateRecord["draftRequirement"] | null | undefined;
+}): RequirementLifecycleState {
+  if (input.existing?.status) {
+    return input.existing.status;
+  }
+  if (input.draftRequirement?.stageGateStatus === "waiting_confirmation") {
+    return "waiting_owner";
+  }
+  return "active";
 }
 
 function buildAggregateMemberIds(
   existing: RequirementAggregateRecord | null,
   workItem: WorkItemRecord | null,
   room: RequirementRoomRecord | null,
+  draftRequirement?: ConversationStateRecord["draftRequirement"] | null,
 ): string[] {
   return sortIds(
     uniqueIds([
@@ -243,6 +460,7 @@ function buildAggregateMemberIds(
       ...(room?.memberActorIds ?? []),
       workItem?.ownerActorId,
       workItem?.batonActorId,
+      draftRequirement?.ownerActorId,
       ...((workItem?.steps ?? []).map((step) => step.assigneeActorId ?? null)),
     ]),
   );
@@ -254,12 +472,16 @@ function materializeAggregateRecord(input: {
   workItem: WorkItemRecord | null;
   room: RequirementRoomRecord | null;
   evidence: RequirementEvidenceEvent[];
+  draftRequirement?: ConversationStateRecord["draftRequirement"] | null;
+  draftConversationId?: string | null;
+  fallbackId?: string | null;
 }): RequirementAggregateRecord | null {
   const id = buildAggregateId({
     existingId: input.existing?.id,
     workItem: input.workItem,
     room: input.room,
     topicKey: input.workItem?.topicKey ?? input.existing?.topicKey ?? null,
+    fallbackId: input.fallbackId ?? null,
   });
   if (!id) {
     return null;
@@ -268,6 +490,7 @@ function materializeAggregateRecord(input: {
   const topicKey =
     readString(input.workItem?.topicKey) ??
     readString(input.room?.topicKey) ??
+    readString(input.draftRequirement?.topicKey) ??
     readString(input.existing?.topicKey) ??
     null;
   if (topicKey && isArtifactRequirementTopic(topicKey)) {
@@ -275,15 +498,43 @@ function materializeAggregateRecord(input: {
   }
 
   const latestEvidenceAt = findLatestEvidenceTimestamp(id, input.evidence);
+  const trustedRoomPresentation = roomHasVisibleTranscript(input.room);
+  const existingLooksShellDerived = isRoomShellDerivedAggregate(input.existing, input.room);
   const nextLifecycleStatus =
     (input.workItem
       ? mapWorkItemStatusToRequirementLifecycleState(input.workItem.status)
       : mapRoomStatusToRequirementLifecycleState(input.room)) ??
+    (hasStableDraftRequirement(input.draftRequirement)
+      ? resolveDraftRequirementStatus({
+          existing: input.existing,
+          draftRequirement: input.draftRequirement,
+        })
+      : null) ??
     input.existing?.status ??
     "active";
   const acceptanceStatus = deriveRequirementAcceptanceStatus({
     existing: input.existing,
     nextLifecycleStatus,
+  });
+  const stageGateStatus = resolveRequirementStageGateStatus({
+    explicitStageGateStatus:
+      input.workItem?.stageGateStatus ??
+      input.existing?.stageGateStatus ??
+      input.draftRequirement?.stageGateStatus ??
+      "none",
+    completed: nextLifecycleStatus === "completed" || nextLifecycleStatus === "archived",
+  });
+  const lifecyclePhase = resolveRequirementLifecyclePhase({
+    explicitLifecyclePhase:
+      input.workItem?.lifecyclePhase ?? input.existing?.lifecyclePhase ?? null,
+    stageGateStatus,
+    promotionState: input.draftRequirement?.state,
+    workItemStatus: input.workItem?.status ?? null,
+    completed: nextLifecycleStatus === "completed" || nextLifecycleStatus === "archived",
+    hasExecutionSignal:
+      Boolean(input.room?.lastConclusionAt) ||
+      Boolean(input.workItem?.dispatchIds.length) ||
+      Boolean(input.workItem?.steps.some((step) => step.status === "active" || step.status === "done")),
   });
   const nextRecordBase: Omit<RequirementAggregateRecord, "revision" | "primary"> = {
     id,
@@ -297,51 +548,65 @@ function materializeAggregateRecord(input: {
           : inferRequirementKind(topicKey),
     workItemId: readString(input.workItem?.id) ?? readString(input.room?.workItemId) ?? readString(input.existing?.workItemId) ?? null,
     roomId: readString(input.room?.id) ?? readString(input.workItem?.roomId) ?? readString(input.existing?.roomId) ?? null,
-    ownerActorId:
-      readString(input.workItem?.ownerActorId) ??
-      readString(input.room?.ownerActorId) ??
-      readString(input.room?.ownerAgentId) ??
-      readString(input.existing?.ownerActorId) ??
-      null,
-    ownerLabel:
-      readString(input.workItem?.ownerLabel) ??
-      readString(input.room?.title) ??
-      readString(input.existing?.ownerLabel) ??
-      "当前负责人",
+    ownerActorId: resolveAggregateOwnerActorId({
+      workItem: input.workItem,
+      room: input.room,
+      draftRequirement: input.draftRequirement,
+      existing: input.existing,
+    }),
+    ownerLabel: resolveAggregateOwnerLabel({
+      workItem: input.workItem,
+      room: input.room,
+      draftRequirement: input.draftRequirement,
+      existing: input.existing,
+    }),
+    lifecyclePhase,
+    stageGateStatus,
     stage:
       readString(input.workItem?.displayStage) ??
       readString(input.workItem?.stageLabel) ??
-      readString(input.room?.progress) ??
-      readString(input.existing?.stage) ??
-      "进行中",
+      readString(input.draftRequirement?.stage) ??
+      (existingLooksShellDerived ? null : readString(input.existing?.stage)) ??
+      (trustedRoomPresentation ? readString(input.room?.progress) : null) ??
+      (stageGateStatus === "waiting_confirmation" ? "待确认" : "进行中"),
     summary:
       readString(input.workItem?.displaySummary) ??
       readString(input.workItem?.summary) ??
-      readString(input.room?.headline) ??
-      readString(input.existing?.summary) ??
+      readString(input.draftRequirement?.summary) ??
+      (existingLooksShellDerived ? null : readString(input.existing?.summary)) ??
+      (trustedRoomPresentation ? readString(input.room?.headline) : null) ??
       "当前主线正在推进。",
     nextAction:
       readString(input.workItem?.displayNextAction) ??
       readString(input.workItem?.nextAction) ??
-      readString(input.room?.progress) ??
-      readString(input.existing?.nextAction) ??
+      readString(input.draftRequirement?.nextAction) ??
+      (existingLooksShellDerived ? null : readString(input.existing?.nextAction)) ??
+      (trustedRoomPresentation ? readString(input.room?.progress) : null) ??
       "继续推进当前主线。",
-    memberIds: buildAggregateMemberIds(input.existing, input.workItem, input.room),
+    memberIds: buildAggregateMemberIds(
+      input.existing,
+      input.workItem,
+      input.room,
+      input.draftRequirement,
+    ),
     sourceConversationId:
       readString(input.workItem?.sourceConversationId) ??
       readString(input.workItem?.sourceSessionKey) ??
       readString(input.workItem?.sessionKey) ??
       readString(input.room?.sessionKey) ??
+      readString(input.draftConversationId) ??
       readString(input.existing?.sourceConversationId) ??
       null,
     startedAt:
       input.workItem?.startedAt ??
       input.room?.createdAt ??
+      input.draftRequirement?.updatedAt ??
       input.existing?.startedAt ??
       Date.now(),
     updatedAt: Math.max(
       input.workItem?.updatedAt ?? 0,
       input.room?.updatedAt ?? 0,
+      input.draftRequirement?.updatedAt ?? 0,
       input.existing?.updatedAt ?? 0,
       latestEvidenceAt ?? 0,
       Date.now(),
@@ -370,6 +635,8 @@ function materializeAggregateRecord(input: {
     existing.roomId !== nextRecordBase.roomId ||
     existing.ownerActorId !== nextRecordBase.ownerActorId ||
     existing.ownerLabel !== nextRecordBase.ownerLabel ||
+    existing.lifecyclePhase !== nextRecordBase.lifecyclePhase ||
+    existing.stageGateStatus !== nextRecordBase.stageGateStatus ||
     existing.stage !== nextRecordBase.stage ||
     existing.summary !== nextRecordBase.summary ||
     existing.nextAction !== nextRecordBase.nextAction ||
@@ -394,6 +661,9 @@ function pickPrimaryAggregateId(input: {
 }): string | null {
   const activeAggregates = input.aggregates.filter((aggregate) => aggregate.status !== "archived");
   const byId = new Map(activeAggregates.map((aggregate) => [aggregate.id, aggregate] as const));
+  const normalizedCurrentPrimaryRequirementId =
+    normalizeStrategicWorkItemId(input.currentPrimaryRequirementId) ??
+    input.currentPrimaryRequirementId;
   const conversationAnchored = [...input.conversationStates]
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .map((state) => {
@@ -414,6 +684,16 @@ function pickPrimaryAggregateId(input: {
           null
         );
       }
+      if (state.draftRequirement?.topicKey) {
+        return (
+          activeAggregates.find((aggregate) => aggregate.topicKey === state.draftRequirement?.topicKey) ??
+          activeAggregates.find((aggregate) => aggregate.id === state.conversationId) ??
+          null
+        );
+      }
+      if (state.draftRequirement) {
+        return activeAggregates.find((aggregate) => aggregate.id === state.conversationId) ?? null;
+      }
       return null;
     })
     .find((aggregate): aggregate is RequirementAggregateRecord => Boolean(aggregate));
@@ -421,8 +701,8 @@ function pickPrimaryAggregateId(input: {
     return conversationAnchored.id;
   }
 
-  const lockedPrimary = input.currentPrimaryRequirementId
-    ? byId.get(input.currentPrimaryRequirementId) ?? null
+  const lockedPrimary = normalizedCurrentPrimaryRequirementId
+    ? byId.get(normalizedCurrentPrimaryRequirementId) ?? null
     : null;
   if (lockedPrimary) {
     return lockedPrimary.id;
@@ -463,18 +743,21 @@ export function sanitizeRequirementAggregateRecords(
   records: RequirementAggregateRecord[],
   primaryRequirementId: string | null,
 ): RequirementAggregateRecord[] {
+  const normalizedPrimaryRequirementId =
+    normalizeStrategicWorkItemId(primaryRequirementId) ?? primaryRequirementId;
   const byId = new Map<string, RequirementAggregateRecord>();
   records.forEach((record) => {
-    const previous = byId.get(record.id);
-    if (!previous || record.updatedAt >= previous.updatedAt) {
-      byId.set(record.id, record);
+    const normalizedRecord = normalizeRequirementAggregateRecord(record);
+    const previous = byId.get(normalizedRecord.id);
+    if (!previous || normalizedRecord.updatedAt >= previous.updatedAt) {
+      byId.set(normalizedRecord.id, normalizedRecord);
     }
   });
 
   return [...byId.values()]
     .map((record) => ({
       ...record,
-      primary: primaryRequirementId ? record.id === primaryRequirementId : false,
+      primary: normalizedPrimaryRequirementId ? record.id === normalizedPrimaryRequirementId : false,
       memberIds: sortIds(uniqueIds(record.memberIds)),
       acceptanceStatus: record.acceptanceStatus ?? "not_requested",
       acceptanceNote:
@@ -503,6 +786,12 @@ export function reconcileRequirementAggregateState(input: {
   activeRequirementAggregates: RequirementAggregateRecord[];
   primaryRequirementId: string | null;
 } {
+  const normalizedExistingAggregates = sanitizeRequirementAggregateRecords(
+    input.existingAggregates,
+    input.primaryRequirementId,
+  );
+  const normalizedPrimaryRequirementId =
+    normalizeStrategicWorkItemId(input.primaryRequirementId) ?? input.primaryRequirementId;
   const candidateWorkItems = input.activeWorkItems.filter(
     (item) =>
       isCanonicalProductWorkItemRecord(item) &&
@@ -521,24 +810,41 @@ export function reconcileRequirementAggregateState(input: {
       candidateIds.add(`topic:${topicKey}`);
     }
   });
-  input.existingAggregates.forEach((aggregate) => {
+  input.activeConversationStates.forEach((state) => {
+    if (!hasStableDraftRequirement(state.draftRequirement)) {
+      return;
+    }
+    const candidateId = buildAggregateIdFromConversationState(state);
+    if (candidateId) {
+      candidateIds.add(candidateId);
+    }
+  });
+  normalizedExistingAggregates.forEach((aggregate) => {
     candidateIds.add(aggregate.id);
   });
 
   const nextAggregates: RequirementAggregateRecord[] = [];
   candidateIds.forEach((candidateId) => {
     const existing =
-      input.existingAggregates.find((aggregate) => aggregate.id === candidateId) ??
-      input.existingAggregates.find((aggregate) => aggregate.workItemId === candidateId) ??
+      normalizedExistingAggregates.find((aggregate) => aggregate.id === candidateId) ??
+      normalizedExistingAggregates.find((aggregate) => aggregate.workItemId === candidateId) ??
+      normalizedExistingAggregates.find((aggregate) => aggregate.sourceConversationId === candidateId) ??
       null;
     const workItem =
       candidateWorkItems.find((item) => item.id === candidateId) ??
       candidateWorkItems.find((item) => item.workKey === candidateId) ??
+      candidateWorkItems.find((item) => item.sourceConversationId === candidateId) ??
       (existing ? findMatchingWorkItem(existing, candidateWorkItems) : null) ??
       null;
     const room =
       findMatchingRoom(workItem, input.activeRoomRecords) ??
       (existing ? findMatchingRoomForAggregate(existing, input.activeRoomRecords) : null) ??
+      null;
+    const draftConversationState =
+      input.activeConversationStates.find(
+        (state) => buildAggregateIdFromConversationState(state) === candidateId,
+      ) ??
+      findMatchingConversationState(existing, input.activeConversationStates, workItem) ??
       null;
     const record = materializeAggregateRecord({
       companyId: input.companyId,
@@ -546,6 +852,9 @@ export function reconcileRequirementAggregateState(input: {
       workItem,
       room,
       evidence: input.activeRequirementEvidence,
+      draftRequirement: draftConversationState?.draftRequirement ?? null,
+      draftConversationId: draftConversationState?.conversationId ?? null,
+      fallbackId: candidateId,
     });
     if (record) {
       nextAggregates.push(record);
@@ -554,7 +863,7 @@ export function reconcileRequirementAggregateState(input: {
 
   const resolvedPrimaryRequirementId = pickPrimaryAggregateId({
     aggregates: nextAggregates,
-    currentPrimaryRequirementId: input.primaryRequirementId,
+    currentPrimaryRequirementId: normalizedPrimaryRequirementId,
     conversationStates: input.activeConversationStates,
   });
 
@@ -699,11 +1008,23 @@ export function buildAggregateBackedRequirementOverview(input: {
   if (!input.aggregate) {
     return input.rawOverview ?? null;
   }
+  const overviewIdentity = normalizeProductWorkItemIdentity({
+    workItemId: input.workItem?.id ?? input.aggregate.workItemId ?? input.aggregate.id,
+    topicKey: input.aggregate.topicKey ?? input.workItem?.topicKey ?? null,
+    title: readString(input.workItem?.title) ?? input.aggregate.summary ?? null,
+  });
+  const canonicalTopicKey =
+    overviewIdentity.topicKey ??
+    readString(input.aggregate.topicKey) ??
+    readString(input.workItem?.topicKey) ??
+    null;
   if (
     input.rawOverview &&
-    (!input.aggregate.topicKey || input.rawOverview.topicKey === input.aggregate.topicKey)
+    (!canonicalTopicKey || input.rawOverview.topicKey === canonicalTopicKey)
   ) {
-    return input.rawOverview;
+    return canonicalTopicKey && input.rawOverview.topicKey !== canonicalTopicKey
+      ? { ...input.rawOverview, topicKey: canonicalTopicKey }
+      : input.rawOverview;
   }
   const participants = buildFallbackParticipants({
     company: input.company,
@@ -713,7 +1034,9 @@ export function buildAggregateBackedRequirementOverview(input: {
   });
   const currentParticipant = pickCurrentParticipant(participants);
   return {
-    topicKey: input.aggregate.topicKey ?? input.workItem?.topicKey ?? `aggregate:${input.aggregate.id}`,
+    topicKey:
+      canonicalTopicKey ??
+      input.aggregate.id,
     title: readString(input.workItem?.title) ?? input.aggregate.summary ?? "当前主线",
     startedAt: input.aggregate.startedAt,
     headline: readString(input.workItem?.headline) ?? input.aggregate.summary,
@@ -759,7 +1082,9 @@ export function resolveRequirementAggregateIdForEvidence(input: {
   primaryRequirementId: string | null;
   event: RequirementEvidenceEvent;
 }): string | null {
-  const explicitAggregateId = readString(input.event.aggregateId);
+  const explicitAggregateId =
+    normalizeStrategicWorkItemId(readString(input.event.aggregateId)) ??
+    readString(input.event.aggregateId);
   if (
     explicitAggregateId &&
     input.activeRequirementAggregates.some((aggregate) => aggregate.id === explicitAggregateId)
@@ -767,7 +1092,9 @@ export function resolveRequirementAggregateIdForEvidence(input: {
     return explicitAggregateId;
   }
 
-  const workItemId = readString(input.event.payload.workItemId);
+  const workItemId =
+    normalizeStrategicWorkItemId(readString(input.event.payload.workItemId)) ??
+    readString(input.event.payload.workItemId);
   if (workItemId) {
     const matched =
       input.activeRequirementAggregates.find((aggregate) => aggregate.workItemId === workItemId) ??
@@ -788,7 +1115,7 @@ export function resolveRequirementAggregateIdForEvidence(input: {
     }
   }
 
-  const topicKey = readString(input.event.payload.topicKey);
+  const topicKey = normalizeRequirementTopicKey(readString(input.event.payload.topicKey));
   if (topicKey) {
     const matched =
       input.activeRequirementAggregates.find((aggregate) => aggregate.topicKey === topicKey) ??
@@ -831,30 +1158,97 @@ export function resolveRequirementAggregateIdForEvidence(input: {
 
 export function applyRequirementEvidenceToAggregates(input: {
   company: Company;
+  activeConversationStates: ConversationStateRecord[];
   activeRequirementAggregates: RequirementAggregateRecord[];
   activeRoomRecords: RequirementRoomRecord[];
+  activeWorkItems: WorkItemRecord[];
   primaryRequirementId: string | null;
   event: RequirementEvidenceEvent;
 }): {
   activeRequirementAggregates: RequirementAggregateRecord[];
+  primaryRequirementId: string | null;
   applied: boolean;
   aggregateId: string | null;
 } {
-  const targetAggregateId = resolveRequirementAggregateIdForEvidence({
+  let targetAggregateId = resolveRequirementAggregateIdForEvidence({
     activeRequirementAggregates: input.activeRequirementAggregates,
     activeRoomRecords: input.activeRoomRecords,
     primaryRequirementId: input.primaryRequirementId,
     event: input.event,
   });
+  let baseAggregates = input.activeRequirementAggregates;
+  let nextPrimaryRequirementId = input.primaryRequirementId;
   if (!targetAggregateId) {
-    return {
-      activeRequirementAggregates: input.activeRequirementAggregates,
-      applied: false,
-      aggregateId: null,
-    };
+    const workItemId = readString(input.event.payload.workItemId);
+    const topicKey = readString(input.event.payload.topicKey);
+    const sessionKey = readString(input.event.sessionKey);
+    const workItem =
+      (workItemId
+        ? input.activeWorkItems.find((item) => item.id === workItemId || item.workKey === workItemId) ?? null
+        : null) ??
+      (topicKey
+        ? input.activeWorkItems.find((item) => item.topicKey === topicKey && item.status !== "archived") ?? null
+        : null);
+    const existing =
+      (sessionKey
+        ? input.activeRequirementAggregates.find((aggregate) => aggregate.sourceConversationId === sessionKey) ?? null
+        : null) ??
+      null;
+    const room =
+      (workItem ? findMatchingRoom(workItem, input.activeRoomRecords) : null) ??
+      (existing ? findMatchingRoomForAggregate(existing, input.activeRoomRecords) : null) ??
+      (topicKey
+        ? input.activeRoomRecords.find((record) => record.topicKey === topicKey) ?? null
+        : null);
+    const draftConversationState =
+      (sessionKey
+        ? input.activeConversationStates.find((state) => state.conversationId === sessionKey) ?? null
+        : null) ??
+      (workItem
+        ? input.activeConversationStates.find(
+            (state) =>
+              state.currentWorkItemId === workItem.id ||
+              state.currentWorkKey === workItem.workKey,
+          ) ?? null
+        : null) ??
+      (topicKey
+        ? input.activeConversationStates.find((state) => state.draftRequirement?.topicKey === topicKey) ?? null
+        : null);
+    const bootstrapId =
+      readString(input.event.aggregateId) ??
+      readString(workItem?.id) ??
+      readString(draftConversationState?.currentWorkItemId) ??
+      readString(draftConversationState?.currentWorkKey) ??
+      (topicKey ? `topic:${topicKey}` : null) ??
+      sessionKey;
+    const bootstrapAggregate = materializeAggregateRecord({
+      companyId: input.company.id,
+      existing,
+      workItem,
+      room,
+      evidence: [input.event],
+      draftRequirement: draftConversationState?.draftRequirement ?? null,
+      draftConversationId: draftConversationState?.conversationId ?? sessionKey,
+      fallbackId: bootstrapId,
+    });
+    if (!bootstrapAggregate) {
+      return {
+        activeRequirementAggregates: input.activeRequirementAggregates,
+        primaryRequirementId: input.primaryRequirementId,
+        applied: false,
+        aggregateId: null,
+      };
+    }
+    baseAggregates = [...input.activeRequirementAggregates, bootstrapAggregate];
+    nextPrimaryRequirementId = pickPrimaryAggregateId({
+      aggregates: baseAggregates,
+      currentPrimaryRequirementId: input.primaryRequirementId,
+      conversationStates: input.activeConversationStates,
+    });
+    targetAggregateId = bootstrapAggregate.id;
   }
 
-  const nextAggregates = input.activeRequirementAggregates.map((aggregate) => {
+  const nextAggregates = baseAggregates.map((aggregate) => {
     if (aggregate.id !== targetAggregateId) {
       return aggregate;
     }
@@ -912,8 +1306,9 @@ export function applyRequirementEvidenceToAggregates(input: {
   return {
     activeRequirementAggregates: sanitizeRequirementAggregateRecords(
       nextAggregates,
-      input.primaryRequirementId,
+      nextPrimaryRequirementId,
     ),
+    primaryRequirementId: nextPrimaryRequirementId,
     applied: true,
     aggregateId: targetAggregateId,
   };

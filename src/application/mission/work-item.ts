@@ -15,12 +15,17 @@ import { sanitizeRoundPreview, sanitizeRoundTitle } from "../../application/miss
 import type { RequirementExecutionOverview } from "./requirement-overview";
 import { isParticipantCompletedStatus } from "./requirement-kind";
 import { parseAgentIdFromSessionKey } from "../../lib/sessions";
+import {
+  resolveRequirementLifecyclePhase,
+  resolveRequirementStageGateStatus,
+} from "./requirement-lifecycle";
 
 export {
   buildStableStrategicTopicKey,
   buildWorkItemIdentity,
   deriveWorkKeyFromWorkItemId,
   normalizeProductWorkItemIdentity,
+  normalizeStrategicRoundId,
   normalizeStrategicWorkItemId,
   resolveStableWorkItemTitle,
 } from "../../domain/mission/work-item-identity";
@@ -57,35 +62,69 @@ function buildWorkItemDisplayFields(input: {
   ownerLabel: string;
   nextAction: string;
   status: WorkItemRecord["status"];
+  lifecyclePhase: WorkItemRecord["lifecyclePhase"];
+  stageGateStatus: WorkItemRecord["stageGateStatus"];
 }): Pick<
   WorkItemRecord,
   "headline" | "displayStage" | "displaySummary" | "displayOwnerLabel" | "displayNextAction"
 > {
+  const displayStage =
+    input.lifecyclePhase === "pre_requirement"
+      ? input.stageGateStatus === "waiting_confirmation"
+        ? "待确认启动"
+        : "需求已固化"
+      : input.stageLabel || (input.status === "completed" ? "已完成" : "进行中");
+  const displaySummary =
+    input.lifecyclePhase === "pre_requirement"
+      ? input.summary || "CEO 已经把这条主线固化，可以先进入需求房补充细节。"
+      : input.summary || input.nextAction || input.stageLabel || input.title;
+  const displayNextAction =
+    input.lifecyclePhase === "pre_requirement"
+      ? input.stageGateStatus === "waiting_confirmation"
+        ? "进入需求房补充、澄清或确认后再启动执行。"
+        : input.nextAction || "先在需求房补充和明确主线。"
+      : input.nextAction || input.stageLabel || "继续推进当前工作项。";
   return {
     headline: input.title,
-    displayStage: input.stageLabel || (input.status === "completed" ? "已完成" : "进行中"),
-    displaySummary: input.summary || input.nextAction || input.stageLabel || input.title,
+    displayStage,
+    displaySummary,
     displayOwnerLabel: input.ownerLabel || "当前负责人",
-    displayNextAction: input.nextAction || input.stageLabel || "继续推进当前工作项。",
+    displayNextAction,
   };
 }
 
 type WorkItemDisplayBackfillInput = Omit<
   WorkItemRecord,
-  "headline" | "displayStage" | "displaySummary" | "displayOwnerLabel" | "displayNextAction"
+  | "headline"
+  | "displayStage"
+  | "displaySummary"
+  | "displayOwnerLabel"
+  | "displayNextAction"
+  | "lifecyclePhase"
+  | "stageGateStatus"
 > &
   Partial<
     Pick<
       WorkItemRecord,
-      "headline" | "displayStage" | "displaySummary" | "displayOwnerLabel" | "displayNextAction"
+      | "headline"
+      | "displayStage"
+      | "displaySummary"
+      | "displayOwnerLabel"
+      | "displayNextAction"
+      | "lifecyclePhase"
+      | "stageGateStatus"
     >
   >;
 
 export function applyWorkItemDisplayFields(
   workItem: WorkItemDisplayBackfillInput,
 ): WorkItemRecord {
+  const lifecyclePhase = workItem.lifecyclePhase ?? "active_requirement";
+  const stageGateStatus = workItem.stageGateStatus ?? "none";
   return {
     ...workItem,
+    lifecyclePhase,
+    stageGateStatus,
     ...buildWorkItemDisplayFields({
       title: workItem.title,
       stageLabel: workItem.stageLabel,
@@ -93,6 +132,8 @@ export function applyWorkItemDisplayFields(
       ownerLabel: workItem.ownerLabel,
       nextAction: workItem.nextAction,
       status: workItem.status,
+      lifecyclePhase,
+      stageGateStatus,
     }),
   };
 }
@@ -102,6 +143,15 @@ function normalizeWorkItemStatus(
 ): WorkItemRecord["status"] {
   if (mission.completed) {
     return "completed";
+  }
+  if (
+    mission.lifecyclePhase === "pre_requirement" &&
+    mission.stageGateStatus === "waiting_confirmation"
+  ) {
+    return "waiting_review";
+  }
+  if (mission.lifecyclePhase === "pre_requirement") {
+    return "draft";
   }
 
   const normalized = mission.statusLabel.trim().toLowerCase();
@@ -144,6 +194,19 @@ export function buildWorkItemRecordFromMission(input: {
   const batonActorId = mission.nextAgentId ?? mission.ownerAgentId ?? null;
   const batonLabel = mission.nextLabel || mission.ownerLabel;
   const completedAt = mission.completed ? mission.updatedAt : null;
+  const stageGateStatus = resolveRequirementStageGateStatus({
+    explicitStageGateStatus: mission.stageGateStatus,
+    promotionState: mission.promotionState,
+    completed: mission.completed,
+  });
+  const lifecyclePhase = resolveRequirementLifecyclePhase({
+    explicitLifecyclePhase: mission.lifecyclePhase,
+    stageGateStatus,
+    promotionState: mission.promotionState,
+    workItemStatus: normalizeWorkItemStatus(mission),
+    completed: mission.completed,
+    hasExecutionSignal: mission.planSteps.some((step) => step.status !== "pending"),
+  });
   const identity = buildWorkItemIdentity({
     topicKey: mission.topicKey,
     title: mission.title,
@@ -172,6 +235,8 @@ export function buildWorkItemRecordFromMission(input: {
     title: mission.title,
     goal: mission.summary,
     status: normalizeWorkItemStatus(mission),
+    lifecyclePhase,
+    stageGateStatus,
     stageLabel: mission.currentStepLabel,
     ownerActorId: mission.ownerAgentId ?? null,
     ownerLabel: mission.ownerLabel,
@@ -221,6 +286,23 @@ export function buildWorkItemRecordFromRequirementOverview(input: {
   ownerSessionKey?: string | null;
 }): WorkItemRecord {
   const { companyId, overview, roomId, ownerSessionKey } = input;
+  const status = normalizeWorkItemStatusFromOverview(overview);
+  const stageGateStatus = resolveRequirementStageGateStatus({
+    explicitStageGateStatus:
+      /确认|审阅/.test(`${overview.currentStage} ${overview.nextAction}`) ? "waiting_confirmation" : "none",
+    completed:
+      overview.participants.length > 0 &&
+      overview.participants.every((participant) =>
+        isParticipantCompletedStatus(participant.statusLabel),
+      ),
+  });
+  const lifecyclePhase = resolveRequirementLifecyclePhase({
+    stageGateStatus,
+    workItemStatus: status,
+    hasExecutionSignal:
+      status !== "draft" ||
+      overview.participants.some((participant) => participant.isCurrent),
+  });
   const identity = buildWorkItemIdentity({
     topicKey: overview.topicKey,
     title: overview.title,
@@ -247,7 +329,9 @@ export function buildWorkItemRecordFromRequirementOverview(input: {
     providerId: null,
     title: overview.title,
     goal: overview.summary,
-    status: normalizeWorkItemStatusFromOverview(overview),
+    status,
+    lifecyclePhase,
+    stageGateStatus,
     stageLabel: overview.currentStage,
     ownerActorId: overview.currentOwnerAgentId ?? null,
     ownerLabel: overview.currentOwnerLabel || "当前负责人",

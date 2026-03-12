@@ -25,6 +25,11 @@ function isConversationStateRecord(value: unknown): value is ConversationStateRe
         typeof candidate.draftRequirement.ownerLabel === "string" &&
         typeof candidate.draftRequirement.stage === "string" &&
         typeof candidate.draftRequirement.nextAction === "string" &&
+        (candidate.draftRequirement.stageGateStatus == null ||
+          typeof candidate.draftRequirement.stageGateStatus === "string") &&
+        typeof candidate.draftRequirement.state === "string" &&
+        (typeof candidate.draftRequirement.promotionReason === "string" ||
+          candidate.draftRequirement.promotionReason == null) &&
         typeof candidate.draftRequirement.promotable === "boolean" &&
         typeof candidate.draftRequirement.updatedAt === "number")) &&
     typeof candidate.updatedAt === "number"
@@ -57,6 +62,12 @@ function sanitizeConversationStateRecords(
             ownerLabel: record.draftRequirement.ownerLabel.trim(),
             stage: record.draftRequirement.stage.trim(),
             nextAction: record.draftRequirement.nextAction.trim(),
+            stageGateStatus:
+              typeof record.draftRequirement.stageGateStatus === "string"
+                ? record.draftRequirement.stageGateStatus
+                : null,
+            state: record.draftRequirement.state,
+            promotionReason: record.draftRequirement.promotionReason ?? null,
           }
         : null,
     };

@@ -23,6 +23,13 @@ export type RequirementAcceptanceStatus =
   | "accepted"
   | "rejected";
 
+export type RequirementLifecyclePhase =
+  | "pre_requirement"
+  | "active_requirement"
+  | "completed";
+
+export type RequirementStageGateStatus = "none" | "waiting_confirmation" | "confirmed";
+
 export type WorkItemKind = "strategic" | "execution" | "artifact";
 export type WorkItemExecutionLevel = "company" | "department" | "individual";
 
@@ -57,6 +64,10 @@ export interface ConversationMissionRecord {
   topicKey?: string;
   roomId?: string;
   startedAt?: number;
+  promotionState?: RequirementPromotionState;
+  promotionReason?: PromotionReason | null;
+  lifecyclePhase: RequirementLifecyclePhase;
+  stageGateStatus: RequirementStageGateStatus;
   title: string;
   statusLabel: string;
   progressLabel: string;
@@ -93,6 +104,8 @@ export interface WorkItemRecord {
   displayOwnerLabel: string;
   displayNextAction: string;
   status: WorkItemStatus;
+  lifecyclePhase: RequirementLifecyclePhase;
+  stageGateStatus: RequirementStageGateStatus;
   stageLabel: string;
   owningDepartmentId?: string | null;
   executionLevel?: WorkItemExecutionLevel;
@@ -123,6 +136,8 @@ export interface RequirementAggregateRecord {
   roomId: string | null;
   ownerActorId: string | null;
   ownerLabel: string;
+  lifecyclePhase: RequirementLifecyclePhase;
+  stageGateStatus: RequirementStageGateStatus;
   stage: string;
   summary: string;
   nextAction: string;
@@ -158,6 +173,9 @@ export interface DraftRequirementRecord {
   ownerLabel: string;
   stage: string;
   nextAction: string;
+  stageGateStatus?: RequirementStageGateStatus | null;
+  state: RequirementPromotionState;
+  promotionReason?: PromotionReason | null;
   promotable: boolean;
   updatedAt: number;
 }
@@ -171,6 +189,19 @@ export interface ConversationStateRecord {
   draftRequirement?: DraftRequirementRecord | null;
   updatedAt: number;
 }
+
+export type RequirementPromotionState =
+  | "chatting"
+  | "draft_ready"
+  | "awaiting_promotion_choice"
+  | "promoted_manual"
+  | "promoted_auto"
+  | "active_requirement";
+
+export type PromotionReason =
+  | "manual_confirmation"
+  | "multi_actor_dispatch"
+  | "task_board_detected";
 
 export type RoundMessageSnapshot = {
   role: "user" | "assistant" | "system" | "toolResult";

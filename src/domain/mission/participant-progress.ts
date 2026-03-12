@@ -1,4 +1,5 @@
 import type { RequestRecord } from "../delegation/types";
+import { DISPATCH_BUSINESS_ACK_REMINDER_MS } from "../../application/delegation/dispatch-policy";
 
 export type ParticipantProgressTone =
   | "slate"
@@ -43,7 +44,17 @@ export function resolvePendingParticipantStatus(
   request: RequestRecord,
   now: number,
 ): ParticipantProgressStatus {
-  const stale = now - request.updatedAt >= 15 * 60_000;
+  const stale = now - request.updatedAt >= DISPATCH_BUSINESS_ACK_REMINDER_MS;
+  if (request.deliveryState === "unknown") {
+    return {
+      statusLabel: "投递未确认",
+      detail: stale
+        ? `${request.title} 的投递状态仍未确认，且 ${formatParticipantElapsedMinutes(request.updatedAt, now)} 还没有业务回执。先不要判定失败，但需要人工跟进。`
+        : `${request.title} 已进入后台投递，但 transport ACK 仍未确认。对方仍可能直接回结果。`,
+      tone: stale ? "rose" : "amber",
+      isBlocking: stale,
+    };
+  }
   return {
     statusLabel: stale ? "未回复" : "待回复",
     detail: stale
@@ -124,6 +135,7 @@ export function resolveAnsweredParticipantStatus(
 const participantStatusPriority = new Map<string, number>([
   ["已阻塞", 0],
   ["交接阻塞", 0],
+  ["投递未确认", 1],
   ["未回复", 1],
   ["待回复", 1],
   ["已开工未交付", 2],

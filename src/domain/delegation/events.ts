@@ -1,8 +1,15 @@
-import type { DispatchRecord, HandoffRecord, RequestRecord } from "./types";
+import type {
+  DispatchDeliveryState,
+  DispatchRecord,
+  HandoffRecord,
+  RequestRecord,
+} from "./types";
 import type { Company } from "../org/types";
 
 export type DelegationEventKind =
+  | "dispatch_enqueued"
   | "dispatch_sent"
+  | "dispatch_unconfirmed"
   | "dispatch_blocked"
   | "report_acknowledged"
   | "report_answered"
@@ -15,6 +22,7 @@ export type WorkflowEventKind =
   | "requirement_seeded"
   | "requirement_promoted"
   | "requirement_progressed"
+  | "requirement_change_requested"
   | "requirement_owner_changed"
   | "requirement_room_bound"
   | "requirement_completed"
@@ -81,7 +89,9 @@ export function createCompanyEvent(
 
 function isDelegationEventKind(kind: CompanyEventKind): kind is DelegationEventKind {
   return (
+    kind === "dispatch_enqueued" ||
     kind === "dispatch_sent" ||
+    kind === "dispatch_unconfirmed" ||
     kind === "dispatch_blocked" ||
     kind === "report_acknowledged" ||
     kind === "report_answered" ||
@@ -182,8 +192,41 @@ function resolveDispatchStatusFromEvent(
   if (kind === "dispatch_sent") {
     return "sent";
   }
+  if (kind === "dispatch_enqueued" || kind === "dispatch_unconfirmed") {
+    return "pending";
+  }
   if (kind === "dispatch_blocked") {
     return "blocked";
+  }
+  if (kind === "report_acknowledged") {
+    return "acknowledged";
+  }
+  if (kind === "report_answered") {
+    return "answered";
+  }
+  if (kind === "report_blocked") {
+    return "blocked";
+  }
+  return null;
+}
+
+function resolveDispatchDeliveryStateFromEvent(
+  kind: CompanyEventKind,
+): DispatchDeliveryState | null {
+  if (!isDelegationEventKind(kind)) {
+    return null;
+  }
+  if (kind === "dispatch_sent") {
+    return "sent";
+  }
+  if (kind === "dispatch_enqueued") {
+    return "pending";
+  }
+  if (kind === "dispatch_unconfirmed") {
+    return "unknown";
+  }
+  if (kind === "dispatch_blocked") {
+    return "failed";
   }
   if (kind === "report_acknowledged") {
     return "acknowledged";
@@ -232,6 +275,65 @@ function resolveRequestResolution(event: CompanyEvent): RequestRecord["resolutio
   return "pending";
 }
 
+function isOpenDispatchStatus(status: DispatchRecord["status"]): boolean {
+  return status === "pending" || status === "sent" || status === "acknowledged";
+}
+
+function buildLogicalDispatchKey(dispatch: DispatchRecord): string {
+  return [
+    dispatch.workItemId,
+    dispatch.topicKey ?? "",
+    dispatch.roomId ?? "",
+    dispatch.fromActorId ?? "",
+    [...dispatch.targetActorIds].sort().join(","),
+    dispatch.title.trim(),
+  ].join("|");
+}
+
+function supersedeShadowedDispatches(dispatches: DispatchRecord[]): DispatchRecord[] {
+  const byLogicalKey = new Map<string, DispatchRecord[]>();
+  dispatches.forEach((dispatch) => {
+    if (!isOpenDispatchStatus(dispatch.status)) {
+      return;
+    }
+    const key = buildLogicalDispatchKey(dispatch);
+    const current = byLogicalKey.get(key);
+    if (current) {
+      current.push(dispatch);
+      return;
+    }
+    byLogicalKey.set(key, [dispatch]);
+  });
+
+  const winnerByLogicalKey = new Map<string, DispatchRecord>();
+  byLogicalKey.forEach((group, key) => {
+    const winner = [...group].sort((left, right) => {
+      if (left.updatedAt !== right.updatedAt) {
+        return right.updatedAt - left.updatedAt;
+      }
+      return right.createdAt - left.createdAt;
+    })[0];
+    winnerByLogicalKey.set(key, winner);
+  });
+
+  return [...dispatches]
+    .map((dispatch) => {
+      if (!isOpenDispatchStatus(dispatch.status)) {
+        return dispatch;
+      }
+      const winner = winnerByLogicalKey.get(buildLogicalDispatchKey(dispatch));
+      if (!winner || winner.id === dispatch.id) {
+        return dispatch;
+      }
+      return {
+        ...dispatch,
+        status: "superseded" as const,
+        updatedAt: Math.max(dispatch.updatedAt, winner.updatedAt),
+      };
+    })
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
 export function uniqueHandoffList(items: HandoffRecord[]): HandoffRecord[] {
   const byId = new Map<string, HandoffRecord>();
   items.forEach((item) => {
@@ -257,7 +359,7 @@ export function mergeDispatchRecords(
       byId.set(dispatch.id, { ...current, ...dispatch });
     }
   });
-  return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+  return supersedeShadowedDispatches([...byId.values()]);
 }
 
 export function projectDelegationFromEvents(input: {
@@ -303,7 +405,18 @@ export function projectDelegationFromEvents(input: {
     const existingDispatch =
       dispatchById.get(event.dispatchId) ?? existingDispatchById.get(event.dispatchId);
     const dispatchStatus = resolveDispatchStatusFromEvent(event.kind);
+    const dispatchDeliveryState = resolveDispatchDeliveryStateFromEvent(event.kind);
     if (dispatchStatus) {
+      const consumerSessionKey =
+        event.kind.startsWith("report_")
+          ? existingDispatch?.fromActorId?.trim()
+            ? `agent:${existingDispatch.fromActorId.trim()}:main`
+            : null
+          : null;
+      const consumedAt =
+        event.kind === "report_answered" || event.kind === "report_blocked"
+          ? event.createdAt
+          : existingDispatch?.consumedAt ?? null;
       const nextDispatch: DispatchRecord = {
         id: event.dispatchId,
         workItemId: event.workItemId ?? existingDispatch?.workItemId ?? "work:unknown",
@@ -313,12 +426,20 @@ export function projectDelegationFromEvents(input: {
         fromActorId: resolveDispatchOwnerActorId(event, existingDispatch),
         targetActorIds: resolveDispatchTargetActorIds(event, existingDispatch),
         status: dispatchStatus,
+        deliveryState:
+          dispatchDeliveryState ??
+          existingDispatch?.deliveryState ??
+          (dispatchStatus === "pending" ? "pending" : "unknown"),
         sourceMessageId:
           readPayloadString(event.payload, "sourceStepId") ?? existingDispatch?.sourceMessageId,
         responseMessageId:
           event.kind.startsWith("report_") ? event.eventId : existingDispatch?.responseMessageId,
         providerRunId: event.providerRunId ?? existingDispatch?.providerRunId,
         topicKey: event.topicKey ?? existingDispatch?.topicKey,
+        latestEventId: event.eventId,
+        consumedAt,
+        consumerSessionKey:
+          consumerSessionKey ?? existingDispatch?.consumerSessionKey ?? null,
         syncSource: "event",
         createdAt: existingDispatch?.createdAt ?? event.createdAt,
         updatedAt: Math.max(existingDispatch?.updatedAt ?? 0, event.createdAt),
@@ -330,7 +451,9 @@ export function projectDelegationFromEvents(input: {
       }
 
       if (
+        event.kind === "dispatch_enqueued" ||
         event.kind === "dispatch_sent" ||
+        event.kind === "dispatch_unconfirmed" ||
         event.kind === "dispatch_blocked" ||
         readPayloadBoolean(event.payload, "handoff")
       ) {
@@ -350,13 +473,63 @@ export function projectDelegationFromEvents(input: {
               : currentHandoff?.toAgentIds ?? [],
           title: resolveDispatchTitle(event, existingDispatch),
           summary: resolveDispatchSummary(event, existingDispatch),
-          status: event.kind === "dispatch_blocked" ? "blocked" : currentHandoff?.status ?? "pending",
+          status:
+            event.kind === "dispatch_blocked" ? "blocked" : currentHandoff?.status ?? "pending",
           sourceMessageTs: currentHandoff?.sourceMessageTs ?? event.createdAt,
           syncSource: "event",
           createdAt: currentHandoff?.createdAt ?? event.createdAt,
           updatedAt: Math.max(currentHandoff?.updatedAt ?? 0, event.createdAt),
         };
         handoffById.set(handoffId, nextHandoff);
+
+        const currentRequest = requestById.get(`${handoffId}:request`);
+        const nextRequest: RequestRecord = {
+          id: `${handoffId}:request`,
+          dispatchId: event.dispatchId,
+          sessionKey:
+            dispatchSessionKey ??
+            currentRequest?.sessionKey ??
+            `agent:${event.targetActorId ?? "unknown"}:main`,
+          topicKey: event.topicKey ?? existingDispatch?.topicKey,
+          taskId: event.workItemId ?? existingDispatch?.workItemId,
+          handoffId,
+          fromAgentId: resolveDispatchOwnerActorId(event, existingDispatch) ?? undefined,
+          toAgentIds: resolveDispatchTargetActorIds(event, existingDispatch),
+          title: resolveDispatchTitle(event, existingDispatch),
+          summary: resolveDispatchSummary(event, existingDispatch),
+          status: event.kind === "dispatch_blocked" ? "blocked" : currentRequest?.status ?? "pending",
+          deliveryState:
+            event.kind === "dispatch_blocked"
+              ? "failed"
+              : dispatchDeliveryState ?? currentRequest?.deliveryState ?? "pending",
+          resolution:
+            event.kind === "dispatch_blocked"
+              ? "partial"
+              : currentRequest?.resolution ?? "pending",
+          requiredItems:
+            readPayloadStringArray(event.payload, "requiredItems") ?? currentRequest?.requiredItems,
+          responseSummary:
+            event.kind === "dispatch_blocked"
+              ? readPayloadString(event.payload, "error") ?? currentRequest?.responseSummary
+              : currentRequest?.responseSummary,
+          responseDetails:
+            event.kind === "dispatch_blocked"
+              ? readPayloadString(event.payload, "error") ?? currentRequest?.responseDetails
+              : currentRequest?.responseDetails,
+          eventId: event.eventId,
+          consumedAt: currentRequest?.consumedAt ?? null,
+          consumerSessionKey: currentRequest?.consumerSessionKey ?? null,
+          sourceMessageTs: currentRequest?.sourceMessageTs ?? event.createdAt,
+          responseMessageTs:
+            event.kind === "dispatch_blocked"
+              ? event.createdAt
+              : currentRequest?.responseMessageTs,
+          syncSource: "event",
+          transport: "company_report",
+          createdAt: currentRequest?.createdAt ?? event.createdAt,
+          updatedAt: Math.max(currentRequest?.updatedAt ?? 0, event.createdAt),
+        };
+        requestById.set(nextRequest.id, nextRequest);
       }
     }
 
@@ -365,13 +538,15 @@ export function projectDelegationFromEvents(input: {
       const dispatch =
         dispatchById.get(event.dispatchId) ?? existingDispatchById.get(event.dispatchId);
       const handoffId = `handoff:${event.dispatchId}`;
-      const currentRequest = requestById.get(handoffId);
+      const requestId = `${handoffId}:request`;
+      const currentRequest = requestById.get(requestId);
       const sessionKey =
         dispatch?.targetActorIds[0]
           ? `agent:${dispatch.targetActorIds[0]}:main`
           : dispatch?.id ?? "unknown";
       const nextRequest: RequestRecord = {
         id: `${handoffId}:request`,
+        dispatchId: event.dispatchId,
         sessionKey,
         topicKey: event.topicKey ?? dispatch?.topicKey,
         taskId: dispatch?.workItemId,
@@ -381,10 +556,24 @@ export function projectDelegationFromEvents(input: {
         title: dispatch?.title ?? "Company request",
         summary: dispatch?.summary ?? readPayloadString(event.payload, "summary") ?? "",
         status: requestStatus,
+        deliveryState:
+          resolveDispatchDeliveryStateFromEvent(event.kind) ??
+          currentRequest?.deliveryState ??
+          dispatch?.deliveryState ??
+          "unknown",
         resolution: resolveRequestResolution(event),
         requiredItems: readPayloadStringArray(event.payload, "requiredItems"),
         responseSummary: readPayloadString(event.payload, "summary"),
         responseDetails: readPayloadString(event.payload, "summary"),
+        eventId: event.eventId,
+        consumedAt:
+          event.kind === "report_answered" || event.kind === "report_blocked"
+            ? event.createdAt
+            : currentRequest?.consumedAt ?? null,
+        consumerSessionKey:
+          dispatch?.fromActorId?.trim()
+            ? `agent:${dispatch.fromActorId.trim()}:main`
+            : currentRequest?.consumerSessionKey ?? null,
         sourceMessageTs: dispatch?.createdAt ?? event.createdAt,
         responseMessageTs: event.createdAt,
         syncSource: "event",
@@ -392,7 +581,7 @@ export function projectDelegationFromEvents(input: {
         createdAt: currentRequest?.createdAt ?? dispatch?.createdAt ?? event.createdAt,
         updatedAt: Math.max(currentRequest?.updatedAt ?? 0, event.createdAt),
       };
-      requestById.set(nextRequest.id, nextRequest);
+      requestById.set(requestId, nextRequest);
 
       const currentHandoff = handoffById.get(handoffId);
       if (currentHandoff) {
@@ -411,7 +600,7 @@ export function projectDelegationFromEvents(input: {
   });
 
   return {
-    dispatches: [...dispatchById.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+    dispatches: supersedeShadowedDispatches([...dispatchById.values()]),
     requests: [...requestById.values()].sort((left, right) => right.updatedAt - left.updatedAt),
     handoffs: uniqueHandoffList([...handoffById.values()]),
     coveredSessionKeys,

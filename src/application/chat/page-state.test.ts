@@ -4,6 +4,7 @@ import { buildChatPageState } from "./page-state";
 
 function createInput(overrides: Partial<Parameters<typeof buildChatPageState>[0]> = {}) {
   return {
+    authorityBackedState: false,
     isGroup: false,
     sessionKey: "agent:on-58c5a4-ceo:main",
     recentAgentSessionsLength: 1,
@@ -50,6 +51,16 @@ describe("buildChatPageState", () => {
       buildChatPageState(
         createInput({
           isArchiveView: true,
+        }),
+      ).shouldRunCompanySync,
+    ).toBe(false);
+  });
+
+  it("disables company sync when authority is the runtime source of truth", () => {
+    expect(
+      buildChatPageState(
+        createInput({
+          authorityBackedState: true,
         }),
       ).shouldRunCompanySync,
     ).toBe(false);

@@ -67,7 +67,7 @@ function toHello(url: string): BackendHello {
       connId: url,
     },
     features: {
-      methods: [],
+      methods: ["authority.company.employee.hire"],
       events: [
         "bootstrap.updated",
         "company.updated",
@@ -195,6 +195,7 @@ class AuthorityBackendAdapter implements AgentBackend {
       actorId,
       sessionKey: conversationRef.conversationId,
       message: input,
+      timeoutMs: opts?.timeoutMs,
       attachments: opts?.attachments,
     });
     return {
@@ -273,6 +274,11 @@ class AuthorityBackendAdapter implements AgentBackend {
     if (method === "authority.company.create") {
       return (await authorityClient.createCompany(params as Parameters<typeof authorityClient.createCompany>[0])) as T;
     }
+    if (method === "authority.company.employee.hire") {
+      return (await authorityClient.hireEmployee(
+        params as Parameters<typeof authorityClient.hireEmployee>[0],
+      )) as T;
+    }
     if (method === "authority.company.delete") {
       const companyId =
         typeof params === "object" && params && "companyId" in params
@@ -302,6 +308,26 @@ class AuthorityBackendAdapter implements AgentBackend {
         throw new Error("authority.company.runtime.sync requires companyId and snapshot.");
       }
       return (await authorityClient.syncRuntime(payload.companyId, { snapshot: payload.snapshot })) as T;
+    }
+    if (method === "authority.requirement.transition") {
+      return (await authorityClient.transitionRequirement(
+        params as Parameters<typeof authorityClient.transitionRequirement>[0],
+      )) as T;
+    }
+    if (method === "authority.room.append") {
+      return (await authorityClient.appendRoom(
+        params as Parameters<typeof authorityClient.appendRoom>[0],
+      )) as T;
+    }
+    if (method === "authority.room-bindings.upsert") {
+      return (await authorityClient.upsertRoomBindings(
+        params as Parameters<typeof authorityClient.upsertRoomBindings>[0],
+      )) as T;
+    }
+    if (method === "authority.dispatch.create") {
+      return (await authorityClient.upsertDispatch(
+        params as Parameters<typeof authorityClient.upsertDispatch>[0],
+      )) as T;
     }
     if (method === "authority.executor.get") {
       return (await authorityClient.getExecutorConfig()) as T;
@@ -437,17 +463,10 @@ class AuthorityBackendAdapter implements AgentBackend {
   }
 
   async resolveSession(agentId: string): Promise<{ ok: boolean; key: string; error?: string }> {
-    try {
-      return await authorityClient.requestGateway<{ ok: boolean; key: string; error?: string }>("sessions.resolve", {
-        key: `agent:${agentId}:main`,
-      });
-    } catch (error) {
-      return {
-        ok: true as const,
-        key: `agent:${agentId}:main`,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+    return {
+      ok: true as const,
+      key: `agent:${agentId}:main`,
+    };
   }
 
   getChatHistory(sessionKey: string, limit?: number) {
@@ -457,7 +476,10 @@ class AuthorityBackendAdapter implements AgentBackend {
   sendChatMessage(
     sessionKey: string,
     message: string,
-    opts?: { attachments?: Array<{ type: string; mimeType: string; content: string }> },
+    opts?: {
+      timeoutMs?: number;
+      attachments?: Array<{ type: string; mimeType: string; content: string }>;
+    },
   ) {
     const actorId = sessionKey.split(":")[1] ?? "";
     return authorityClient
@@ -472,6 +494,7 @@ class AuthorityBackendAdapter implements AgentBackend {
           actorId,
           sessionKey,
           message,
+          timeoutMs: opts?.timeoutMs,
           attachments: opts?.attachments,
         });
       });

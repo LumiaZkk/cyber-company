@@ -17,6 +17,7 @@ import type { RoundRecord } from "../../domain/mission/types";
 import type { Company } from "../../domain/org/types";
 
 const CHAT_HISTORY_FETCH_LIMIT = 80;
+const CHAT_HISTORY_TIMEOUT_MS = 8_000;
 
 function normalizeMessage(raw: ChatMessage): ChatMessage {
   return {
@@ -25,9 +26,46 @@ function normalizeMessage(raw: ChatMessage): ChatMessage {
   };
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback()), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function withTimeoutStatus<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  fallback: () => T,
+): Promise<{ value: T; timedOut: boolean }> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race<{ value: T; timedOut: boolean }>([
+      promise.then((value) => ({ value, timedOut: false })),
+      new Promise<{ value: T; timedOut: boolean }>((resolve) => {
+        timer = setTimeout(() => resolve({ value: fallback(), timedOut: true }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export type ChatSessionInitializationResult = {
   sessionKey: string | null;
   messages: ChatMessage[] | null;
+  lateHistoryMessagesPromise?: Promise<ChatMessage[]> | null;
   roomRecord?: RequirementRoomRecord | null;
   roomRecordSignature?: string | null;
   roomBindings?: RoomConversationBindingRecord[];
@@ -105,11 +143,24 @@ export async function initializeChatSession(input: {
   }
 
   if (!input.isGroup) {
-    const history = await gateway.getChatHistory(actualKey, CHAT_HISTORY_FETCH_LIMIT);
+    const historyPromise = gateway.getChatHistory(actualKey, CHAT_HISTORY_FETCH_LIMIT);
+    const { value: history, timedOut } = await withTimeoutStatus(
+      historyPromise,
+      CHAT_HISTORY_TIMEOUT_MS,
+      () => ({
+        sessionKey: actualKey,
+        messages: [] as ChatMessage[],
+      }),
+    );
     const liveSession = readLiveChatSession(input.activeCompany?.id, actualKey);
     return {
       sessionKey: actualKey,
       messages: history.messages || [],
+      lateHistoryMessagesPromise: timedOut
+        ? historyPromise
+            .then((result) => result.messages || [])
+            .catch(() => [] as ChatMessage[])
+        : null,
       isGenerating: liveSession?.isGenerating ?? false,
       streamText: liveSession?.streamText ?? null,
       activeRunId: liveSession?.runId ?? null,
@@ -139,9 +190,16 @@ export async function initializeChatSession(input: {
     const histories = await Promise.all(
       input.requirementRoomSessions.map(async (roomSession) => {
         try {
-          const history = await gateway.getChatHistory(
-            roomSession.sessionKey,
-            CHAT_HISTORY_FETCH_LIMIT,
+          const history = await withTimeout(
+            gateway.getChatHistory(
+              roomSession.sessionKey,
+              CHAT_HISTORY_FETCH_LIMIT,
+            ),
+            CHAT_HISTORY_TIMEOUT_MS,
+            () => ({
+              sessionKey: roomSession.sessionKey,
+              messages: [] as ChatMessage[],
+            }),
           );
           return {
             sessionKey: roomSession.sessionKey,

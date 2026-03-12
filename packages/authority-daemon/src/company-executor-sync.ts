@@ -13,6 +13,10 @@ import {
   buildDepartmentContextSnapshot,
   buildDepartmentOperationsGuide,
 } from "../../../src/application/company/agent-context";
+import {
+  COLLABORATION_CONTEXT_FILE_NAME,
+  buildCollaborationContextSnapshot,
+} from "../../../src/application/company/collaboration-context";
 import type { WorkItemRecord } from "../../../src/domain/mission/types";
 import {
   generateDepartmentManagerSoul,
@@ -141,6 +145,18 @@ export function buildManagedExecutorFilesForCompany(
         content: soul,
       });
     }
+    files.push({
+      agentId: employee.agentId,
+      name: COLLABORATION_CONTEXT_FILE_NAME,
+      content: JSON.stringify(
+        buildCollaborationContextSnapshot({
+          company,
+          agentId: employee.agentId,
+        }),
+        null,
+        2,
+      ),
+    });
   }
 
   const ceo = company.employees.find((employee) => employee.metaRole === "ceo") ?? null;

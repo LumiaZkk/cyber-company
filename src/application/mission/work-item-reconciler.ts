@@ -19,6 +19,10 @@ import {
   touchWorkItemArtifacts,
   touchWorkItemDispatches,
 } from "./work-item";
+import {
+  resolveRequirementLifecyclePhase,
+  resolveRequirementStageGateStatus,
+} from "./requirement-lifecycle";
 
 function normalizeText(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? "";
@@ -359,11 +363,29 @@ export function reconcileWorkItemRecord(input: ReconcileWorkItemInput): WorkItem
     sameMainline ? (existingWorkItem?.completedAt ?? candidate.completedAt ?? null) : (candidate.completedAt ?? null),
     reconciled.updatedAt,
   );
+  const stageGateStatus = resolveRequirementStageGateStatus({
+    explicitStageGateStatus:
+      candidate.stageGateStatus ??
+      existingWorkItem?.stageGateStatus ??
+      (reconciled.status === "waiting_review" ? "waiting_confirmation" : "none"),
+    completed: resolvedCompletedAt != null,
+  });
+  const lifecyclePhase = resolveRequirementLifecyclePhase({
+    explicitLifecyclePhase: candidate.lifecyclePhase ?? existingWorkItem?.lifecyclePhase ?? null,
+    stageGateStatus,
+    workItemStatus: reconciled.status,
+    completed: resolvedCompletedAt != null,
+    hasExecutionSignal:
+      reconciled.steps.some((step) => step.status === "active" || step.status === "done") ||
+      reconciled.dispatchIds.length > 0,
+  });
   return applyWorkItemDisplayFields(normalizeWorkItemDepartmentOwnership({
     company: input.company,
     workItem: {
-    ...reconciled,
-    completedAt: resolvedCompletedAt,
+      ...reconciled,
+      lifecyclePhase,
+      stageGateStatus,
+      completedAt: resolvedCompletedAt,
     },
   }));
 }

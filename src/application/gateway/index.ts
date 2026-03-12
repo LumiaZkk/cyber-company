@@ -10,6 +10,7 @@ export {
   setActiveBackendProvider,
   buildProviderManifest,
   resolveCompanyActorConversation,
+  startTurnToCompanyActor,
   sendTurnToCompanyActor,
 } from "../../infrastructure/gateway";
 export type * from "../../infrastructure/gateway";

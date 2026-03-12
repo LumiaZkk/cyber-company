@@ -5,6 +5,7 @@ import {
   sortRequirementRoomMemberIds,
 } from "../../../application/delegation/room-routing";
 import {
+  buildStableStrategicTopicKey,
   buildRoomRecordIdFromWorkItem,
   normalizeProductWorkItemIdentity,
 } from "../../../application/mission/work-item";
@@ -59,10 +60,19 @@ function buildRequirementRoomSemanticId(room: RequirementRoomRecord): string {
   const normalizedTitle = room.title.trim().toLowerCase();
   const memberKey = sortRequirementRoomMemberIds(room.memberIds ?? []).join(",");
   const topicLooksStrategic = (normalizedIdentity.topicKey ?? "").startsWith("mission:");
+  const stableStrategicTopicKey = topicLooksStrategic
+    ? buildStableStrategicTopicKey({
+        topicKey: normalizedIdentity.topicKey,
+        title: room.title,
+      })
+    : null;
   const titleLooksExecution =
     /第\s*\d+\s*章|章节|正文|写手|审校|主编|终审|发布|交稿|稿件/i.test(room.title);
   if (topicLooksStrategic && titleLooksExecution) {
     return `title:${normalizedTitle}|members:${memberKey}`;
+  }
+  if (stableStrategicTopicKey) {
+    return `work:topic:${stableStrategicTopicKey}`;
   }
   if (normalizedIdentity.workItemId) {
     return `work:${normalizedIdentity.workItemId}`;

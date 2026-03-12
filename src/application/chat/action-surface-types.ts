@@ -1,7 +1,7 @@
 import type { StrategicDirectParticipantView } from "../assignment/chat-participants";
 import type { RequirementTeamView } from "../assignment/requirement-team";
 import type { RequirementRoomSummaryView } from "../delegation/chat-room-summary";
-import type { FocusProgressTone, StageGateSnapshot } from "../governance/chat-progress";
+import type { FocusProgressTone } from "../governance/chat-progress";
 import type { TaskPlanOverview } from "../mission/chat-mission-surface";
 import type { WorkItemPrimaryView } from "../mission/conversation-work-item-view";
 import type {
@@ -54,7 +54,6 @@ export type BuildChatActionSurfaceInput = {
   workbenchOpenAction: FocusActionButton | null;
   focusActions: FocusActionButton[];
   summaryRecoveryAction: FocusActionButton | null;
-  latestStageGate: StageGateSnapshot | null;
   taskPlanOverview: TaskPlanOverview | null;
   displayPlanCurrentStep: TaskPlanOverview["currentStep"];
   canonicalNextBatonAgentId: string | null;

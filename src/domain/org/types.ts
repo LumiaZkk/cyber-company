@@ -51,6 +51,7 @@ export interface CompanyOrgSettings {
   lastAutoCalibrationActions?: string[];
   autonomyPolicy?: CompanyAutonomyPolicy;
   autonomyState?: CompanyAutonomyState;
+  collaborationPolicy?: CompanyCollaborationPolicy;
 }
 
 export interface CompanyAutonomyPolicy {
@@ -76,6 +77,23 @@ export interface CompanyAutonomyState {
   lastEngineRunAt?: number;
   lastEngineActions?: string[];
   departmentCounters?: CompanyDepartmentAutonomyCounter[];
+}
+
+export interface CollaborationEdge {
+  fromAgentId?: string;
+  fromDepartmentId?: string;
+  toAgentId?: string;
+  toDepartmentId?: string;
+}
+
+export interface CompanyCollaborationPolicy {
+  globalDispatchMetaRoles?: Array<NonNullable<EmployeeRef["metaRole"]>>;
+  allowDepartmentLeadToDispatchWithinDepartment?: boolean;
+  allowDepartmentLeadToDispatchToSupportLeads?: boolean;
+  allowDepartmentLeadToDispatchToCeo?: boolean;
+  allowDepartmentMembersWithinDepartment?: boolean;
+  allowDepartmentMembersToManager?: boolean;
+  explicitEdges?: CollaborationEdge[];
 }
 
 export interface Department {

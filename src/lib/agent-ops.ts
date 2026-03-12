@@ -4,6 +4,7 @@ import {
   resolveCompanyActorConversation,
   useGatewayStore,
 } from "../application/gateway";
+import { hireAuthorityEmployee } from "../application/gateway/authority-control";
 import type { Company } from "../domain/org/types";
 import { readCompanyRuntimeCommands } from "../infrastructure/company/runtime/commands";
 import { readCompanyRuntimeState } from "../infrastructure/company/runtime/selectors";
@@ -142,10 +143,17 @@ export const AgentOps = {
     }
   },
 
-  async hireEmployee(company: Company, config: { role: string; description: string; modelTier?: string; traits?: string; budget?: number; avatarFile?: File }) {
+  async hireEmployee(company: Company, config: {
+    role: string;
+    description: string;
+    modelTier?: "standard" | "reasoning" | "ultra";
+    traits?: string;
+    budget?: number;
+    avatarFile?: File;
+  }) {
     try {
       let avatarJobId: string | undefined;
-      
+
       if (config.avatarFile) {
         toast.info("化身生成", "正在将基础绘图上载至 Forge 核心...");
         const formData = new FormData();
@@ -166,39 +174,30 @@ export const AgentOps = {
         toast.success("化身排期成功", `Forge 结界已收容该图谱，作业流：${avatarJobId}`);
       }
 
-      const prompt = CONFIG_PROMPTS.hireEmployee(config);
-      const result = await sendPromptToMetaAgent(company, "hr", prompt.prompt);
-      
-      // 更新公司对象以关联化身
-      if (avatarJobId) {
-        const store = { ...readCompanyRuntimeState(), ...readCompanyRuntimeCommands() };
-        const activeCompany = store.activeCompany;
-        if (activeCompany) {
-          const updatedEmployees = activeCompany.employees.map(emp => {
-            if (emp.agentId === result.agentId) {
-              return { ...emp, avatarJobId };
-            }
-            return emp;
-          });
-          
-          const newEmpRef = activeCompany.employees.find(e => e.agentId === result.agentId);
-          if (!newEmpRef) {
-            // 如果 HR 动作过慢未能即时被 Gateway Config 推送捕获导致找不到该员工
-            // 我们手动推入一个预期的待定骨架
-            updatedEmployees.push({
-              agentId: result.agentId,
-              nickname: config.role,
-              role: config.description.slice(0, 15),
-              isMeta: false,
-              avatarJobId,
-            });
-          }
-          await store.updateCompany({ employees: updatedEmployees });
-        }
+      const result = await hireAuthorityEmployee({
+        companyId: company.id,
+        role: config.role,
+        description: config.description,
+        modelTier: config.modelTier,
+        traits: config.traits,
+        budget: config.budget,
+        avatarJobId,
+      });
+
+      const store = { ...readCompanyRuntimeState(), ...readCompanyRuntimeCommands() };
+      await store.updateCompany({
+        employees: result.company.employees,
+        departments: result.company.departments,
+      });
+
+      for (const warning of result.warnings) {
+        toast.info("组织校准", warning);
       }
-      
-      toast.success("系统节点激活", `已指示 HR 构造节点「${config.role.trim()}」及其系统记忆`);
-      return result;
+      toast.success("系统节点激活", `新员工「${result.employee.nickname}」已入职并写入公司 roster`);
+      return {
+        agentId: result.employee.agentId,
+        company: result.company,
+      };
     } catch (error) {
       const message = toErrorMessage(error);
       toast.error("入职创建失败", message);

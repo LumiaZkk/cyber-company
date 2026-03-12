@@ -1,4 +1,8 @@
 import { buildConversationMissionRecord } from "./conversation-mission";
+import {
+  resolveRequirementLifecyclePhase,
+  resolveRequirementStageGateStatus,
+} from "./requirement-lifecycle";
 import type { ConversationMissionRecord, ConversationMissionStepRecord, WorkItemRecord } from "../../domain/mission/types";
 
 type ConversationMissionView = {
@@ -47,6 +51,9 @@ export function buildChatConversationMissionRecord(input: {
   hasStableConversationWorkItem: boolean;
   shouldPreferPersistedConversationMission: boolean;
   persistedWorkItem: WorkItemRecord | null;
+  promotionState?: ConversationMissionRecord["promotionState"];
+  promotionReason?: ConversationMissionRecord["promotionReason"];
+  draftStageGateStatus?: ConversationMissionRecord["stageGateStatus"] | null;
   topicKey?: string | null;
   roomId?: string | null;
   startedAt?: number | null;
@@ -71,11 +78,31 @@ export function buildChatConversationMissionRecord(input: {
     return null;
   }
 
+  const stageGateStatus = resolveRequirementStageGateStatus({
+    explicitStageGateStatus: null,
+    draftStageGateStatus: input.draftStageGateStatus,
+    promotionState: input.promotionState,
+    completed: input.missionIsCompleted,
+  });
+  const lifecyclePhase = resolveRequirementLifecyclePhase({
+    stageGateStatus,
+    promotionState: input.promotionState,
+    completed: input.missionIsCompleted,
+    hasExecutionSignal:
+      Boolean(input.persistedWorkItem) ||
+      input.requirementRoomTranscriptCount > 0 ||
+      input.hasStableConversationWorkItem,
+  });
+
   return buildConversationMissionRecord({
     sessionKey: input.sessionKey,
     topicKey: input.topicKey ?? null,
     roomId: input.roomId ?? null,
     startedAt: input.startedAt ?? input.latestMessageTimestamp,
+    promotionState: input.promotionState,
+    promotionReason: input.promotionReason ?? null,
+    lifecyclePhase,
+    stageGateStatus,
     title: input.conversationMission.title,
     statusLabel: input.conversationMission.statusLabel,
     progressLabel: input.conversationMission.progressLabel,

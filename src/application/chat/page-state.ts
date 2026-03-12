@@ -3,6 +3,7 @@ import type { RequirementRoomRecord } from "../../domain/delegation/types";
 import type { WorkItemRecord } from "../../domain/mission/types";
 
 export type ChatPageStateInput = {
+  authorityBackedState: boolean;
   isGroup: boolean;
   sessionKey: string | null;
   recentAgentSessionsLength: number;
@@ -46,7 +47,11 @@ export function buildChatPageState(input: ChatPageStateInput): ChatPageState {
       : input.archiveHistoryNotice;
 
   const shouldRunCompanySync = Boolean(
-    input.hasActiveCompany && input.connected && input.isPageVisible && !input.isArchiveView,
+    !input.authorityBackedState &&
+      input.hasActiveCompany &&
+      input.connected &&
+      input.isPageVisible &&
+      !input.isArchiveView,
   );
   const companySyncIntervalMs = COMPANY_SYNC_FALLBACK_INTERVAL_MS;
 

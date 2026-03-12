@@ -1,4 +1,5 @@
 import type { Company, HandoffRecord, TrackedTask } from "../../domain";
+import { DISPATCH_BUSINESS_ACK_REMINDER_MINUTES } from "../delegation/dispatch-policy";
 import { getActiveHandoffs } from "../delegation/active-handoffs";
 
 export type SlaAlertLevel = "warning" | "critical";
@@ -25,7 +26,7 @@ export type SlaAlert = {
 };
 
 const WAITING_THRESHOLD_MINUTES = 15;
-const HANDOFF_THRESHOLD_MINUTES = 10;
+const HANDOFF_THRESHOLD_MINUTES = DISPATCH_BUSINESS_ACK_REMINDER_MINUTES;
 const BLOCKED_THRESHOLD_MINUTES = 5;
 
 function ageMinutes(updatedAt: number, now: number): number {

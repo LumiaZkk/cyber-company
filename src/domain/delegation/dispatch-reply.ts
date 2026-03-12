@@ -80,15 +80,20 @@ export function deriveWorkItemFlowFromDispatches(
   }
 
   if (isDispatchOpenStatus(latestDispatch.status)) {
+    const openSummary =
+      latestDispatch.status === "acknowledged"
+        ? `${targetLabel} 已接单，等待回复。`
+        : latestDispatch.deliveryState === "unknown"
+          ? `${targetLabel} 的派单投递仍未确认，先等待回执或直接结果。`
+          : latestDispatch.deliveryState === "pending"
+            ? `${targetLabel} 的派单已受理，正在等待发送。`
+            : `${targetLabel} 已派发，等待回执。`;
     return {
       status: workItem.status === "draft" ? "active" : workItem.status,
       batonActorId: primaryTarget,
       batonLabel: targetLabel,
       nextAction: latestDispatch.summary || latestDispatch.title || workItem.nextAction,
-      summary:
-        latestDispatch.status === "acknowledged"
-          ? `${targetLabel} 已接单，等待回复。`
-          : `${targetLabel} 正在处理当前派单。`,
+      summary: openSummary,
       updatedAt: Math.max(workItem.updatedAt, latestDispatch.updatedAt),
     };
   }

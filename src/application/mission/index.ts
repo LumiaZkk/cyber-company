@@ -18,6 +18,8 @@ export function useMissionBoardApp() {
     updateCompany,
     applyRequirementTransition,
     upsertWorkItemRecord,
+    upsertDecisionTicketRecord,
+    ensureRequirementRoomForAggregate,
   } = useCompanyRuntimeCommands();
   return {
     replaceDispatchRecords,
@@ -25,6 +27,8 @@ export function useMissionBoardApp() {
     updateCompany,
     applyRequirementTransition,
     upsertWorkItemRecord,
+    upsertDecisionTicketRecord,
+    ensureRequirementRoomForAggregate,
   };
 }
 
@@ -37,14 +41,18 @@ export function useConversationWorkspaceChatPageQuery() {
     useShallow((state) => ({
       config: state.config,
       activeCompany: state.activeCompany,
+      authorityBackedState: state.authorityBackedState,
       activeRoomRecords: state.activeRoomRecords,
       activeMissionRecords: state.activeMissionRecords,
       activeConversationStates: state.activeConversationStates,
       activeWorkItems: state.activeWorkItems,
       activeRequirementAggregates: state.activeRequirementAggregates,
+      activeRequirementEvidence: state.activeRequirementEvidence,
       primaryRequirementId: state.primaryRequirementId,
       activeRoundRecords: state.activeRoundRecords,
+      activeDispatches: state.activeDispatches,
       activeRoomBindings: state.activeRoomBindings,
+      activeDecisionTickets: state.activeDecisionTickets,
     })),
   );
 }
@@ -67,12 +75,14 @@ export function useConversationWorkspaceApp() {
     upsertRoundRecord,
     deleteRoundRecord,
     appendRoomMessages,
+    ensureRequirementRoomForAggregate,
     upsertRoomConversationBindings,
     upsertMissionRecord,
     setConversationCurrentWorkKey,
     setConversationDraftRequirement,
     clearConversationState,
     upsertWorkItemRecord,
+    upsertDecisionTicketRecord,
     upsertDispatchRecord,
     replaceDispatchRecords,
     switchCompany,
@@ -86,12 +96,14 @@ export function useConversationWorkspaceApp() {
     upsertRoundRecord,
     deleteRoundRecord,
     appendRoomMessages,
+    ensureRequirementRoomForAggregate,
     upsertRoomConversationBindings,
     upsertMissionRecord,
     setConversationCurrentWorkKey,
     setConversationDraftRequirement,
     clearConversationState,
     upsertWorkItemRecord,
+    upsertDecisionTicketRecord,
     upsertDispatchRecord,
     replaceDispatchRecords,
     switchCompany,

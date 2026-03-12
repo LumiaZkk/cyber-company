@@ -6,6 +6,7 @@ import {
   buildChatConversationMissionRecord,
   resolveConversationMissionUpdatedAt,
 } from "./chat-mission-record";
+import { resolveRequirementLifecyclePhase } from "./requirement-lifecycle";
 import { reconcileWorkItemRecord } from "./work-item-reconciler";
 import { buildRoomRecordIdFromWorkItem } from "./work-item";
 import type { ArtifactRecord } from "../../domain/artifact/types";
@@ -41,6 +42,11 @@ type WorkSelection = {
 
 export function buildConversationMissionTruth(input: {
   allowConversationPersistence: boolean;
+  draftRequirement: {
+    state: ConversationMissionRecord["promotionState"];
+    promotionReason?: ConversationMissionRecord["promotionReason"];
+    stageGateStatus?: ConversationMissionRecord["stageGateStatus"] | null;
+  } | null;
   isGroup: boolean;
   isCeoSession: boolean;
   sessionKey: string | null;
@@ -83,6 +89,9 @@ export function buildConversationMissionTruth(input: {
     hasStableConversationWorkItem: input.hasStableConversationWorkItem,
     shouldPreferPersistedConversationMission: input.shouldPreferPersistedConversationMission,
     persistedWorkItem: input.persistedWorkItem,
+    promotionState: input.draftRequirement?.state,
+    promotionReason: input.draftRequirement?.promotionReason ?? null,
+    draftStageGateStatus: input.draftRequirement?.stageGateStatus ?? null,
     topicKey: input.requirementOverview?.topicKey ?? input.groupTopicKey ?? null,
     roomId: input.productRoomId,
     startedAt:
@@ -170,16 +179,20 @@ export function buildRequirementTeamRoomTruth(input: {
   targetAgentId: string | null;
   effectiveRequirementRoomSnapshots: RequirementSessionSnapshot[];
 }) {
-  if (
-    !input.activeCompany ||
-    !input.requirementTeam ||
-    input.requirementTeam.memberIds.length < 2 ||
-    input.isFreshConversation ||
-    input.isRequirementBootstrapPending
-  ) {
-    return null;
-  }
-
+  const ceoAgentId =
+    input.activeCompany?.employees.find((employee) => employee.metaRole === "ceo")?.agentId ?? null;
+  const promotionState = input.conversationMissionRecord?.promotionState ?? null;
+  const hasPromotedConversation = Boolean(
+    promotionState &&
+      ["promoted_manual", "promoted_auto", "active_requirement"].includes(promotionState),
+  );
+  const conversationLifecyclePhase = resolveRequirementLifecyclePhase({
+    explicitLifecyclePhase: input.conversationMissionRecord?.lifecyclePhase ?? null,
+    stageGateStatus: input.conversationMissionRecord?.stageGateStatus ?? null,
+    promotionState,
+    completed: input.conversationMissionRecord?.completed,
+    hasExecutionSignal: Boolean(input.persistedWorkItem || input.groupWorkItemId),
+  });
   const workItemId =
     input.persistedWorkItem?.id ??
     input.groupWorkItemId ??
@@ -194,10 +207,36 @@ export function buildRequirementTeamRoomTruth(input: {
     input.activeRoomRecords.find(
       (room) => room.id === roomId || room.workItemId === workItemId,
     ) ?? null;
+  const memberIds = [
+    ...(existingRoom?.memberIds ?? []),
+    ...(input.requirementTeam?.memberIds ?? []),
+    input.persistedWorkItem?.ownerActorId ?? null,
+    input.effectiveOwnerAgentId,
+    input.targetAgentId,
+    ceoAgentId,
+  ].filter((memberId, index, members): memberId is string => {
+    return Boolean(memberId) && members.indexOf(memberId) === index;
+  });
+
+  if (
+    !input.activeCompany ||
+    input.isFreshConversation ||
+    input.isRequirementBootstrapPending ||
+    memberIds.length === 0 ||
+    (!hasPromotedConversation &&
+      !input.conversationMissionRecord &&
+      !input.persistedWorkItem &&
+      !input.groupWorkItemId &&
+      (!input.requirementTeam || input.requirementTeam.memberIds.length < 2))
+  ) {
+    return null;
+  }
+
   const preferredRoomTitle =
     input.persistedWorkItem?.title?.trim() ||
-    input.requirementTeam.title?.trim() ||
+    input.requirementTeam?.title?.trim() ||
     existingRoom?.title?.trim() ||
+    input.conversationMissionRecord?.title?.trim() ||
     "需求团队房间";
   const now = Date.now();
   const roomBaseInput = {
@@ -206,27 +245,35 @@ export function buildRequirementTeamRoomTruth(input: {
     workItemId,
     sessionKey: existingRoom?.sessionKey ?? `room:${roomId}`,
     title: preferredRoomTitle,
-    memberIds: input.requirementTeam.memberIds,
+    memberIds,
     ownerAgentId:
       existingRoom?.ownerActorId ??
       existingRoom?.ownerAgentId ??
-      input.requirementTeam.ownerAgentId ??
+      input.requirementTeam?.ownerAgentId ??
       input.persistedWorkItem?.ownerActorId ??
       input.effectiveOwnerAgentId ??
       input.targetAgentId ??
+      ceoAgentId ??
       null,
     topicKey:
       existingRoom?.topicKey ??
       input.persistedWorkItem?.topicKey ??
-      input.requirementTeam.topicKey,
+      input.requirementTeam?.topicKey ??
+      input.conversationMissionRecord?.topicKey,
     scope:
       existingRoom?.scope ??
-      (input.persistedWorkItem?.parentWorkItemId
+      (conversationLifecyclePhase === "pre_requirement"
+        ? "decision"
+        : input.persistedWorkItem?.parentWorkItemId
         ? "support_request"
         : input.persistedWorkItem?.owningDepartmentId
           ? "department"
           : "company"),
-    createdAt: existingRoom?.createdAt ?? input.persistedWorkItem?.startedAt ?? now,
+    createdAt:
+      existingRoom?.createdAt ??
+      input.persistedWorkItem?.startedAt ??
+      input.conversationMissionRecord?.startedAt ??
+      now,
     updatedAt: existingRoom?.updatedAt ?? now,
   } as const;
 

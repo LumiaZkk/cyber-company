@@ -189,6 +189,33 @@ describe("room-persistence", () => {
     expect(rooms[0]?.transcript).toHaveLength(2);
   });
 
+  it("canonicalizes recursively wrapped strategic room identities from authority snapshots", () => {
+    persistRequirementRoomRecords(companyId, [
+      {
+        id: "workitem:topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        companyId,
+        workItemId: "topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        sessionKey: "room:workitem:topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        title: "从头开始搭建 AI 小说创作团队",
+        topicKey: "aggregate:topic:aggregate:topic:mission:alpha@1000",
+        memberIds: ["co-ceo", "co-cto"],
+        memberActorIds: ["co-ceo", "co-cto"],
+        ownerAgentId: "co-ceo",
+        ownerActorId: "co-ceo",
+        status: "active",
+        transcript: [],
+        createdAt: 1_000,
+        updatedAt: 1_200,
+      },
+    ]);
+
+    const [room] = loadRequirementRoomRecords(companyId);
+    expect(room?.id).toBe("workitem:topic:mission:alpha");
+    expect(room?.workItemId).toBe("topic:mission:alpha");
+    expect(room?.sessionKey).toBe("room:workitem:topic:mission:alpha");
+    expect(room?.topicKey).toBe("mission:alpha");
+  });
+
   it("merges legacy duplicate rooms with the same title and members even when work item ids drift", () => {
     persistRequirementRoomRecords(companyId, [
       {

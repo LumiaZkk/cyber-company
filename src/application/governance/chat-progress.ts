@@ -17,20 +17,6 @@ export type FocusProgressEvent = {
   actorAgentId?: string;
 };
 
-export type StageGateSnapshot = {
-  sourceTimestamp: number;
-  status: "needs_plan" | "waiting_confirmation" | "confirmed";
-  statusLabel: string;
-  title: string;
-  stageConclusion: string;
-  stageSummary: string;
-  risks: string | null;
-  nextStagePlan: string[];
-  waitForConfirmation: boolean;
-  confirmMessage: string;
-  launchMessage: string;
-};
-
 function normalizeChatBlockType(type?: string): string {
   if (!type) {
     return "";
@@ -183,57 +169,6 @@ export function summarizeProgressText(text: string): { title: string; summary: s
     title: "收到新进展",
     summary: truncateText(lines[0], 140),
     detail: lines[1] ? truncateText(lines[1], 180) : undefined,
-  };
-}
-
-function parseChecklistLines(text: string | null): string[] {
-  if (!text) {
-    return [];
-  }
-  const lines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => line.replace(/^[0-9]+[.)、]\s*/, "").replace(/^[-*]\s*/, "").trim())
-    .filter((line) => line.length > 0);
-  return [...new Set(lines)];
-}
-
-export function isStageConfirmationMessage(text: string): boolean {
-  return /(确认|同意|按这个计划|进入下一阶段|开始下一阶段|可以开始|继续下一阶段)/i.test(text);
-}
-
-export function parseStageGateSnapshot(
-  text: string,
-  timestamp: number,
-  title: string,
-): StageGateSnapshot | null {
-  const stageConclusion = extractBracketSection(text, "本阶段结论");
-  const stageSummary = extractBracketSection(text, "阶段总结");
-  const nextStagePlan = parseChecklistLines(extractBracketSection(text, "下一阶段计划"));
-  const risks = extractBracketSection(text, "风险与问题");
-  const waitForConfirmation = /^(是|需要|等待)$/i.test(
-    (extractBracketSection(text, "等待你确认") ?? "").trim(),
-  );
-
-  if (!stageConclusion && !stageSummary && nextStagePlan.length === 0) {
-    return null;
-  }
-
-  return {
-    sourceTimestamp: timestamp,
-    status: waitForConfirmation ? "waiting_confirmation" : "confirmed",
-    statusLabel: waitForConfirmation ? "待你确认" : "已确认待启动",
-    title,
-    stageConclusion: stageConclusion ?? "已收到阶段反馈",
-    stageSummary: stageSummary ?? "CEO 已经给出阶段反馈，可以继续确认下一阶段。",
-    risks: risks ?? null,
-    nextStagePlan,
-    waitForConfirmation,
-    confirmMessage:
-      "我已经确认，按你给出的下一阶段计划现在就开始执行。请不要停留在计划阶段，立即启动，并只回复我：1. 已启动哪一步 2. 当前负责人是谁 3. 下一次回传会给我什么结果。",
-    launchMessage:
-      "你已经收到我的确认，请不要再停留在计划阶段，立即按已确认的下一阶段计划启动执行。请只回复我：1. 现在已启动哪一步 2. 当前负责人是谁 3. 下一次回传会给我什么结果。",
   };
 }
 

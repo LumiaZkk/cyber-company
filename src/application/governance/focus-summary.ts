@@ -59,6 +59,32 @@ export function formatRequestStatusLabel(status: RequestRecord["status"]): strin
   }
 }
 
+export function formatRequestDeliveryStateLabel(
+  deliveryState: RequestRecord["deliveryState"],
+): string {
+  switch (deliveryState) {
+    case "pending":
+      return "待发送";
+    case "sent":
+      return "投递中";
+    case "delivered":
+      return "已投递";
+    case "acknowledged":
+      return "已接单";
+    case "answered":
+      return "已回复";
+    case "blocked":
+      return "已阻塞";
+    case "consumed":
+      return "已消费";
+    case "failed":
+      return "投递失败";
+    case "unknown":
+    default:
+      return "投递未确认";
+  }
+}
+
 export function formatRequestResolutionLabel(resolution: RequestRecord["resolution"]): string {
   switch (resolution) {
     case "pending":

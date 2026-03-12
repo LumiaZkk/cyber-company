@@ -3,7 +3,9 @@ import { useCompanyShellCommands, useCompanyShellQuery } from "../company/shell"
 import { useOrgApp } from "../org";
 import { isOrgAutopilotEnabled } from "../assignment/org-fit";
 import { gateway, type GatewayModelChoice, useGatewayStore } from "./index";
+import { useAuthorityRuntimeSyncStore } from "../../infrastructure/authority/runtime-sync-store";
 import type { AuthorityHealthSnapshot } from "../../infrastructure/authority/contract";
+import type { CompanyCollaborationPolicy } from "../../domain/org/types";
 import {
   formatCodexRuntimeSyncDescription,
   reapplyCodexModelsToActiveSessions,
@@ -12,6 +14,24 @@ import {
 import { patchAuthorityExecutorConfig } from "./authority-control";
 
 type JsonMap = Record<string, unknown>;
+export type GatewayDoctorLayerState = "ready" | "degraded" | "blocked";
+export type GatewayDoctorLayer = {
+  id: "gateway" | "authority" | "executor" | "runtime";
+  label: string;
+  state: GatewayDoctorLayerState;
+  summary: string;
+  detail: string;
+  timestamp?: number | null;
+};
+export type GatewayDoctorBaseline = {
+  overallState: GatewayDoctorLayerState;
+  mode: "compatibility_snapshot" | "command_preferred";
+  layers: GatewayDoctorLayer[];
+  validationChecklist: string[];
+  compatibilityPathEnabled: boolean;
+  commandRoutes: string[];
+  lastError: string | null;
+};
 export type GatewayConfigSnapshot = Awaited<ReturnType<typeof gateway.getConfigSnapshot>>;
 export type GatewayProviderConfig = {
   apiKey?: string;
@@ -35,15 +55,26 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function foldLayerStates(states: GatewayDoctorLayerState[]): GatewayDoctorLayerState {
+  if (states.includes("blocked")) {
+    return "blocked";
+  }
+  if (states.includes("degraded")) {
+    return "degraded";
+  }
+  return "ready";
+}
+
 async function refreshAvailableModels() {
   const modelsResult = await gateway.listModels();
   return modelsResult.models ?? [];
 }
 
 export function useGatewaySettingsQuery() {
-  const { connected, modelsVersion, token, url } = useGatewayStore();
+  const { connected, error: gatewayError, modelsVersion, phase, token, url } = useGatewayStore();
   const { config: companyConfig, activeCompany } = useCompanyShellQuery();
   const previousModelsVersionRef = useRef(modelsVersion);
+  const runtimeSync = useAuthorityRuntimeSyncStore();
 
   const [status, setStatus] = useState<JsonMap | null>(null);
   const [channels, setChannels] = useState<JsonMap | null>(null);
@@ -122,6 +153,97 @@ export function useGatewaySettingsQuery() {
   const authorityHealth = useMemo(() => extractAuthorityHealth(status), [status]);
   const executorStatus = authorityHealth?.executor ?? null;
   const executorConfig = authorityHealth?.executorConfig ?? null;
+  const doctorBaseline = useMemo<GatewayDoctorBaseline>(() => {
+    const gatewayLayer: GatewayDoctorLayer = connected
+      ? {
+          id: "gateway",
+          label: "Gateway",
+          state: "ready",
+          summary: "浏览器已连上当前后端。",
+          detail: `当前阶段：${phase}。`,
+        }
+      : {
+          id: "gateway",
+          label: "Gateway",
+          state: gatewayError ? "blocked" : "degraded",
+          summary: gatewayError ? "浏览器与后端当前未连通。" : "浏览器尚未建立稳定连接。",
+          detail: gatewayError ?? `当前阶段：${phase}。`,
+        };
+
+    const authorityLayer: GatewayDoctorLayer = authorityHealth
+      ? {
+          id: "authority",
+          label: "Authority",
+          state: "ready",
+          summary: "Authority 本地权威源在线。",
+          detail: authorityHealth.authority.dbPath,
+          timestamp: authorityHealth.authority.startedAt,
+        }
+      : {
+          id: "authority",
+          label: "Authority",
+          state: connected ? "degraded" : "blocked",
+          summary: connected ? "还没拿到 Authority 健康快照。" : "Authority 健康信息不可用。",
+          detail: "请先重连 Gateway 或刷新运行时。",
+        };
+
+    const executorLayer: GatewayDoctorLayer = {
+      id: "executor",
+      label: "Executor",
+      state: executorStatus?.state ?? "blocked",
+      summary: executorStatus?.note ?? "下游执行器状态未知。",
+      detail:
+        executorConfig?.openclaw.url ??
+        executorConfig?.lastError ??
+        "尚未检测到可用执行器地址。",
+      timestamp: executorConfig?.lastConnectedAt ?? null,
+    };
+
+    const runtimeLayerState: GatewayDoctorLayerState =
+      runtimeSync.lastError
+        ? "degraded"
+        : runtimeSync.commandCount > 0 || runtimeSync.pushCount > 0 || runtimeSync.pullCount > 0
+          ? "ready"
+          : "degraded";
+    const runtimeLayer: GatewayDoctorLayer = {
+      id: "runtime",
+      label: "Runtime",
+      state: runtimeLayerState,
+      summary:
+        runtimeSync.mode === "command_preferred"
+          ? "主线开始优先走 command 写入。"
+          : "当前仍保留 snapshot 兼容同步。",
+      detail:
+        runtimeSync.lastError ??
+        `push ${runtimeSync.pushCount} / pull ${runtimeSync.pullCount} / command ${runtimeSync.commandCount}`,
+      timestamp:
+        runtimeSync.lastCommandAt ??
+        runtimeSync.lastPullAt ??
+        runtimeSync.lastPushAt ??
+        null,
+    };
+
+    return {
+      overallState: foldLayerStates([
+        gatewayLayer.state,
+        authorityLayer.state,
+        executorLayer.state,
+        runtimeLayer.state,
+      ]),
+      mode: runtimeSync.mode,
+      layers: [gatewayLayer, authorityLayer, executorLayer, runtimeLayer],
+      validationChecklist: [
+        "单 tab 正常推进一条 requirement",
+        "刷新后主线不漂移",
+        "断连重连后状态不回退",
+        "晚到 control message 不会把主线改乱",
+        "authority / gateway / executor 异常能分层定位",
+      ],
+      compatibilityPathEnabled: runtimeSync.compatibilityPathEnabled,
+      commandRoutes: runtimeSync.commandRoutes,
+      lastError: runtimeSync.lastError,
+    };
+  }, [authorityHealth, connected, executorConfig, executorStatus, gatewayError, phase, runtimeSync]);
 
   return {
     url,
@@ -141,6 +263,7 @@ export function useGatewaySettingsQuery() {
     providerConfigs,
     telegramConfig,
     authorityHealth,
+    doctorBaseline,
     executorStatus,
     executorConfig,
     refreshRuntime,
@@ -168,6 +291,7 @@ export function useGatewaySettingsCommands(input: {
   const [codexRefreshing, setCodexRefreshing] = useState(false);
   const [executorSaving, setExecutorSaving] = useState(false);
   const [orgAutopilotSaving, setOrgAutopilotSaving] = useState(false);
+  const [collaborationPolicySaving, setCollaborationPolicySaving] = useState(false);
 
   const reconnectGateway = useCallback(() => {
     connect(url, token);
@@ -485,6 +609,31 @@ export function useGatewaySettingsCommands(input: {
     }
   }, [input]);
 
+  const handleUpdateCollaborationPolicy = useCallback(
+    async (collaborationPolicy: CompanyCollaborationPolicy) => {
+      if (!input.activeCompany || collaborationPolicySaving) {
+        return null;
+      }
+
+      setCollaborationPolicySaving(true);
+      try {
+        await updateCompany({
+          orgSettings: {
+            ...(input.activeCompany.orgSettings ?? {}),
+            collaborationPolicy,
+          },
+        });
+        return {
+          title: "协作策略已更新",
+          description: `已保存默认协作规则，并维护 ${collaborationPolicy.explicitEdges?.length ?? 0} 条显式协作边。`,
+        };
+      } finally {
+        setCollaborationPolicySaving(false);
+      }
+    },
+    [collaborationPolicySaving, input.activeCompany, updateCompany],
+  );
+
   return {
     switchCompany,
     loadConfig,
@@ -500,6 +649,7 @@ export function useGatewaySettingsCommands(input: {
     handleExecutorConfigSubmit,
     handleExecutorReconnect,
     handleToggleOrgAutopilot,
+    handleUpdateCollaborationPolicy,
     telegramSaving,
     providerKeySaving,
     addProviderSaving,
@@ -509,6 +659,7 @@ export function useGatewaySettingsCommands(input: {
     codexRefreshing,
     executorSaving,
     orgAutopilotSaving,
+    collaborationPolicySaving,
   };
 }
 

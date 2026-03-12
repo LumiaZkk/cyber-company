@@ -41,6 +41,8 @@ export function areWorkItemRecordsEquivalent(left: WorkItemRecord, right: WorkIt
     left.title !== right.title ||
     left.goal !== right.goal ||
     left.status !== right.status ||
+    left.lifecyclePhase !== right.lifecyclePhase ||
+    left.stageGateStatus !== right.stageGateStatus ||
     left.stageLabel !== right.stageLabel ||
     (left.owningDepartmentId ?? null) !== (right.owningDepartmentId ?? null) ||
     (left.executionLevel ?? null) !== (right.executionLevel ?? null) ||

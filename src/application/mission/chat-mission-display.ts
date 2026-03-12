@@ -1,6 +1,6 @@
 import type { StrategicDirectParticipantView } from "../assignment/chat-participants";
 import type { RequirementTeamView } from "../assignment/requirement-team";
-import type { StageGateSnapshot, FocusProgressTone } from "../governance/chat-progress";
+import type { FocusProgressTone } from "../governance/chat-progress";
 import type { WorkItemPrimaryView } from "./conversation-work-item-view";
 import type {
   RequirementExecutionOverview,
@@ -60,7 +60,6 @@ export type BuildChatMissionSurfaceInput = {
   requirementProgressWorkingCount: number;
   requirementRoomSummary: RequirementRoomMissionSummary | null;
   taskPlanOverview: TaskPlanOverview | null;
-  latestStageGate: StageGateSnapshot | null;
   shouldAdvanceToNextPhase: boolean;
   shouldDispatchPublish: boolean;
   shouldDirectToTechDispatch: boolean;
@@ -179,7 +178,6 @@ export function resolveEffectiveSurface(input: {
   taskPlanOverview: TaskPlanOverview | null;
   requirementOverview: RequirementExecutionOverview | null;
   workbenchOwnerAgentId: string | null;
-  latestStageGate: StageGateSnapshot | null;
   shouldDispatchPublish: boolean;
   shouldAdvanceToNextPhase: boolean;
   groupTitle: string;
@@ -203,9 +201,7 @@ export function resolveEffectiveSurface(input: {
   const effectiveStage =
     input.isGroup
       ? input.requirementRoomSummary?.stage ?? "需求团队房间"
-      : input.latestStageGate
-        ? "等待阶段确认"
-        : input.shouldDispatchPublish
+      : input.shouldDispatchPublish
           ? "向 CTO 下发新版发布指令"
           : input.shouldUseTaskPlanPrimaryView && input.taskPlanOverview?.currentStep
             ? input.taskPlanOverview.currentStep.title
@@ -214,9 +210,7 @@ export function resolveEffectiveSurface(input: {
   const effectiveStatusLabel =
     input.isGroup
       ? input.requirementRoomSummary?.statusLabel ?? "待派发"
-      : input.latestStageGate
-        ? input.latestStageGate.statusLabel
-        : input.shouldDispatchPublish
+      : input.shouldDispatchPublish
           ? "待派发"
           : input.shouldAdvanceToNextPhase
             ? "待推进"
@@ -229,9 +223,7 @@ export function resolveEffectiveSurface(input: {
   const effectiveSummary =
     input.isGroup
       ? input.requirementRoomSummary?.summary ?? `当前团队房间：${input.groupTitle}`
-      : input.latestStageGate
-        ? input.latestStageGate.stageSummary
-        : input.shouldDispatchPublish
+      : input.shouldDispatchPublish
           ? "写手、审校、主编都已经完成本轮，当前只差 CEO 把新版终审通过结果正式转给 CTO。"
           : input.shouldAdvanceToNextPhase
             ? "重开准备动作已经完成，当前不该继续盯写手或冻结节点，应该由 CEO 发起新版审校 -> 终审 -> 发布链。"
@@ -245,11 +237,7 @@ export function resolveEffectiveSurface(input: {
     input.isGroup
       ? input.requirementRoomSummary?.actionHint ??
         "输入 @成员名 可以定向派发；不写 @ 默认发给当前 baton，必要时再切到群发。"
-      : input.latestStageGate
-        ? input.latestStageGate.status === "waiting_confirmation"
-          ? "先和 CEO 讨论这份阶段总结和下一阶段计划；确认之后再正式进入下一阶段。"
-          : "你已经确认过 plan。现在先等 CEO 按已确认计划启动；只有长时间没有新回执时，再补发提醒。"
-        : input.shouldDispatchPublish
+      : input.shouldDispatchPublish
           ? "现在通知 CTO 立即发布新版第 2 章，并要求他回传是否成功、发布链接和审核状态。"
           : input.shouldAdvanceToNextPhase
             ? "现在该由 CEO 继续推进：先把 ch02_clean.md 发给审校，再转主编终审，最后再让 CTO 发布。"
@@ -268,11 +256,7 @@ export function resolveEffectiveSurface(input: {
           ? "等待你的新指令"
           : input.stableDisplayPrimaryView
             ? input.display.headline
-            : input.latestStageGate
-              ? input.latestStageGate.status === "waiting_confirmation"
-                ? "等待你确认下一阶段"
-                : "计划已确认，等待 CEO 启动"
-              : input.shouldDispatchPublish
+            : input.shouldDispatchPublish
                 ? "当前卡点在 CEO"
                 : input.shouldAdvanceToNextPhase
                   ? "当前应由 CEO 发起下一阶段"
@@ -285,11 +269,7 @@ export function resolveEffectiveSurface(input: {
       ? input.requirementRoomSummary?.tone ?? "slate"
       : input.isFreshConversation
         ? "slate"
-        : input.latestStageGate
-          ? input.latestStageGate.status === "waiting_confirmation"
-            ? "amber"
-            : "indigo"
-          : input.shouldAdvanceToNextPhase || input.shouldUseTaskPlanPrimaryView
+        : input.shouldAdvanceToNextPhase || input.shouldUseTaskPlanPrimaryView
             ? "amber"
             : input.display.tone;
 

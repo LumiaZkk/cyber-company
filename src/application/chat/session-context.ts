@@ -21,7 +21,12 @@ import { buildTaskObjectSnapshot } from "../../application/mission/task-object";
 import { extractTaskTracker } from "../../application/mission/task-tracker";
 import { buildCeoControlSurface } from "../../application/governance/ceo-control-surface";
 import { evaluateSlaAlerts } from "../../application/governance/sla-rules";
-import type { HandoffRecord, RequirementRoomRecord, RoomConversationBindingRecord } from "../../domain/delegation/types";
+import type {
+  HandoffRecord,
+  RequestRecord,
+  RequirementRoomRecord,
+  RoomConversationBindingRecord,
+} from "../../domain/delegation/types";
 import type { Company } from "../../domain/org/types";
 import type {
   ConversationStateRecord,
@@ -75,6 +80,35 @@ function uniqueHandoffList(handoffs: HandoffRecord[]): HandoffRecord[] {
     byId.set(handoff.id, handoff);
   });
   return [...byId.values()];
+}
+
+function uniqueRequestList(requests: RequestRecord[]): RequestRecord[] {
+  const byId = new Map<string, RequestRecord>();
+  requests.forEach((request) => {
+    const current = byId.get(request.id);
+    if (!current || request.updatedAt >= current.updatedAt) {
+      byId.set(request.id, request);
+    }
+  });
+  return [...byId.values()];
+}
+
+function deriveConversationTopicKey(input: {
+  activeConversationState: ConversationStateRecord | null;
+  activeRequirementRoom: RequirementRoomRecord | null;
+  groupWorkItemId: string | null;
+}): string | null {
+  if (input.activeRequirementRoom?.topicKey?.trim()) {
+    return input.activeRequirementRoom.topicKey.trim();
+  }
+  if (input.activeConversationState?.draftRequirement?.topicKey?.trim()) {
+    return input.activeConversationState.draftRequirement.topicKey.trim();
+  }
+  const currentWorkKey = input.activeConversationState?.currentWorkKey?.trim() ?? "";
+  if (currentWorkKey.startsWith("topic:")) {
+    return currentWorkKey.slice("topic:".length).trim() || null;
+  }
+  return input.groupWorkItemId?.trim() ?? null;
 }
 
 type ChatFallbackAlert = {
@@ -309,7 +343,7 @@ export function buildChatSessionContext(input: BuildChatSessionContextInput) {
       ? resolveStepAssigneeAgentId(nextOpenTaskStep, input.activeCompany.employees)
       : null;
 
-  const handoffPreview =
+  const localHandoffPreview =
     input.activeCompany && input.sessionKey
       ? buildHandoffRecords({
           sessionKey: input.sessionKey,
@@ -320,15 +354,67 @@ export function buildChatSessionContext(input: BuildChatSessionContextInput) {
         })
       : [];
 
-  const requestPreview =
-    input.sessionKey && handoffPreview.length > 0
+  const localRequestPreview =
+    input.sessionKey && localHandoffPreview.length > 0
       ? buildRequestRecords({
           sessionKey: input.sessionKey,
-          handoffs: handoffPreview,
+          handoffs: localHandoffPreview,
           messages: input.messages.slice(-16),
           relatedTask: structuredTaskPreview ?? null,
         })
       : [];
+
+  const conversationTopicKey = deriveConversationTopicKey({
+    activeConversationState: input.activeConversationState,
+    activeRequirementRoom: input.activeRequirementRoom,
+    groupWorkItemId: input.groupWorkItemId,
+  });
+  const conversationWorkItemId =
+    input.activeConversationState?.currentWorkItemId ??
+    input.activeRequirementRoom?.workItemId ??
+    input.groupWorkItemId ??
+    null;
+  const companyHandoffPreview = (input.activeCompany?.handoffs ?? []).filter((handoff) => {
+    const matchesAgent =
+      handoff.sessionKey === input.sessionKey ||
+      handoff.fromAgentId === input.targetAgentId ||
+      handoff.toAgentIds.includes(input.targetAgentId ?? "");
+    if (!matchesAgent) {
+      return false;
+    }
+    if (conversationWorkItemId && handoff.taskId === conversationWorkItemId) {
+      return true;
+    }
+    if (conversationTopicKey) {
+      const haystack = `${handoff.title}\n${handoff.summary}\n${(handoff.checklist ?? []).join("\n")}\n${(handoff.missingItems ?? []).join("\n")}`;
+      return haystack.includes(conversationTopicKey);
+    }
+    return true;
+  });
+  const companyRequestPreview = (input.activeCompany?.requests ?? []).filter((request) => {
+    const matchesAgent =
+      request.sessionKey === input.sessionKey ||
+      request.fromAgentId === input.targetAgentId ||
+      request.toAgentIds.includes(input.targetAgentId ?? "");
+    if (!matchesAgent) {
+      return false;
+    }
+    if (conversationWorkItemId && request.taskId === conversationWorkItemId) {
+      return true;
+    }
+    if (conversationTopicKey && request.topicKey === conversationTopicKey) {
+      return true;
+    }
+    return !conversationWorkItemId && !conversationTopicKey;
+  });
+  const handoffPreview = uniqueHandoffList([
+    ...companyHandoffPreview,
+    ...localHandoffPreview,
+  ]).sort((left, right) => right.updatedAt - left.updatedAt);
+  const requestPreview = uniqueRequestList([
+    ...companyRequestPreview,
+    ...localRequestPreview,
+  ]).sort((left, right) => right.updatedAt - left.updatedAt);
 
   const requestHealth = summarizeRequestHealth(requestPreview);
   const ceoSurface =

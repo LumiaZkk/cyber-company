@@ -18,6 +18,8 @@ function createMission(overrides: Partial<ConversationMissionRecord> = {}): Conv
     sessionKey: "agent:co-ceo:main",
     topicKey: "chapter:02-rewrite",
     startedAt: 1_000,
+    lifecyclePhase: "active_requirement",
+    stageGateStatus: "confirmed",
     title: "重新完成第 2 章",
     statusLabel: "执行中",
     progressLabel: "1/3",

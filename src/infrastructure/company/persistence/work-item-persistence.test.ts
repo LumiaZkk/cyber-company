@@ -142,6 +142,24 @@ describe("sanitizeWorkItemRecords", () => {
     expect(records[0]?.sourceConversationId).toBe("agent:co-ceo:main");
   });
 
+  it("normalizes recursively wrapped strategic ids from authority snapshots", () => {
+    const [record] = sanitizeWorkItemRecords([
+      createWorkItem({
+        id: "topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        workKey: "topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        roundId: "topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        topicKey: "aggregate:topic:aggregate:topic:mission:alpha@1000",
+        title: "从头开始搭建 AI 小说创作团队",
+        sourceConversationId: "agent:co-ceo:main",
+        sourceSessionKey: "agent:co-ceo:main",
+      }),
+    ]);
+
+    expect(record?.id).toBe("topic:mission:alpha");
+    expect(record?.workKey).toBe("topic:mission:alpha");
+    expect(record?.topicKey).toBe("mission:alpha");
+  });
+
   it("preserves distinct strategic tasks from the same source conversation", () => {
     const records = sanitizeWorkItemRecords([
       createWorkItem({

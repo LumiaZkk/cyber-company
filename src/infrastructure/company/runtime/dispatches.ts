@@ -1,3 +1,8 @@
+import { upsertAuthorityDispatch } from "../../../application/gateway/authority-control";
+import {
+  applyAuthorityRuntimeCommandError,
+  applyAuthorityRuntimeSnapshotToStore,
+} from "../../authority/runtime-command";
 import { persistDispatchRecords } from "../persistence/dispatch-persistence";
 import type { CompanyRuntimeState, DispatchRecord, RuntimeGet, RuntimeSet } from "./types";
 import {
@@ -20,7 +25,14 @@ export function buildDispatchActions(
 ): Pick<CompanyRuntimeState, "upsertDispatchRecord" | "replaceDispatchRecords" | "deleteDispatchRecord"> {
   return {
     upsertDispatchRecord: (dispatch) => {
-      const { activeCompany, activeDispatches, activeWorkItems, activeArtifacts, activeRoomRecords } = get();
+      const {
+        activeCompany,
+        authorityBackedState,
+        activeDispatches,
+        activeWorkItems,
+        activeArtifacts,
+        activeRoomRecords,
+      } = get();
       if (!activeCompany) {
         return;
       }
@@ -40,6 +52,30 @@ export function buildDispatchActions(
         next[index] = { ...existing, ...normalized };
       } else {
         next.push(normalized);
+      }
+
+      if (authorityBackedState) {
+        void upsertAuthorityDispatch({
+          companyId: activeCompany.id,
+          dispatch: normalized,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "dispatch.create",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to upsert dispatch through authority",
+            });
+          });
+        return;
       }
 
       const sortedDispatches = next.sort((left, right) => right.updatedAt - left.updatedAt);

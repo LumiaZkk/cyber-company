@@ -1,7 +1,6 @@
 import { buildRequirementTeamAdjustmentAction } from "../assignment/team-adjustment";
 import {
   buildRequirementRoomHrefFromRecord,
-  buildRequirementRoomRoute,
 } from "../delegation/room-routing";
 import { formatAgentRole } from "../governance/focus-summary";
 import type { FocusProgressTone } from "../governance/chat-progress";
@@ -259,34 +258,13 @@ export function buildDisplayRequirementProgressGroups(
 
 export function buildTeamGroupRoute(input: BuildTeamGroupRouteInput): string | null {
   const {
-    activeCompany,
-    activeRoomRecords,
-    conversationMissionRecord,
-    groupWorkItemId,
     linkedRequirementRoom,
-    persistedWorkItem,
-    requirementTeam,
-    targetAgentId,
   } = input;
 
   if (linkedRequirementRoom) {
     return buildRequirementRoomHrefFromRecord(linkedRequirementRoom);
   }
-
-  if (!activeCompany || !requirementTeam || requirementTeam.memberIds.length < 2) {
-    return null;
-  }
-
-  return buildRequirementRoomRoute({
-    company: activeCompany,
-    memberIds: requirementTeam.memberIds,
-    topic: requirementTeam.title,
-    topicKey: requirementTeam.topicKey,
-    workItemId:
-      persistedWorkItem?.id ?? groupWorkItemId ?? conversationMissionRecord?.id ?? null,
-    preferredInitiatorAgentId: targetAgentId,
-    existingRooms: activeRoomRecords,
-  });
+  return null;
 }
 
 export function buildTeamAdjustmentActionFactory(

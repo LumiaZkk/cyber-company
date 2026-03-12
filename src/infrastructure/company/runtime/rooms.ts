@@ -17,6 +17,10 @@ import {
   areRequirementRoomRecordsEquivalent,
   sortRequirementRoomMemberIds,
 } from "../../../application/delegation/room-routing";
+import {
+  buildRoomConversationBindingKey,
+  mergeRoomConversationBindings,
+} from "../../../application/delegation/room-records";
 import { isArtifactRequirementTopic } from "../../../application/mission/requirement-kind";
 import {
   persistActiveWorkItems,
@@ -26,6 +30,15 @@ import {
   persistActiveRequirementAggregates,
   reconcileActiveRequirementState,
 } from "./requirements";
+import { backfillRequirementRoomRecord } from "../../../application/mission/requirement-room-backfill";
+import {
+  appendAuthorityRoom,
+  upsertAuthorityRoomBindings,
+} from "../../../application/gateway/authority-control";
+import {
+  applyAuthorityRuntimeCommandError,
+  applyAuthorityRuntimeSnapshotToStore,
+} from "../../authority/runtime-command";
 
 const ROOM_MESSAGE_LIMIT = 120;
 
@@ -52,6 +65,94 @@ export function mergeRoomMemberIds(
 
 export function persistActiveRooms(companyId: string | null | undefined, rooms: RequirementRoomRecord[]) {
   persistRequirementRoomRecords(companyId, rooms);
+}
+
+function buildFallbackRoomBindings(input: {
+  room: RequirementRoomRecord;
+  existingBindings: RoomConversationBindingRecord[];
+}): RoomConversationBindingRecord[] {
+  const memberActorIds = mergeRoomMemberIds(
+    input.room.memberActorIds ?? input.room.memberIds,
+    input.room.memberIds,
+  );
+  if (memberActorIds.length === 0) {
+    return [];
+  }
+
+  const timestamp = Math.max(input.room.updatedAt, Date.now());
+  const existingActorIds = new Set(
+    input.existingBindings
+      .filter((binding) => binding.roomId === input.room.id)
+      .map((binding) => binding.actorId?.trim())
+      .filter((actorId): actorId is string => Boolean(actorId)),
+  );
+  return memberActorIds
+    .filter((actorId) => !existingActorIds.has(actorId))
+    .map((actorId) => ({
+      roomId: input.room.id,
+      providerId: "runtime-fallback",
+      conversationId: `agent:${actorId}:main`,
+      actorId,
+      nativeRoom: false,
+      updatedAt: timestamp,
+    }));
+}
+
+function preserveRoomRecordForAuthorityState(
+  room: RequirementRoomRecord,
+  companyId: string,
+): RequirementRoomRecord {
+  return {
+    ...room,
+    companyId: room.companyId ?? companyId,
+    ownerActorId: room.ownerActorId ?? room.ownerAgentId ?? null,
+    batonActorId: room.batonActorId ?? null,
+    scope: room.scope ?? "company",
+    memberIds: mergeRoomMemberIds(room.memberIds, []),
+    memberActorIds: mergeRoomMemberIds(room.memberActorIds ?? room.memberIds, room.memberIds),
+    headline: room.headline ?? room.title,
+    status: room.status ?? "active",
+    transcript: mergeRoomTranscript([], room.transcript),
+  };
+}
+
+function mergeAuthorityRoomRecord(
+  existing: RequirementRoomRecord | null,
+  incoming: RequirementRoomRecord,
+  companyId: string,
+): RequirementRoomRecord {
+  const base = preserveRoomRecordForAuthorityState(incoming, companyId);
+  if (!existing) {
+    return base;
+  }
+  return {
+    ...existing,
+    ...base,
+    id: existing.id,
+    companyId: base.companyId ?? existing.companyId ?? companyId,
+    workItemId: existing.workItemId ?? base.workItemId,
+    sessionKey: existing.sessionKey || base.sessionKey,
+    title: base.title || existing.title,
+    headline: base.headline ?? existing.headline ?? base.title ?? existing.title,
+    ownerActorId: base.ownerActorId ?? existing.ownerActorId ?? existing.ownerAgentId ?? null,
+    batonActorId: base.batonActorId ?? existing.batonActorId ?? null,
+    scope: base.scope ?? existing.scope ?? "company",
+    memberIds: mergeRoomMemberIds(existing.memberIds, base.memberIds),
+    memberActorIds: mergeRoomMemberIds(
+      existing.memberActorIds ?? existing.memberIds,
+      base.memberActorIds ?? base.memberIds,
+    ),
+    status: base.status ?? existing.status ?? "active",
+    progress: base.progress ?? existing.progress,
+    topicKey: existing.topicKey ?? base.topicKey,
+    providerConversationRefs:
+      existing.providerConversationRefs ?? base.providerConversationRefs,
+    transcript: mergeRoomTranscript(existing.transcript, base.transcript),
+    lastConclusionAt: base.lastConclusionAt ?? existing.lastConclusionAt ?? null,
+    lastSourceSyncAt: Math.max(existing.lastSourceSyncAt ?? 0, base.lastSourceSyncAt ?? 0) || undefined,
+    createdAt: existing.createdAt ?? base.createdAt,
+    updatedAt: Math.max(existing.updatedAt, base.updatedAt),
+  };
 }
 
 export function normalizeRoomRecordForState(
@@ -111,12 +212,17 @@ export function buildRoomActions(
   get: RuntimeGet,
 ): Pick<
   CompanyRuntimeState,
-  "upsertRoomRecord" | "appendRoomMessages" | "upsertRoomConversationBindings" | "deleteRoomRecord"
+  | "upsertRoomRecord"
+  | "appendRoomMessages"
+  | "ensureRequirementRoomForAggregate"
+  | "upsertRoomConversationBindings"
+  | "deleteRoomRecord"
 > {
   return {
     upsertRoomRecord: (room) => {
       const {
         activeCompany,
+        authorityBackedState,
         activeConversationStates,
         activeRequirementAggregates,
         activeRequirementEvidence,
@@ -133,6 +239,50 @@ export function buildRoomActions(
         (room.topicKey && isArtifactRequirementTopic(room.topicKey)) ||
         room.workItemId?.startsWith("topic:artifact:")
       ) {
+        return;
+      }
+
+      if (authorityBackedState) {
+        const preservedRoom = preserveRoomRecordForAuthorityState(room, activeCompany.id);
+        const next = [...activeRoomRecords];
+        const index = next.findIndex((item) => item.id === preservedRoom.id);
+        const nextRoomRecord = mergeAuthorityRoomRecord(
+          index >= 0 ? next[index] : null,
+          preservedRoom,
+          activeCompany.id,
+        );
+        if (index >= 0) {
+          if (areRequirementRoomRecordsEquivalent(next[index], nextRoomRecord)) {
+            return;
+          }
+          next[index] = nextRoomRecord;
+        } else {
+          next.push(nextRoomRecord);
+        }
+        const sorted = [...next].sort((left, right) => right.updatedAt - left.updatedAt);
+        if (areRequirementRoomRecordCollectionsEquivalent(activeRoomRecords, sorted)) {
+          return;
+        }
+        void appendAuthorityRoom({
+          companyId: activeCompany.id,
+          room: nextRoomRecord,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "room.append",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to upsert room through authority",
+            });
+          });
         return;
       }
 
@@ -237,6 +387,7 @@ export function buildRoomActions(
     appendRoomMessages: (roomId, messages, meta) => {
       const {
         activeCompany,
+        authorityBackedState,
         activeConversationStates,
         activeRequirementAggregates,
         activeRequirementEvidence,
@@ -257,6 +408,85 @@ export function buildRoomActions(
       }
 
       const now = messages.reduce((latest, message) => Math.max(latest, message.timestamp), Date.now());
+      if (authorityBackedState) {
+        const incomingRoom = preserveRoomRecordForAuthorityState(
+          {
+            id: roomId,
+            sessionKey: meta?.sessionKey ?? roomId,
+            title: meta?.title ?? "需求团队房间",
+            companyId: meta?.companyId ?? activeCompany.id,
+            workItemId: meta?.workItemId,
+            topicKey: meta?.topicKey,
+            scope: meta?.scope ?? "company",
+            ownerActorId: meta?.ownerActorId ?? meta?.ownerAgentId ?? null,
+            batonActorId: meta?.batonActorId ?? null,
+            memberActorIds: mergeRoomMemberIds(meta?.memberActorIds ?? meta?.memberIds ?? [], meta?.memberIds ?? []),
+            status: meta?.status ?? "active",
+            headline: meta?.headline ?? meta?.title ?? "需求团队房间",
+            progress: meta?.progress,
+            memberIds: meta?.memberIds ?? [],
+            ownerAgentId: meta?.ownerAgentId ?? null,
+            transcript: messages,
+            createdAt: now,
+            updatedAt: now,
+            lastConclusionAt:
+              meta?.lastConclusionAt ??
+              (messages
+                .filter((message) => message.role === "assistant")
+                .reduce((latest, message) => Math.max(latest, message.timestamp), 0) || null),
+            lastSourceSyncAt: meta?.lastSourceSyncAt,
+            providerConversationRefs: meta?.providerConversationRefs,
+          },
+          activeCompany.id,
+        );
+        const next = [...activeRoomRecords];
+        const index = next.findIndex((room) => room.id === roomId);
+        const nextRoomRecord = mergeAuthorityRoomRecord(
+          index >= 0 ? next[index] : null,
+          {
+            ...incomingRoom,
+            transcript: mergeRoomTranscript(
+              index >= 0 ? next[index]?.transcript ?? [] : [],
+              incomingRoom.transcript,
+            ),
+          },
+          activeCompany.id,
+        );
+        if (index >= 0) {
+          if (areRequirementRoomRecordsEquivalent(next[index], nextRoomRecord)) {
+            return;
+          }
+          next[index] = nextRoomRecord;
+        } else {
+          next.push(nextRoomRecord);
+        }
+        const sorted = [...next].sort((left, right) => right.updatedAt - left.updatedAt);
+        if (areRequirementRoomRecordCollectionsEquivalent(activeRoomRecords, sorted)) {
+          return;
+        }
+        void appendAuthorityRoom({
+          companyId: activeCompany.id,
+          room: nextRoomRecord,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "room.append",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to append room messages through authority",
+            });
+          });
+        return;
+      }
+
       const draftRoom = normalizeRoomRecordForState(
         {
           id: roomId,
@@ -376,29 +606,94 @@ export function buildRoomActions(
       persistActiveRequirementAggregates(activeCompany.id, reconciledRequirements.activeRequirementAggregates);
     },
 
+    ensureRequirementRoomForAggregate: (aggregateId) => {
+      const {
+        activeCompany,
+        activeDispatches,
+        activeRequirementAggregates,
+        activeRequirementEvidence,
+        activeRoomBindings,
+        activeRoomRecords,
+        activeWorkItems,
+      } = get();
+      if (!activeCompany) {
+        return null;
+      }
+
+      const aggregate =
+        activeRequirementAggregates.find((record) => record.id === aggregateId) ?? null;
+      if (!aggregate) {
+        return null;
+      }
+      const workItem =
+        activeWorkItems.find((item) => item.id === aggregate.workItemId) ??
+        activeWorkItems.find((item) => item.id === aggregate.id) ??
+        (aggregate.topicKey
+          ? activeWorkItems.find((item) => item.topicKey === aggregate.topicKey)
+          : null) ??
+        null;
+      const existingRoom =
+        activeRoomRecords.find((room) => room.id === aggregate.roomId) ??
+        activeRoomRecords.find((room) => room.workItemId === aggregate.workItemId) ??
+        (aggregate.topicKey
+          ? activeRoomRecords.find((room) => room.topicKey === aggregate.topicKey)
+          : null) ??
+        null;
+      const nextRoom = backfillRequirementRoomRecord({
+        company: activeCompany,
+        aggregate,
+        workItem,
+        room: existingRoom,
+        dispatches: activeDispatches,
+        requests: activeCompany.requests ?? [],
+        evidence: activeRequirementEvidence,
+      });
+      get().upsertRoomRecord(nextRoom);
+      const fallbackBindings = buildFallbackRoomBindings({
+        room: nextRoom,
+        existingBindings: activeRoomBindings,
+      });
+      if (fallbackBindings.length > 0) {
+        get().upsertRoomConversationBindings(fallbackBindings);
+      }
+      return nextRoom;
+    },
+
     upsertRoomConversationBindings: (bindings) => {
-      const { activeCompany, activeRoomBindings } = get();
+      const { activeCompany, activeRoomBindings, authorityBackedState } = get();
       if (!activeCompany || bindings.length === 0) {
         return;
       }
 
-      const next = new Map(
-        activeRoomBindings.map((binding) => [
-          `${binding.roomId}:${binding.providerId}:${binding.conversationId}:${binding.actorId ?? ""}`,
-          binding,
-        ] as const),
-      );
-      for (const binding of bindings) {
-        const normalized: RoomConversationBindingRecord = {
-          ...binding,
-          updatedAt: binding.updatedAt ?? Date.now(),
-        };
-        next.set(
-          `${normalized.roomId}:${normalized.providerId}:${normalized.conversationId}:${normalized.actorId ?? ""}`,
-          normalized,
-        );
+      const sorted = mergeRoomConversationBindings({
+        existing: activeRoomBindings,
+        incoming: bindings,
+      });
+      if (authorityBackedState) {
+        const incomingKeys = new Set(bindings.map((binding) => buildRoomConversationBindingKey(binding)));
+        const nextBindings = sorted.filter((binding) => incomingKeys.has(buildRoomConversationBindingKey(binding)));
+        void upsertAuthorityRoomBindings({
+          companyId: activeCompany.id,
+          bindings: nextBindings,
+        })
+          .then((snapshot) =>
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "room-bindings.upsert",
+              set,
+              get,
+            }),
+          )
+          .catch((error) =>
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to sync authority room bindings",
+            }),
+          );
+        return;
       }
-      const sorted = [...next.values()].sort((left, right) => right.updatedAt - left.updatedAt);
       set({ activeRoomBindings: sorted });
       persistActiveRoomBindings(activeCompany.id, sorted);
     },
@@ -406,6 +701,7 @@ export function buildRoomActions(
     deleteRoomRecord: (roomId) => {
       const {
         activeCompany,
+        authorityBackedState,
         activeConversationStates,
         activeRequirementAggregates,
         activeRequirementEvidence,
@@ -420,6 +716,15 @@ export function buildRoomActions(
 
       const next = activeRoomRecords.filter((room) => room.id !== roomId);
       const nextBindings = activeRoomBindings.filter((binding) => binding.roomId !== roomId);
+      if (authorityBackedState) {
+        set({
+          activeRoomRecords: next,
+          activeRoomBindings: nextBindings,
+        });
+        persistActiveRooms(activeCompany.id, next);
+        persistActiveRoomBindings(activeCompany.id, nextBindings);
+        return;
+      }
       const reconciledRequirements = reconcileActiveRequirementState({
         companyId: activeCompany.id,
         activeRequirementAggregates,

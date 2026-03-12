@@ -39,6 +39,7 @@ function extractMessageText(message: unknown): string | null {
 export function RequirementAggregateHost() {
   const connected = useGatewayStore((state) => state.connected);
   const activeCompany = useCompanyRuntimeStore((state) => state.activeCompany);
+  const authorityBackedState = useCompanyRuntimeStore((state) => state.authorityBackedState);
   const ingestRequirementEvidence = useCompanyRuntimeStore((state) => state.ingestRequirementEvidence);
   const companyAgentIds = useMemo(
     () => new Set(activeCompany?.employees.map((employee) => employee.agentId) ?? []),
@@ -48,7 +49,7 @@ export function RequirementAggregateHost() {
   const lastSyncedCompanyEventAtRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
-    if (!connected || !activeCompany) {
+    if (authorityBackedState || !connected || !activeCompany) {
       return;
     }
 
@@ -85,10 +86,10 @@ export function RequirementAggregateHost() {
     });
 
     return () => unsubscribe();
-  }, [activeCompany, companyAgentIds, connected, ingestRequirementEvidence]);
+  }, [activeCompany, authorityBackedState, companyAgentIds, connected, ingestRequirementEvidence]);
 
   useEffect(() => {
-    if (!connected || !activeCompany) {
+    if (authorityBackedState || !connected || !activeCompany) {
       return;
     }
 
@@ -160,7 +161,7 @@ export function RequirementAggregateHost() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeCompany, connected, ingestRequirementEvidence]);
+  }, [activeCompany, authorityBackedState, connected, ingestRequirementEvidence]);
 
   return null;
 }

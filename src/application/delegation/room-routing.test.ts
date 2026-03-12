@@ -482,6 +482,68 @@ describe("requirement-room helpers", () => {
     ).toBe(true);
   });
 
+  it("replays older bound session history when the stored room is still an empty shell", () => {
+    const company = createCompany();
+    const emptyShellRoom = {
+      id: "workitem:topic:mission:alpha",
+      companyId: company.id,
+      workItemId: "topic:mission:alpha",
+      sessionKey: "agent:co-ceo:main",
+      title: "当前主线正在推进。",
+      headline: "当前主线正在推进。",
+      topicKey: "mission:alpha",
+      memberIds: ["co-ceo", "co-emp-1"],
+      memberActorIds: ["co-ceo", "co-emp-1"],
+      ownerAgentId: "co-ceo",
+      ownerActorId: "co-ceo",
+      status: "active" as const,
+      progress: "0 条可见消息",
+      transcript: [],
+      createdAt: 1_000,
+      updatedAt: 10_000,
+      lastSourceSyncAt: 10_000,
+    };
+
+    const mergedRoom = mergeRequirementRoomRecordFromSessions({
+      company,
+      room: emptyShellRoom,
+      workItemId: "topic:mission:alpha",
+      sessionKey: emptyShellRoom.sessionKey,
+      title: emptyShellRoom.title,
+      memberIds: emptyShellRoom.memberIds,
+      ownerAgentId: emptyShellRoom.ownerAgentId,
+      topicKey: emptyShellRoom.topicKey,
+      sessions: [
+        {
+          sessionKey: "agent:co-ceo:main",
+          agentId: "co-ceo",
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: "@写手 请整理第一版大纲" }],
+              timestamp: 1_200,
+            } satisfies ChatMessage,
+          ],
+        },
+        {
+          sessionKey: "agent:co-emp-1:main",
+          agentId: "co-emp-1",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "第一版大纲已整理完成。" }],
+              timestamp: 1_800,
+            } satisfies ChatMessage,
+          ],
+        },
+      ],
+    });
+
+    expect(mergedRoom.transcript).toHaveLength(2);
+    expect(convertRequirementRoomRecordToChatMessages(mergedRoom)).toHaveLength(2);
+    expect(mergedRoom.progress).not.toBe("0 条可见消息");
+  });
+
   it("builds provider bindings separately from the room transcript", () => {
     const bindings = buildRoomConversationBindingsFromSessions({
       roomId: "workitem:mission-consistency-foundation",

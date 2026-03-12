@@ -85,6 +85,7 @@ export function buildCompanyConfigActions(
         set({
           config: null,
           activeCompany: null,
+          authorityBackedState: false,
           activeRoomRecords: [],
           activeMissionRecords: [],
           activeConversationStates: [],
@@ -106,6 +107,7 @@ export function buildCompanyConfigActions(
         const message = error instanceof Error ? error.message : String(error);
         set({
           error: message,
+          authorityBackedState: false,
           activeRoomRecords: [],
           activeMissionRecords: [],
           activeConversationStates: [],
@@ -176,6 +178,7 @@ export function buildCompanyConfigActions(
         config: newConfig,
         activeCompany: company,
         ...runtimeStateFromAuthorityRuntimeSnapshot(null),
+        authorityBackedState: true,
         bootstrapPhase: "ready",
       });
     },

@@ -132,6 +132,34 @@ export async function sendTurnToCompanyActor(input: {
   runId: string;
   status: "started" | "in_flight";
 }> {
+  const prepared = await startTurnToCompanyActor(input);
+  const result = await prepared.send;
+
+  return {
+    actorRef: prepared.actorRef,
+    conversationRef: prepared.conversationRef,
+    providerConversationRef: prepared.providerConversationRef,
+    runId: result.runId,
+    status: result.status,
+  };
+}
+
+export async function startTurnToCompanyActor(input: {
+  backend: BackendCore;
+  manifest: ProviderManifest;
+  company: Company | null | undefined;
+  actorId: string;
+  message: string;
+  kind?: ConversationKind;
+  timeoutMs?: number;
+  attachments?: Array<{ type: string; mimeType: string; content: string }>;
+  targetActorIds?: string[];
+}): Promise<{
+  actorRef: ActorRef;
+  conversationRef: ConversationRef;
+  providerConversationRef: ProviderConversationRef;
+  send: Promise<{ runId: string; status: "started" | "in_flight" }>;
+}> {
   const resolved = await resolveCompanyActorConversation(input);
   const sendConversation = resolved.backingConversationRef ?? resolved.conversationRef;
   const message = resolved.profile
@@ -142,12 +170,6 @@ export async function sendTurnToCompanyActor(input: {
       })
     : input.message;
 
-  const result = await input.backend.sendTurn(sendConversation, message, {
-    timeoutMs: input.timeoutMs,
-    attachments: input.attachments,
-    targetActorIds: input.targetActorIds,
-  });
-
   return {
     actorRef: resolved.actorRef,
     conversationRef: resolved.conversationRef,
@@ -157,7 +179,13 @@ export async function sendTurnToCompanyActor(input: {
       actorId: input.actorId,
       nativeRoom: sendConversation.kind === "room",
     },
-    runId: result.run.runId,
-    status: result.status,
+    send: input.backend.sendTurn(sendConversation, message, {
+      timeoutMs: input.timeoutMs,
+      attachments: input.attachments,
+      targetActorIds: input.targetActorIds,
+    }).then((result) => ({
+      runId: result.run.runId,
+      status: result.status,
+    })),
   };
 }

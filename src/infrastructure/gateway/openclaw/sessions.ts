@@ -100,13 +100,6 @@ function parseSessionActorId(sessionKey: string): string | null {
   return actorId && actorId.length > 0 ? actorId : null;
 }
 
-function stringifyError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
-}
-
 export function buildSessionMethods(gateway: GatewaySessionRequester) {
   return {
     async listSessions(opts?: SessionsListParams): Promise<SessionsListResult> {
@@ -201,14 +194,7 @@ export function buildSessionMethods(gateway: GatewaySessionRequester) {
 
     async resolveSession(agentId: string): Promise<{ ok: boolean; key: string; error?: string }> {
       const defaultKey = `agent:${agentId}:main`;
-
-      try {
-        return await gateway.request<{ ok: boolean; key: string }>("sessions.resolve", {
-          key: defaultKey,
-        });
-      } catch (error) {
-        return { ok: true, key: defaultKey, error: stringifyError(error) };
-      }
+      return { ok: true, key: defaultKey };
     },
 
     async getChatHistory(

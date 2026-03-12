@@ -1,4 +1,5 @@
 import { autoCalibrateOrganization } from "../../../src/application/assignment/org-fit";
+import { buildRequirementDecisionTicketId } from "../../../src/application/mission/requirement-decision-ticket";
 import {
   inferDepartmentKind,
   normalizeWorkItemDepartmentOwnership,
@@ -228,15 +229,16 @@ function resolveEscalation(input: EscalationRecord, now: number): EscalationReco
   };
 }
 
-function buildDecisionTicketId(escalationId: string): string {
-  return `decision:${escalationId}`;
-}
-
 function upsertOpenDecisionTicket(input: {
   existing: DecisionTicketRecord | null;
   now: number;
   companyId: string;
-  escalationId: string;
+  sourceType: DecisionTicketRecord["sourceType"];
+  sourceId: string;
+  escalationId?: string | null;
+  aggregateId?: string | null;
+  workItemId?: string | null;
+  sourceConversationId?: string | null;
   decisionOwnerActorId: string;
   decisionType: DecisionTicketRecord["decisionType"];
   summary: string;
@@ -244,9 +246,18 @@ function upsertOpenDecisionTicket(input: {
   requiresHuman: boolean;
 }): DecisionTicketRecord {
   const nextRecord: DecisionTicketRecord = {
-    id: input.existing?.id ?? buildDecisionTicketId(input.escalationId),
+    id: input.existing?.id ?? buildRequirementDecisionTicketId({
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      decisionType: input.decisionType,
+    }),
     companyId: input.companyId,
-    escalationId: input.escalationId,
+    sourceType: input.sourceType,
+    sourceId: input.sourceId,
+    escalationId: input.escalationId ?? null,
+    aggregateId: input.aggregateId ?? null,
+    workItemId: input.workItemId ?? null,
+    sourceConversationId: input.sourceConversationId ?? null,
     decisionOwnerActorId: input.decisionOwnerActorId,
     decisionType: input.decisionType,
     summary: input.summary,
@@ -254,6 +265,7 @@ function upsertOpenDecisionTicket(input: {
     requiresHuman: input.requiresHuman,
     status: input.requiresHuman ? "pending_human" : "open",
     resolution: input.existing?.resolution ?? null,
+    resolutionOptionId: input.existing?.resolutionOptionId ?? null,
     roomId: input.existing?.roomId ?? null,
     createdAt: input.existing?.createdAt ?? input.now,
     updatedAt: input.now,
@@ -261,7 +273,12 @@ function upsertOpenDecisionTicket(input: {
   if (
     input.existing
     && input.existing.companyId === nextRecord.companyId
-    && input.existing.escalationId === nextRecord.escalationId
+    && input.existing.sourceType === nextRecord.sourceType
+    && input.existing.sourceId === nextRecord.sourceId
+    && (input.existing.escalationId ?? null) === (nextRecord.escalationId ?? null)
+    && (input.existing.aggregateId ?? null) === (nextRecord.aggregateId ?? null)
+    && (input.existing.workItemId ?? null) === (nextRecord.workItemId ?? null)
+    && (input.existing.sourceConversationId ?? null) === (nextRecord.sourceConversationId ?? null)
     && input.existing.decisionOwnerActorId === nextRecord.decisionOwnerActorId
     && input.existing.decisionType === nextRecord.decisionType
     && input.existing.summary === nextRecord.summary
@@ -269,6 +286,7 @@ function upsertOpenDecisionTicket(input: {
     && input.existing.requiresHuman === nextRecord.requiresHuman
     && input.existing.status === nextRecord.status
     && (input.existing.resolution ?? null) === (nextRecord.resolution ?? null)
+    && (input.existing.resolutionOptionId ?? null) === (nextRecord.resolutionOptionId ?? null)
     && (input.existing.roomId ?? null) === (nextRecord.roomId ?? null)
   ) {
     return input.existing;
@@ -598,13 +616,19 @@ export function runCompanyOpsCycle(input: {
       if (policy.maxAutoHeadcountDelta < 1) {
         const escalation = escalationMap.get(overloadEscalationId) ?? null;
         if (escalation) {
-          const ticketId = buildDecisionTicketId(escalation.id);
+          const ticketId = buildRequirementDecisionTicketId({
+            sourceType: "escalation",
+            sourceId: escalation.id,
+            decisionType: "headcount",
+          });
           decisionTicketMap.set(
             ticketId,
             upsertOpenDecisionTicket({
               existing: decisionTicketMap.get(ticketId) ?? null,
               now,
               companyId: company.id,
+              sourceType: "escalation",
+              sourceId: escalation.id,
               escalationId: escalation.id,
               decisionOwnerActorId: ceoAgentId,
               decisionType: "headcount",
@@ -620,7 +644,11 @@ export function runCompanyOpsCycle(input: {
       }
     } else if (overloadEscalation) {
       escalationMap.set(overloadEscalationId, resolveEscalation(overloadEscalation, now));
-      const ticketId = buildDecisionTicketId(overloadEscalationId);
+      const ticketId = buildRequirementDecisionTicketId({
+        sourceType: "escalation",
+        sourceId: overloadEscalationId,
+        decisionType: "headcount",
+      });
       if (decisionTicketMap.has(ticketId)) {
         decisionTicketMap.set(ticketId, resolveDecisionTicket(decisionTicketMap.get(ticketId)!, now));
       }
@@ -644,13 +672,19 @@ export function runCompanyOpsCycle(input: {
       actions.push(`组织策略建议冻结或收缩：${department.name}`);
       const escalation = escalationMap.get(underloadEscalationId) ?? null;
       if (escalation && policy.humanApprovalRequiredForLayoffs) {
-        const ticketId = buildDecisionTicketId(escalation.id);
+        const ticketId = buildRequirementDecisionTicketId({
+          sourceType: "escalation",
+          sourceId: escalation.id,
+          decisionType: "headcount",
+        });
         decisionTicketMap.set(
           ticketId,
           upsertOpenDecisionTicket({
             existing: decisionTicketMap.get(ticketId) ?? null,
             now,
             companyId: company.id,
+            sourceType: "escalation",
+            sourceId: escalation.id,
             escalationId: escalation.id,
             decisionOwnerActorId: ceoAgentId,
             decisionType: "headcount",
@@ -666,7 +700,11 @@ export function runCompanyOpsCycle(input: {
       }
     } else if (underloadEscalation) {
       escalationMap.set(underloadEscalationId, resolveEscalation(underloadEscalation, now));
-      const ticketId = buildDecisionTicketId(underloadEscalation.id);
+      const ticketId = buildRequirementDecisionTicketId({
+        sourceType: "escalation",
+        sourceId: underloadEscalation.id,
+        decisionType: "headcount",
+      });
       if (decisionTicketMap.has(ticketId)) {
         decisionTicketMap.set(ticketId, resolveDecisionTicket(decisionTicketMap.get(ticketId)!, now));
       }

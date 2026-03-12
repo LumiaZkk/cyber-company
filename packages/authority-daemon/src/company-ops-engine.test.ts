@@ -47,6 +47,8 @@ function createWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord
     displayOwnerLabel: "主编",
     displayNextAction: "请技术部提供章节一致性工具",
     status: "active",
+    lifecyclePhase: "active_requirement",
+    stageGateStatus: "confirmed",
     stageLabel: "创作进行中",
     owningDepartmentId: "dep-writing",
     executionLevel: "department",
@@ -214,6 +216,8 @@ describe("runCompanyOpsCycle", () => {
       {
         id: "decision:escalation:org_policy:underload:dep-writing",
         companyId: "company-1",
+        sourceType: "escalation",
+        sourceId: "escalation:org_policy:underload:dep-writing",
         escalationId: "escalation:org_policy:underload:dep-writing",
         decisionOwnerActorId: "co-ceo",
         decisionType: "headcount",

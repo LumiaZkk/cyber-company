@@ -46,6 +46,8 @@ function createWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord
     displayOwnerLabel: "CEO",
     displayNextAction: "跟进 CTO 方案输出。",
     status: "active",
+    lifecyclePhase: "active_requirement",
+    stageGateStatus: "confirmed",
     stageLabel: "CTO 制定方案",
     ownerActorId: "co-ceo",
     ownerLabel: "CEO",
@@ -164,6 +166,8 @@ describe("requirement aggregate", () => {
       roomId: "workitem:topic:mission:alpha",
       ownerActorId: "co-ceo",
       ownerLabel: "CEO",
+      lifecyclePhase: "active_requirement",
+      stageGateStatus: "confirmed",
       stage: "CTO 制定方案",
       summary: "主线正在推进一致性底座。",
       nextAction: "跟进 CTO 方案输出。",
@@ -196,16 +200,183 @@ describe("requirement aggregate", () => {
 
     const result = applyRequirementEvidenceToAggregates({
       company,
+      activeConversationStates: [],
       activeRequirementAggregates: [aggregate],
       activeRoomRecords: [createRoom()],
+      activeWorkItems: [createWorkItem()],
       primaryRequirementId: aggregate.id,
       event: evidence,
     });
 
     expect(result.applied).toBe(true);
     expect(result.aggregateId).toBe(aggregate.id);
+    expect(result.primaryRequirementId).toBe(aggregate.id);
     expect(result.activeRequirementAggregates[0]?.ownerActorId).toBe("co-cto");
     expect(result.activeRequirementAggregates[0]?.primary).toBe(true);
+  });
+
+  it("bootstraps a pre-requirement aggregate directly from a stable CEO draft", () => {
+    const result = reconcileRequirementAggregateState({
+      companyId: "company-1",
+      existingAggregates: [],
+      primaryRequirementId: null,
+      activeConversationStates: [
+        {
+          companyId: "company-1",
+          conversationId: "agent:co-ceo:main",
+          currentWorkKey: null,
+          currentWorkItemId: null,
+          currentRoundId: null,
+          draftRequirement: {
+            topicKey: "mission:alpha",
+            topicText: "组建小说创作团队",
+            summary: "先明确组织搭建目标，并固化成需求主线。",
+            ownerActorId: "co-ceo",
+            ownerLabel: "CEO",
+            stage: "待确认组织搭建方式",
+            nextAction: "先创建需求房，再确认是否放行执行。",
+            stageGateStatus: "waiting_confirmation",
+            state: "awaiting_promotion_choice",
+            promotionReason: null,
+            promotable: true,
+            updatedAt: 2_400,
+          },
+          updatedAt: 2_400,
+        },
+      ],
+      activeWorkItems: [],
+      activeRoomRecords: [],
+      activeRequirementEvidence: [],
+    });
+
+    expect(result.primaryRequirementId).toBe("topic:mission:alpha");
+    expect(result.activeRequirementAggregates[0]).toMatchObject({
+      id: "topic:mission:alpha",
+      lifecyclePhase: "pre_requirement",
+      stageGateStatus: "waiting_confirmation",
+      ownerActorId: "co-ceo",
+      sourceConversationId: "agent:co-ceo:main",
+    });
+  });
+
+  it("bootstraps an aggregate from report evidence when no aggregate exists yet", () => {
+    const company = createCompany();
+    const result = applyRequirementEvidenceToAggregates({
+      company,
+      activeConversationStates: [
+        {
+          companyId: "company-1",
+          conversationId: "agent:co-ceo:main",
+          currentWorkKey: null,
+          currentWorkItemId: null,
+          currentRoundId: null,
+          draftRequirement: {
+            topicKey: "mission:alpha",
+            topicText: "搭建创作团队",
+            summary: "把组织搭建目标固化成公司级需求。",
+            ownerActorId: "co-ceo",
+            ownerLabel: "CEO",
+            stage: "待确认",
+            nextAction: "先建立需求房并回收下游方案。",
+            stageGateStatus: "waiting_confirmation",
+            state: "awaiting_promotion_choice",
+            promotionReason: null,
+            promotable: true,
+            updatedAt: 2_000,
+          },
+          updatedAt: 2_000,
+        },
+      ],
+      activeRequirementAggregates: [],
+      activeRoomRecords: [],
+      activeWorkItems: [],
+      primaryRequirementId: null,
+      event: {
+        id: "evt-report-1",
+        companyId: "company-1",
+        aggregateId: null,
+        source: "company-event",
+        sessionKey: "agent:co-ceo:main",
+        actorId: "co-cto",
+        eventType: "report_answered",
+        timestamp: 3_000,
+        payload: {
+          topicKey: "mission:alpha",
+          summary: "CTO 已完成技术方案初稿。",
+          ownerActorId: "co-ceo",
+        },
+        applied: false,
+      },
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.aggregateId).toBe("topic:mission:alpha");
+    expect(result.primaryRequirementId).toBe("topic:mission:alpha");
+    expect(result.activeRequirementAggregates[0]?.summary).toContain("技术方案初稿");
+  });
+
+  it("does not let an empty shell room overwrite aggregate owner and progress", () => {
+    const existingAggregate: RequirementAggregateRecord = {
+      id: "topic:mission:alpha",
+      companyId: "company-1",
+      topicKey: "mission:alpha",
+      kind: "strategic",
+      primary: true,
+      workItemId: "topic:mission:alpha",
+      roomId: "workitem:topic:mission:alpha",
+      ownerActorId: "co-coo",
+      ownerLabel: "当前主线正在推进。",
+      lifecyclePhase: "pre_requirement",
+      stageGateStatus: "none",
+      stage: "0 条可见消息",
+      summary: "当前主线正在推进。",
+      nextAction: "0 条可见消息",
+      memberIds: ["co-ceo", "co-coo", "co-cto"],
+      sourceConversationId: "agent:co-ceo:main",
+      startedAt: 1_000,
+      updatedAt: 10_000,
+      revision: 4,
+      lastEvidenceAt: null,
+      status: "active",
+      acceptanceStatus: "not_requested",
+    };
+
+    const result = reconcileRequirementAggregateState({
+      companyId: "company-1",
+      existingAggregates: [existingAggregate],
+      primaryRequirementId: existingAggregate.id,
+      activeConversationStates: [
+        {
+          companyId: "company-1",
+          conversationId: "agent:co-ceo:main",
+          currentWorkKey: "topic:mission:alpha",
+          currentWorkItemId: "topic:mission:alpha",
+          currentRoundId: null,
+          draftRequirement: null,
+          updatedAt: 10_000,
+        },
+      ],
+      activeWorkItems: [],
+      activeRoomRecords: [
+        createRoom({
+          title: "当前主线正在推进。",
+          headline: "当前主线正在推进。",
+          progress: "0 条可见消息",
+          ownerActorId: "co-coo",
+          ownerAgentId: "co-coo",
+          transcript: [],
+          updatedAt: 10_500,
+        }),
+      ],
+      activeRequirementEvidence: [],
+    });
+
+    expect(result.activeRequirementAggregates[0]).toMatchObject({
+      id: "topic:mission:alpha",
+      ownerActorId: "co-ceo",
+      nextAction: "继续推进当前主线。",
+      stage: "进行中",
+    });
   });
 
   it("keeps an aggregate-backed overview when raw overview drifts to another topic", () => {
@@ -221,6 +392,8 @@ describe("requirement aggregate", () => {
       roomId: workItem.roomId ?? null,
       ownerActorId: "co-ceo",
       ownerLabel: "CEO",
+      lifecyclePhase: "active_requirement",
+      stageGateStatus: "confirmed",
       stage: "CTO 制定方案",
       summary: "主线正在推进一致性底座。",
       nextAction: "跟进 CTO 方案输出。",
@@ -257,5 +430,53 @@ describe("requirement aggregate", () => {
     expect(overview?.currentOwnerAgentId).toBe("co-ceo");
     expect(overview?.title).toBe("一致性底座");
     expect(overview?.participants.length).toBeGreaterThan(0);
+  });
+
+  it("derives a canonical overview topic key from a wrapped aggregate id when topicKey is missing", () => {
+    const company = createCompany();
+    const overview = buildAggregateBackedRequirementOverview({
+      company,
+      aggregate: {
+        id: "topic:aggregate:topic:aggregate:topic:mission:alpha@1000@2000",
+        companyId: "company-1",
+        topicKey: null,
+        kind: "strategic",
+        primary: true,
+        workItemId: null,
+        roomId: null,
+        ownerActorId: "co-ceo",
+        ownerLabel: "CEO",
+        lifecyclePhase: "active_requirement",
+        stageGateStatus: "confirmed",
+        stage: "CEO 发起主线",
+        summary: "从头开始搭建 AI 小说创作团队。",
+        nextAction: "让 CTO 和 COO 分别给出方案。",
+        memberIds: ["co-ceo", "co-cto"],
+        sourceConversationId: "agent:co-ceo:main",
+        startedAt: 1_000,
+        updatedAt: 2_000,
+        revision: 1,
+        lastEvidenceAt: null,
+        status: "active",
+        acceptanceStatus: "not_requested",
+      },
+      workItem: null,
+      room: null,
+      rawOverview: {
+        topicKey: "aggregate:topic:aggregate:topic:mission:alpha@1000",
+        title: "错误主线",
+        startedAt: 1_500,
+        headline: "错误主线",
+        summary: "不应继续保留 aggregate 包裹。",
+        currentOwnerAgentId: "co-cto",
+        currentOwnerLabel: "CTO",
+        currentStage: "错误阶段",
+        nextAction: "错误 next",
+        participants: [],
+      },
+    });
+
+    expect(overview?.topicKey).toBe("mission:alpha");
+    expect(overview?.title).toBe("从头开始搭建 AI 小说创作团队。");
   });
 });

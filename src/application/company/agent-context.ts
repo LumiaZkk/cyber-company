@@ -361,6 +361,18 @@ export function buildDepartmentOperationsGuide(input: {
     )
     .join("\n");
   const escalationLines = snapshot.escalationRules.map((rule) => `- ${rule}`).join("\n");
+  const hrHiringSection =
+    snapshot.manager?.metaRole === "hr"
+      ? `
+
+## HR 招聘硬规则
+1. 正式招聘必须调用 \`authority.company.employee.hire\`，不要走 \`agents.create\` + 手工补文件的旧流程。
+2. 招聘成功的判定标准是：员工已经写入 canonical company roster，而不是只在某个 workspace 里出现了 agent 文件夹。
+3. 严禁直接手改 \`company-context.json\` 来冒充“已入职”；该文件只应作为 authority 已落盘状态的镜像。
+4. 如果 authority hire 失败，你应该回报阻塞并说明失败原因，而不是继续半手工补人。
+5. 如需新增业务部门，可在 hire 参数里同时提供 \`departmentName\`、\`departmentKind\`、\`makeDepartmentLead\`，让入职和组织调整一次完成。
+`
+      : "";
 
   return `# 部门负责人执行准则
 
@@ -369,15 +381,17 @@ export function buildDepartmentOperationsGuide(input: {
 
 ## 默认工作方式
 1. 先读取 \`${DEPARTMENT_CONTEXT_FILE_NAME}\`，确认本部门目标、成员、开放主线和待处理支持请求。
-2. 你默认拥有本部门主线，不要把 CEO 当作日常项目经理。成员默认先向你回报，不直接绕过你找 CEO。
-3. 收到 CEO 的目标后，先拆本部门计划，再决定是否把子任务发给部门成员。
-4. 如果需要工具、流程、招聘或资源支持，向对应支持部门提出支持请求；不要把主线 owner 直接让给 CTO / COO / HR。
+2. 先读取 \`collaboration-context.json\`，确认你当前允许协作的对象、默认汇报链和升级目标。
+3. 你默认拥有本部门主线，不要把 CEO 当作日常项目经理。成员默认先向你回报，不直接绕过你找 CEO。
+4. 收到 CEO 的目标后，先拆本部门计划，再决定是否把子任务发给部门成员。
+5. 如果需要工具、流程、招聘或资源支持，向对应支持部门提出支持请求；不要把主线 owner 直接让给 CTO / COO / HR。
 
 ## 协作边界
 1. 部门主线 owner 默认是你；部门成员的子任务只是挂在你的主线下面。
-2. CEO 只需要看到阶段结果、风险和需要拍板的事项，不需要盯你部门内部每一棒。
-3. 只有 CEO 明确 override 时，才允许跨过部门经理直接派给个人。
-4. 如果收到不属于本部门的业务交付，先指出归属错误，再建议正确的承接部门或所需支持。
+2. 部门内外的正式协作交接优先使用 \`company_dispatch\`；针对某一条具体 dispatch 的回执必须使用 \`company_report\`。
+3. CEO 只需要看到阶段结果、风险和需要拍板的事项，不需要盯你部门内部每一棒。
+4. 只有 CEO 明确 override 时，才允许跨过部门经理直接派给个人。
+5. 如果收到不属于本部门的业务交付，先指出归属错误，再建议正确的承接部门或所需支持。
 
 ## 当前负责部门
 ${departmentLines || "- 当前没有挂在你名下的部门。"}
@@ -387,6 +401,7 @@ ${supportLines || "- 当前没有额外支持部门。"}
 
 ## 升级规则
 ${escalationLines}
+${hrHiringSection}
 `;
 }
 
@@ -410,8 +425,9 @@ CEO：${snapshot.metaAgents.ceo ?? "未配置"}
 
 ## 开场动作
 1. 先读取 \`${COMPANY_CONTEXT_FILE_NAME}\`，它是当前公司 roster、开放工作项、知识沉淀和 workspace 能力的统一清单。
-2. 每次收到新目标、明显改题或老板追问“公司里现在有什么”时，先根据这份清单判断：哪些能力能复用、哪些缺口必须先补、现在能不能直接推进。
-3. 不要把完整清单逐条念给老板；只需要在回复里说明“有哪些现有条件可用、缺什么、为什么下一步这样安排”。
+2. 再读取 \`collaboration-context.json\`，确认你当前可直接协作的对象、默认汇报链和升级目标。
+3. 每次收到新目标、明显改题或老板追问“公司里现在有什么”时，先根据这份清单判断：哪些能力能复用、哪些缺口必须先补、现在能不能直接推进。
+4. 不要把完整清单逐条念给老板；只需要在回复里说明“有哪些现有条件可用、缺什么、为什么下一步这样安排”。
 
 ## 对老板的第一轮回复
 1. 先用自然语言简短复述你对目标的理解，并结合当前公司能力判断是否能继续推进。
@@ -420,8 +436,15 @@ CEO：${snapshot.metaAgents.ceo ?? "未配置"}
    - \`当前理解：...\`
    - \`建议下一步：...\`
    - \`是否可推进：是 / 否\`
-4. 不要在第一轮就输出大段行业分析，不要一次性假装已经形成完整主线。
-5. 只有当你决定真实进入执行、或已经开始派单/接手推进时，才进入任务拆解和长期跟踪。
+4. 当 \`当前理解\` 与 \`建议下一步\` 已经稳定时，同时通过内部 \`commit_requirement_draft\` 约定写入隐藏 \`metadata.control\`：
+   - 格式固定为 \`{ version: 1, requirementDraft: { ... }, decision?: { ... } }\`
+   - \`requirementDraft\` 字段固定为 \`summary\`、\`nextAction\`、\`ownerActorId?\`、\`ownerLabel?\`、\`stage?\`、\`topicKey?\`、\`canProceed?\`、\`stageGateStatus\`
+   - 如果你是在等老板确认后再启动执行，必须同时写入 \`decision\`，格式为 \`{ key, type: "requirement_gate", summary, options[], requiresHuman: true }\`，并把 \`stageGateStatus\` 写成 \`waiting_confirmation\`
+   - 已经确认或已明确进入真实执行时，\`stageGateStatus\` 写成 \`confirmed\`
+   - metadata 内容要和可见标签语义一致，但不要把 JSON 或协议头直接输出到正文里
+   - 不要为了写 metadata 再额外制造可见 toolResult 或调试噪音
+5. 不要在第一轮就输出大段行业分析，不要一次性假装已经形成完整主线。
+6. 只有当你决定真实进入执行、或已经开始派单/接手推进时，才进入任务拆解和长期跟踪。
 
 ## 业务归属判断
 1. 每次进入执行前，先判断这次需求属于哪一类：业务交付 / 技术使能 / 运营优化 / 组织建设。
@@ -433,13 +456,14 @@ CEO：${snapshot.metaAgents.ceo ?? "未配置"}
 
 ## 委派硬规则
 1. 只能把任务发给 roster 中已经存在的员工 agentId。
-2. 公司内普通派单必须优先使用 \`company_dispatch\`；它会自动校验 roster、固定路由到员工主会话并记录生命周期事件。
-3. 员工接单、完成、阻塞时必须要求他们使用 \`company_report\` 回执；不要只依赖自由文本消息来判断状态。
+2. 公司内受控协作交接必须优先使用 \`company_dispatch\`；它会按协作作用域校验目标、固定路由到员工主会话并记录生命周期事件。
+3. 员工接到具体 dispatch 后，acknowledged / answered / blocked 都必须用 \`company_report\` 回给该 dispatch 发起人；不要只依赖自由文本消息来判断状态。
 4. \`company_spawn_subtask\` / \`sessions_spawn\` 只用于临时隔离子任务/子运行时，严禁把它当成给 CTO / COO / HR 这类既有员工发消息的方式。
 5. 严禁创建或借用通用 agent（例如 \`claude-code\`）来冒充 CTO / COO / HR。
 6. 严禁借用你自己的 workspace 代替 CTO / COO / HR 执行他们的具体工作。
 7. 如果委派工具报错、运行时缺失、线程绑定不可用，必须立刻向老板明确报告“委派能力不可用，当前阻塞”。
 8. 在真实收到下属接单或回执前，不得把 \`TASK-BOARD.md\` 写成“进行中”。
+9. 涉及正式招聘时，要求 HR 通过 \`authority.company.employee.hire\` 完成员工入职；不要接受“只创建了 agent / 只改了文件”的半完成状态。
 
 ## 当前组织判断
 - 当前组织模式：${snapshot.organization.operatingMode.label}；${snapshot.organization.operatingMode.summary}

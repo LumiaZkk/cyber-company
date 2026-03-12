@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as authorityControl from "../../../application/gateway/authority-control";
+import { useAuthorityRuntimeSyncStore } from "../../authority/runtime-sync-store";
 import { useCompanyRuntimeStore } from "./store";
 import type { Company, RequirementRoomRecord } from "./types";
 
@@ -50,7 +52,32 @@ function createRoom(overrides: Partial<RequirementRoomRecord> = {}): Requirement
   };
 }
 
+function createAuthorityRoomSnapshot(room: RequirementRoomRecord) {
+  return {
+    companyId: "company-1",
+    activeRoomRecords: [room],
+    activeMissionRecords: [],
+    activeConversationStates: [],
+    activeWorkItems: [],
+    activeRequirementAggregates: [],
+    activeRequirementEvidence: [],
+    primaryRequirementId: null,
+    activeRoundRecords: [],
+    activeArtifacts: [],
+    activeDispatches: [],
+    activeRoomBindings: [],
+    activeSupportRequests: [],
+    activeEscalations: [],
+    activeDecisionTickets: [],
+    updatedAt: room.updatedAt,
+  };
+}
+
 describe("useCompanyRuntimeStore upsertRoomRecord", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, "localStorage", {
@@ -67,11 +94,34 @@ describe("useCompanyRuntimeStore upsertRoomRecord", () => {
       writable: true,
     });
 
+    useAuthorityRuntimeSyncStore.setState({
+      compatibilityPathEnabled: true,
+      commandRoutes: ["requirement.transition", "room.append", "dispatch.create"],
+      mode: "compatibility_snapshot",
+      lastSnapshotUpdatedAt: null,
+      lastAppliedSignature: null,
+      lastAppliedSource: null,
+      lastAppliedAt: null,
+      lastPushAt: null,
+      lastPullAt: null,
+      lastCommandAt: null,
+      pushCount: 0,
+      pullCount: 0,
+      commandCount: 0,
+      lastError: null,
+      lastErrorAt: null,
+      lastErrorOperation: null,
+    });
+
     useCompanyRuntimeStore.setState({
       config: null,
       activeCompany: createCompany(),
+      authorityBackedState: false,
       activeRoomRecords: [],
       activeMissionRecords: [],
+      activeConversationStates: [],
+      activeRequirementAggregates: [],
+      activeRequirementEvidence: [],
       activeWorkItems: [],
       activeRoundRecords: [],
       activeArtifacts: [],
@@ -189,5 +239,109 @@ describe("useCompanyRuntimeStore upsertRoomRecord", () => {
     expect(rooms).toHaveLength(1);
     expect(rooms[0]?.id).toBe("workitem:topic:mission:consistency-foundation");
     expect(rooms[0]?.transcript).toHaveLength(2);
+  });
+
+  it("preserves authority room identities without generating local canonical aliases", () => {
+    const appendRoomSpy = vi
+      .spyOn(authorityControl, "appendAuthorityRoom")
+      .mockImplementation(async ({ room }) => createAuthorityRoomSnapshot(room));
+
+    useCompanyRuntimeStore.setState({
+      authorityBackedState: true,
+      activeRoomRecords: [],
+      activeWorkItems: [],
+      activeRequirementAggregates: [],
+      activeRequirementEvidence: [],
+    });
+
+    useCompanyRuntimeStore.getState().upsertRoomRecord(
+      createRoom({
+        id: "workitem:topic:mission:wlizub",
+        sessionKey: "room:workitem:topic:mission:wlizub",
+        workItemId: "topic:mission:wlizub",
+        topicKey: "mission:wlizub",
+      }),
+    );
+
+    return vi.waitFor(() => {
+      expect(appendRoomSpy).toHaveBeenCalledTimes(1);
+      const state = useCompanyRuntimeStore.getState();
+      expect(state.activeRoomRecords).toHaveLength(1);
+      expect(state.activeRoomRecords[0]).toMatchObject({
+        id: "workitem:topic:mission:wlizub",
+        sessionKey: "room:workitem:topic:mission:wlizub",
+        workItemId: "topic:mission:wlizub",
+        topicKey: "mission:wlizub",
+      });
+      expect(state.activeWorkItems).toEqual([]);
+      expect(state.activeRequirementAggregates).toEqual([]);
+    });
+  });
+
+  it("keeps authority room identity stable when appending room messages from a mismatched local meta", async () => {
+    const appendRoomSpy = vi
+      .spyOn(authorityControl, "appendAuthorityRoom")
+      .mockImplementation(async ({ room }) => createAuthorityRoomSnapshot(room));
+
+    useCompanyRuntimeStore.setState({
+      authorityBackedState: true,
+      activeRoomRecords: [],
+      activeWorkItems: [],
+      activeRequirementAggregates: [],
+      activeRequirementEvidence: [],
+    });
+
+    useCompanyRuntimeStore.getState().upsertRoomRecord(
+      createRoom({
+        id: "workitem:topic:mission:wlizub",
+        sessionKey: "room:workitem:topic:mission:wlizub",
+        workItemId: "topic:mission:wlizub",
+        topicKey: "mission:wlizub",
+        transcript: [],
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(useCompanyRuntimeStore.getState().activeRoomRecords).toHaveLength(1);
+    });
+
+    useCompanyRuntimeStore.getState().appendRoomMessages(
+      "workitem:topic:mission:wlizub",
+      [
+        {
+          id: "room:assistant:3",
+          role: "assistant",
+          text: "CTO：技术方案已提交。",
+          timestamp: 3000,
+          senderAgentId: "co-cto",
+          visibility: "public",
+          source: "member_reply",
+        },
+      ],
+      {
+        workItemId: "topic:mission:10tzafe",
+        topicKey: "mission:10tzafe",
+        title: "一致性底座新标题",
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(appendRoomSpy).toHaveBeenCalledTimes(2);
+      const [room] = useCompanyRuntimeStore.getState().activeRoomRecords;
+      expect(room).toMatchObject({
+        id: "workitem:topic:mission:wlizub",
+        sessionKey: "room:workitem:topic:mission:wlizub",
+        workItemId: "topic:mission:wlizub",
+        topicKey: "mission:wlizub",
+      });
+      expect(room?.transcript).toHaveLength(1);
+      expect(useCompanyRuntimeStore.getState().activeWorkItems).toEqual([]);
+      expect(useCompanyRuntimeStore.getState().activeRequirementAggregates).toEqual([]);
+    });
+    expect(appendRoomSpy.mock.calls[1]?.[0].room).toMatchObject({
+      id: "workitem:topic:mission:wlizub",
+      workItemId: "topic:mission:wlizub",
+      topicKey: "mission:wlizub",
+    });
   });
 });

@@ -156,15 +156,27 @@ export function buildBoardTaskSurface(input: BoardTaskSurfaceInput): BoardTaskSu
         )
       : [];
   const shouldUseWorkItemPrimaryView = Boolean(currentWorkItem && requirementSyntheticTask);
+  const primaryRequirementTasks = requirementSyntheticTask ? [requirementSyntheticTask] : [];
+  const supplementalRequirementTasks =
+    scopedTrackedTasks.length > 0
+      ? scopedTrackedTasks
+      : mergedTrackedTasks.filter((task) => task.source === "file");
   const trackedTasks = (
     shouldUseWorkItemPrimaryView
-      ? [requirementSyntheticTask]
+      ? [...primaryRequirementTasks, ...supplementalRequirementTasks]
       : requirementOverview && isStrategicRequirement && requirementSyntheticTask
-        ? [requirementSyntheticTask]
+        ? [...primaryRequirementTasks, ...supplementalRequirementTasks]
         : requirementOverview && scopedTrackedTasks.length === 0 && requirementSyntheticTask
-          ? [requirementSyntheticTask]
-          : []
-  ).filter((task): task is TrackedTask => Boolean(task));
+          ? [...primaryRequirementTasks, ...supplementalRequirementTasks]
+          : requirementOverview
+            ? scopedTrackedTasks.length > 0
+              ? scopedTrackedTasks
+              : mergedTrackedTasks
+            : mergedTrackedTasks
+  ).filter(
+    (task, index, items): task is TrackedTask =>
+      Boolean(task) && items.findIndex((candidate) => candidate?.id === task?.id) === index,
+  );
 
   const totalSteps = trackedTasks.reduce((total, task) => total + task.steps.length, 0);
   const doneSteps = trackedTasks.reduce(

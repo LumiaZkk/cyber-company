@@ -51,6 +51,7 @@ export type ChatMissionSurface = {
   shouldUseTaskPlanPrimaryView: boolean;
   effectiveOwnerAgentId: string | null;
   effectiveOwnerLabel: string;
+  effectiveStepLabel: string;
   effectiveStage: string;
   effectiveStatusLabel: string;
   effectiveSummary: string;
@@ -69,6 +70,25 @@ export type ChatMissionSurface = {
   shouldPreferPersistedConversationMission: boolean;
   activeConversationMission: ActiveConversationMission | ConversationMissionRecord | null;
 };
+
+function summarizeMissionStepLabel(text: string | null | undefined): string {
+  const normalized = (text ?? "")
+    .replace(/\*\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return "待推进";
+  }
+  const preferred =
+    normalized
+      .split(/(?:\s+·\s+|\n|---|【需要你确认】|需要你确认的关键问题[:：])/i)
+      .map((segment) => segment.trim())
+      .find((segment) => segment.length > 0) ?? normalized;
+  if (preferred.length <= 36) {
+    return preferred;
+  }
+  return `${preferred.slice(0, 35).trimEnd()}…`;
+}
 
 export function buildChatMissionSurface(
   input: BuildChatMissionSurfaceInput,
@@ -90,14 +110,13 @@ export function buildChatMissionSurface(
     requirementRoomSummary: input.requirementRoomSummary,
     stableDisplayPrimaryView: input.stableDisplayPrimaryView,
     strategicDirectParticipantView: input.strategicDirectParticipantView,
-    shouldUseTaskPlanPrimaryView,
-    taskPlanOverview: input.taskPlanOverview,
-    requirementOverview: input.requirementOverview,
-    workbenchOwnerAgentId: input.workbenchOwnerAgentId,
-    latestStageGate: input.latestStageGate,
-    shouldDispatchPublish: input.shouldDispatchPublish,
-    shouldAdvanceToNextPhase: input.shouldAdvanceToNextPhase,
-    groupTitle: input.groupTitle,
+      shouldUseTaskPlanPrimaryView,
+      taskPlanOverview: input.taskPlanOverview,
+      requirementOverview: input.requirementOverview,
+      workbenchOwnerAgentId: input.workbenchOwnerAgentId,
+      shouldDispatchPublish: input.shouldDispatchPublish,
+      shouldAdvanceToNextPhase: input.shouldAdvanceToNextPhase,
+      groupTitle: input.groupTitle,
   });
 
   const visibleDispatchTargetAgentId =
@@ -176,7 +195,6 @@ export function buildChatMissionSurface(
       input.taskPlanOverview &&
       input.taskPlanOverview.totalCount > 0 &&
       input.taskPlanOverview.doneCount >= input.taskPlanOverview.totalCount &&
-      !input.latestStageGate &&
       !input.shouldAdvanceToNextPhase &&
       !input.shouldDispatchPublish &&
       !input.shouldDirectToTechDispatch,
@@ -192,22 +210,7 @@ export function buildChatMissionSurface(
           isNext: displayPlanNextStep?.id === step.id,
         };
       })
-    : input.latestStageGate?.nextStagePlan.length
-      ? input.latestStageGate.nextStagePlan.map((item, index) => ({
-          id: `stage-plan:${input.latestStageGate?.sourceTimestamp}:${index}`,
-          title: item,
-          assigneeLabel: index === 0 ? effective.ownerLabel : displayNextBatonLabel,
-          assigneeAgentId: index === 0 ? effective.ownerAgentId : displayNextBatonAgentId,
-          status: "pending" as const,
-          statusLabel: index === 0 ? "待你确认" : "待启动",
-          detail:
-            index === 0
-              ? "这一步先等你确认；确认后 CEO 会正式启动。"
-              : "等负责人确认并启动后，这一步会进入执行。",
-          isCurrent: index === 0,
-          isNext: index === 1,
-        }))
-      : input.requirementOverview
+    : input.requirementOverview
         ? [
             {
               id: `mission-current:${input.requirementOverview.topicKey}`,
@@ -269,25 +272,20 @@ export function buildChatMissionSurface(
             guidance: "这段时间先不要判断当前负责人；恢复完成后，再看本轮规划/任务。",
             planSteps: [],
           }
-        : !input.isGroup && !input.requirementOverview && !input.taskPlanOverview && !input.latestStageGate
+        : !input.isGroup && !input.requirementOverview && !input.taskPlanOverview
           ? null
           : {
               title:
                 (input.persistedWorkItem?.title?.trim() || input.persistedWorkItem?.headline?.trim()) ??
                 input.requirementOverview?.title ??
-                input.latestStageGate?.title ??
                 input.structuredTaskTitle ??
                 "当前规划/任务",
               statusLabel: missionIsCompleted
                 ? "已完成"
-                : input.latestStageGate?.status === "waiting_confirmation"
-                  ? "待你确认"
-                  : effective.statusLabel,
+                : effective.statusLabel,
               progressLabel: input.taskPlanOverview
                 ? `${input.taskPlanOverview.doneCount}/${input.taskPlanOverview.totalCount}`
-                : input.latestStageGate
-                  ? `${input.latestStageGate.nextStagePlan.length} 项待确认`
-                  : input.requirementTeam?.progressLabel ?? "进行中",
+                : input.requirementTeam?.progressLabel ?? "进行中",
               ownerLabel: effective.ownerLabel,
               currentStepLabel: displayPlanCurrentStep
                 ? `${displayPlanCurrentStep.assigneeLabel} · ${displayPlanCurrentStep.title}`
@@ -299,9 +297,7 @@ export function buildChatMissionSurface(
                   : displayNextBatonLabel,
               summary: missionIsCompleted
                 ? "这轮规划/任务已经完成。现在可以让 CEO 做阶段总结、复盘，或者直接开启下一轮。"
-                : input.latestStageGate?.status === "waiting_confirmation"
-                  ? `${input.latestStageGate.stageSummary} 你确认后，CEO 会按这份 plan 正式进入下一阶段。`
-                  : effective.summary,
+                : effective.summary,
               guidance: missionIsCompleted
                 ? "如果你还想继续围绕这一轮复盘或补问题，可以继续聊天；如果要开始新目标，直接开启下一轮。"
                 : "继续跟 CEO 聊，就是在调整这份规划/任务。CEO 会继续更新 plan、负责人、下一棒和当前判断。",
@@ -324,7 +320,7 @@ export function buildChatMissionSurface(
       : null) ??
     conversationMission ??
     persistedConversationMissionFromWorkItem ??
-    (input.requirementOverview || input.latestStageGate || input.isRequirementBootstrapPending || input.isFreshConversation
+    (input.requirementOverview || input.isRequirementBootstrapPending || input.isFreshConversation
       ? null
       : input.persistedConversationMission);
 
@@ -339,6 +335,7 @@ export function buildChatMissionSurface(
     shouldUseTaskPlanPrimaryView,
     effectiveOwnerAgentId: effective.ownerAgentId,
     effectiveOwnerLabel: effective.ownerLabel,
+    effectiveStepLabel: summarizeMissionStepLabel(displayPlanCurrentStep?.title ?? effective.stage),
     effectiveStage: effective.stage,
     effectiveStatusLabel: effective.statusLabel,
     effectiveSummary: effective.summary,

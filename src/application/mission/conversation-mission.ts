@@ -8,6 +8,10 @@ type BuildConversationMissionRecordInput = {
   topicKey?: string | null;
   roomId?: string | null;
   startedAt?: number | null;
+  promotionState?: ConversationMissionRecord["promotionState"];
+  promotionReason?: ConversationMissionRecord["promotionReason"];
+  lifecyclePhase?: ConversationMissionRecord["lifecyclePhase"];
+  stageGateStatus?: ConversationMissionRecord["stageGateStatus"];
   title: string;
   statusLabel: string;
   progressLabel: string;
@@ -59,6 +63,10 @@ export function buildConversationMissionRecord(
     topicKey: input.topicKey ?? undefined,
     roomId: input.roomId ?? undefined,
     startedAt: input.startedAt ?? undefined,
+    promotionState: input.promotionState,
+    promotionReason: input.promotionReason ?? null,
+    lifecyclePhase: input.lifecyclePhase ?? "active_requirement",
+    stageGateStatus: input.stageGateStatus ?? "none",
     title: input.title,
     statusLabel: input.statusLabel,
     progressLabel: input.progressLabel,
