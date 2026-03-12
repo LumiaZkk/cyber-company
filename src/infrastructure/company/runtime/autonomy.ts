@@ -1,4 +1,12 @@
+import {
+  deleteAuthorityDecisionTicket,
+  upsertAuthorityDecisionTicket,
+} from "../../../application/gateway/authority-control";
 import type { CompanyRuntimeState } from "./types";
+import {
+  applyAuthorityRuntimeCommandError,
+  applyAuthorityRuntimeSnapshotToStore,
+} from "../../authority/runtime-command";
 import {
   isSupportRequestActive,
   normalizeSupportRequestRecord,
@@ -11,13 +19,23 @@ function sortByUpdatedAt<T extends { updatedAt: number }>(records: T[]): T[] {
   return [...records].sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
-function upsertRecord<T extends { id: string; updatedAt: number }>(
+function normalizeRevision(value: number | null | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : 1;
+}
+
+function upsertRecord<T extends { id: string; updatedAt: number; revision?: number }>(
   records: T[],
   record: T,
 ): T[] | null {
   const index = records.findIndex((item) => item.id === record.id);
   if (index >= 0) {
-    if (record.updatedAt <= records[index]!.updatedAt) {
+    const existing = records[index]!;
+    const existingRevision = normalizeRevision(existing.revision);
+    const nextRevision = normalizeRevision(record.revision);
+    if (
+      nextRevision < existingRevision ||
+      (nextRevision === existingRevision && record.updatedAt <= existing.updatedAt)
+    ) {
       return null;
     }
     const next = [...records];
@@ -116,8 +134,40 @@ export function buildAutonomyActions(
     },
 
     upsertDecisionTicketRecord: (ticket) => {
-      const { activeDecisionTickets, activeCompany } = get();
-      const next = upsertRecord(activeDecisionTickets, ticket);
+      const { activeDecisionTickets, activeCompany, authorityBackedState } = get();
+      const normalizedTicket = {
+        ...ticket,
+        companyId: ticket.companyId ?? activeCompany?.id ?? "",
+        revision: normalizeRevision(ticket.revision),
+        createdAt: ticket.createdAt || Date.now(),
+        updatedAt: ticket.updatedAt || Date.now(),
+      };
+      if (authorityBackedState && activeCompany) {
+        void upsertAuthorityDecisionTicket({
+          companyId: activeCompany.id,
+          ticket: normalizedTicket,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "decision.upsert",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to upsert decision ticket through authority",
+            });
+          });
+        return;
+      }
+      const next = upsertRecord(activeDecisionTickets, {
+        ...normalizedTicket,
+      });
       if (!next) {
         return;
       }
@@ -133,7 +183,12 @@ export function buildAutonomyActions(
     },
 
     replaceDecisionTicketRecords: (tickets) => {
-      const sorted = sortByUpdatedAt(tickets);
+      const sorted = sortByUpdatedAt(
+        tickets.map((ticket) => ({
+          ...ticket,
+          revision: normalizeRevision(ticket.revision),
+        })),
+      );
       const activeCompany = get().activeCompany;
       set({
         activeDecisionTickets: sorted,
@@ -147,7 +202,30 @@ export function buildAutonomyActions(
     },
 
     deleteDecisionTicketRecord: (ticketId) => {
-      const { activeDecisionTickets, activeCompany } = get();
+      const { activeDecisionTickets, activeCompany, authorityBackedState } = get();
+      if (authorityBackedState && activeCompany) {
+        void deleteAuthorityDecisionTicket({
+          companyId: activeCompany.id,
+          ticketId,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "decision.delete",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to delete decision ticket through authority",
+            });
+          });
+        return;
+      }
       const next = activeDecisionTickets.filter((ticket) => ticket.id !== ticketId);
       set({
         activeDecisionTickets: next,

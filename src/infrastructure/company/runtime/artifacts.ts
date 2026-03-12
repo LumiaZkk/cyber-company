@@ -7,7 +7,7 @@ import {
   applyAuthorityRuntimeCommandError,
   applyAuthorityRuntimeSnapshotToStore,
 } from "../../authority/runtime-command";
-import { persistArtifactRecords } from "../persistence/artifact-persistence";
+import { normalizeArtifactRecord, persistArtifactRecords } from "../persistence/artifact-persistence";
 import type { ArtifactRecord, CompanyRuntimeState, RuntimeGet, RuntimeSet } from "./types";
 import {
   persistActiveWorkItems,
@@ -15,6 +15,23 @@ import {
   syncArtifactLinks,
   syncDispatchLinks,
 } from "./work-items";
+
+function artifactMaterialChanged(existing: ArtifactRecord, next: ArtifactRecord): boolean {
+  return (
+    existing.workItemId !== next.workItemId ||
+    existing.title !== next.title ||
+    existing.kind !== next.kind ||
+    existing.status !== next.status ||
+    (existing.ownerActorId ?? null) !== (next.ownerActorId ?? null) ||
+    (existing.providerId ?? null) !== (next.providerId ?? null) ||
+    (existing.sourceActorId ?? null) !== (next.sourceActorId ?? null) ||
+    (existing.sourceName ?? null) !== (next.sourceName ?? null) ||
+    (existing.sourcePath ?? null) !== (next.sourcePath ?? null) ||
+    (existing.sourceUrl ?? null) !== (next.sourceUrl ?? null) ||
+    (existing.summary ?? null) !== (next.summary ?? null) ||
+    (existing.content ?? null) !== (next.content ?? null)
+  );
+}
 
 export function persistActiveArtifacts(
   companyId: string | null | undefined,
@@ -41,21 +58,33 @@ export function buildArtifactActions(
         return;
       }
 
-      const normalized: ArtifactRecord = {
+      const normalized = normalizeArtifactRecord({
         ...artifact,
         updatedAt: artifact.updatedAt || Date.now(),
         createdAt: artifact.createdAt || Date.now(),
-      };
+      });
       const next = [...activeArtifacts];
       const index = next.findIndex((item) => item.id === normalized.id);
       if (index >= 0) {
         const existing = next[index];
-        if (normalized.updatedAt <= existing.updatedAt) {
+        const candidate = normalizeArtifactRecord({ ...existing, ...normalized });
+        const existingRevision = existing.revision ?? 1;
+        const normalizedRevision = normalized.revision ?? 1;
+        const candidateRevision = artifactMaterialChanged(existing, candidate)
+          ? Math.max(existingRevision, normalizedRevision) + 1
+          : Math.max(existingRevision, normalizedRevision);
+        if (
+          candidateRevision < existingRevision ||
+          (candidateRevision === existingRevision && normalized.updatedAt <= existing.updatedAt)
+        ) {
           return;
         }
-        next[index] = { ...existing, ...normalized };
+        next[index] = {
+          ...candidate,
+          revision: candidateRevision,
+        };
       } else {
-        next.push(normalized);
+        next.push({ ...normalized, revision: normalized.revision || 1 });
       }
 
       if (authorityBackedState) {
@@ -143,22 +172,32 @@ export function buildArtifactActions(
       for (const artifact of preserved) {
         mergedById.set(artifact.id, artifact);
       }
-      const normalizedIncoming = artifacts.map((artifact) => ({
-        ...artifact,
-        updatedAt: artifact.updatedAt || Date.now(),
-        createdAt: artifact.createdAt || Date.now(),
-      }));
+      const normalizedIncoming = artifacts.map((artifact) =>
+        normalizeArtifactRecord({
+          ...artifact,
+          updatedAt: artifact.updatedAt || Date.now(),
+          createdAt: artifact.createdAt || Date.now(),
+        }),
+      );
       for (const artifact of normalizedIncoming) {
         const existing = mergedById.get(artifact.id);
         if (!existing) {
           mergedById.set(artifact.id, artifact);
           continue;
         }
-        mergedById.set(artifact.id, {
+        const candidate = normalizeArtifactRecord({
           ...existing,
           ...artifact,
           summary: artifact.summary ?? existing.summary,
           content: artifact.content ?? existing.content,
+        });
+        const existingRevision = existing.revision ?? 1;
+        const artifactRevision = artifact.revision ?? 1;
+        mergedById.set(artifact.id, {
+          ...candidate,
+          revision: artifactMaterialChanged(existing, candidate)
+            ? Math.max(existingRevision, artifactRevision) + 1
+            : Math.max(existingRevision, artifactRevision),
         });
       }
       const sortedArtifacts = [...mergedById.values()].sort(

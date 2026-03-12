@@ -64,6 +64,10 @@ function sortByUpdatedAt<T extends { updatedAt: number }>(records: T[]): T[] {
   return [...records].sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
+function normalizeRevision(value: number | null | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : 1;
+}
+
 function normalizeCompany(company: Company): Company {
   return {
     ...company,
@@ -252,6 +256,7 @@ function upsertOpenDecisionTicket(input: {
       decisionType: input.decisionType,
     }),
     companyId: input.companyId,
+    revision: input.existing?.revision ?? 1,
     sourceType: input.sourceType,
     sourceId: input.sourceId,
     escalationId: input.escalationId ?? null,
@@ -291,7 +296,10 @@ function upsertOpenDecisionTicket(input: {
   ) {
     return input.existing;
   }
-  return nextRecord;
+  return {
+    ...nextRecord,
+    revision: input.existing ? normalizeRevision(input.existing.revision) + 1 : normalizeRevision(nextRecord.revision),
+  };
 }
 
 function resolveDecisionTicket(ticket: DecisionTicketRecord, now: number): DecisionTicketRecord {
@@ -300,6 +308,7 @@ function resolveDecisionTicket(ticket: DecisionTicketRecord, now: number): Decis
   }
   return {
     ...ticket,
+    revision: normalizeRevision(ticket.revision) + 1,
     status: "cancelled",
     updatedAt: now,
   };

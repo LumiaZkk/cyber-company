@@ -40,6 +40,10 @@ export type CollaborationTargetSnapshot = CollaborationActorSnapshot & {
 };
 
 export type CollaborationContextSnapshot = {
+  company: {
+    id: string;
+    name?: string;
+  };
   scopeVersion: number;
   generatedAt: number;
   self: CollaborationActorSnapshot;
@@ -233,6 +237,10 @@ export function buildCollaborationContextSnapshot(input: {
 
   const manager = resolveEmployee(input.company, employee.reportsTo);
   return {
+    company: {
+      id: input.company.id,
+      name: input.company.name,
+    },
     scopeVersion: COLLABORATION_SCOPE_VERSION,
     generatedAt: Date.now(),
     self: buildActorSnapshot(input.company, employee),

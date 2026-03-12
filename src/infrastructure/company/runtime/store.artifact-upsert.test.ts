@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as authorityControl from "../../../application/gateway/authority-control";
 import { useAuthorityRuntimeSyncStore } from "../../authority/runtime-sync-store";
 import { useCompanyRuntimeStore } from "./store";
-import type { Company, DispatchRecord, WorkItemRecord } from "./types";
+import type { ArtifactRecord, Company, WorkItemRecord } from "./types";
 
 function createCompany(): Company {
   return {
@@ -62,18 +62,20 @@ function createWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord
   };
 }
 
-function createDispatch(overrides: Partial<DispatchRecord> = {}): DispatchRecord {
+function createArtifact(overrides: Partial<ArtifactRecord> = {}): ArtifactRecord {
   return {
-    id: "dispatch:topic:mission:alpha:3000",
+    id: "workspace:company-1:co-cto:/workspace/plan.md",
     workItemId: "topic:mission:alpha",
-    roomId: "workitem:topic:mission:alpha",
-    title: "需求团队派单 · CTO",
-    summary: "请 CTO 接手输出方案。",
-    fromActorId: "co-ceo",
-    targetActorIds: ["co-cto"],
-    status: "pending",
-    deliveryState: "pending",
-    topicKey: "mission:alpha",
+    title: "plan.md",
+    kind: "file",
+    status: "ready",
+    ownerActorId: "co-cto",
+    providerId: "authority",
+    sourceActorId: "co-cto",
+    sourceName: "plan.md",
+    sourcePath: "/workspace/plan.md",
+    summary: "当前方案初稿",
+    content: "# plan",
     revision: 1,
     createdAt: 3_000,
     updatedAt: 3_000,
@@ -81,7 +83,7 @@ function createDispatch(overrides: Partial<DispatchRecord> = {}): DispatchRecord
   };
 }
 
-describe("useCompanyRuntimeStore upsertDispatchRecord", () => {
+describe("useCompanyRuntimeStore authority-backed artifacts", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -104,7 +106,7 @@ describe("useCompanyRuntimeStore upsertDispatchRecord", () => {
 
     useAuthorityRuntimeSyncStore.setState({
       compatibilityPathEnabled: true,
-      commandRoutes: ["requirement.transition", "room.append", "dispatch.create"],
+      commandRoutes: ["artifact.upsert", "artifact.sync-mirror", "artifact.delete"],
       mode: "compatibility_snapshot",
       lastSnapshotUpdatedAt: null,
       lastAppliedSignature: null,
@@ -145,27 +147,22 @@ describe("useCompanyRuntimeStore upsertDispatchRecord", () => {
     });
   });
 
-  it("routes authority-backed dispatch writes through authority and applies the returned runtime", async () => {
-    const dispatch = createDispatch();
-    const upsertDispatchSpy = vi
-      .spyOn(authorityControl, "upsertAuthorityDispatch")
+  it("routes artifact upserts through authority", async () => {
+    const artifact = createArtifact();
+    const upsertSpy = vi
+      .spyOn(authorityControl, "upsertAuthorityArtifact")
       .mockResolvedValue({
         companyId: "company-1",
         activeRoomRecords: [],
         activeMissionRecords: [],
         activeConversationStates: [],
-        activeWorkItems: [
-          createWorkItem({
-            dispatchIds: [dispatch.id],
-            updatedAt: 3_000,
-          }),
-        ],
+        activeWorkItems: [createWorkItem({ artifactIds: [artifact.id], updatedAt: 3_000 })],
         activeRequirementAggregates: [],
         activeRequirementEvidence: [],
         primaryRequirementId: null,
         activeRoundRecords: [],
-        activeArtifacts: [],
-        activeDispatches: [dispatch],
+        activeArtifacts: [artifact],
+        activeDispatches: [],
         activeRoomBindings: [],
         activeSupportRequests: [],
         activeEscalations: [],
@@ -173,29 +170,62 @@ describe("useCompanyRuntimeStore upsertDispatchRecord", () => {
         updatedAt: 3_000,
       });
 
-    useCompanyRuntimeStore.getState().upsertDispatchRecord(dispatch);
+    useCompanyRuntimeStore.getState().upsertArtifactRecord(artifact);
 
     await vi.waitFor(() => {
-      expect(upsertDispatchSpy).toHaveBeenCalledWith({
+      expect(upsertSpy).toHaveBeenCalledWith({
         companyId: "company-1",
-        dispatch,
+        artifact,
       });
-      const state = useCompanyRuntimeStore.getState();
-      expect(state.activeDispatches).toEqual([dispatch]);
-      expect(state.activeWorkItems[0]?.dispatchIds).toContain(dispatch.id);
+      expect(useCompanyRuntimeStore.getState().activeArtifacts).toEqual([artifact]);
     });
   });
 
-  it("routes authority-backed dispatch deletion through authority", async () => {
-    const dispatch = createDispatch();
-    const deleteDispatchSpy = vi
-      .spyOn(authorityControl, "deleteAuthorityDispatch")
+  it("routes artifact mirror sync through authority", async () => {
+    const artifact = createArtifact();
+    const syncSpy = vi
+      .spyOn(authorityControl, "syncAuthorityArtifactMirrors")
       .mockResolvedValue({
         companyId: "company-1",
         activeRoomRecords: [],
         activeMissionRecords: [],
         activeConversationStates: [],
-        activeWorkItems: [createWorkItem({ dispatchIds: [], updatedAt: 4_000 })],
+        activeWorkItems: [createWorkItem({ artifactIds: [artifact.id], updatedAt: 4_000 })],
+        activeRequirementAggregates: [],
+        activeRequirementEvidence: [],
+        primaryRequirementId: null,
+        activeRoundRecords: [],
+        activeArtifacts: [artifact],
+        activeDispatches: [],
+        activeRoomBindings: [],
+        activeSupportRequests: [],
+        activeEscalations: [],
+        activeDecisionTickets: [],
+        updatedAt: 4_000,
+      });
+
+    useCompanyRuntimeStore.getState().syncArtifactMirrorRecords([artifact], "workspace:");
+
+    await vi.waitFor(() => {
+      expect(syncSpy).toHaveBeenCalledWith({
+        companyId: "company-1",
+        artifacts: [artifact],
+        mirrorPrefix: "workspace:",
+      });
+      expect(useCompanyRuntimeStore.getState().activeArtifacts).toEqual([artifact]);
+    });
+  });
+
+  it("routes artifact deletion through authority", async () => {
+    const artifact = createArtifact();
+    const deleteSpy = vi
+      .spyOn(authorityControl, "deleteAuthorityArtifact")
+      .mockResolvedValue({
+        companyId: "company-1",
+        activeRoomRecords: [],
+        activeMissionRecords: [],
+        activeConversationStates: [],
+        activeWorkItems: [createWorkItem({ artifactIds: [], updatedAt: 4_500 })],
         activeRequirementAggregates: [],
         activeRequirementEvidence: [],
         primaryRequirementId: null,
@@ -206,23 +236,23 @@ describe("useCompanyRuntimeStore upsertDispatchRecord", () => {
         activeSupportRequests: [],
         activeEscalations: [],
         activeDecisionTickets: [],
-        updatedAt: 4_000,
+        updatedAt: 4_500,
       });
 
     useCompanyRuntimeStore.setState({
-      activeDispatches: [dispatch],
-      activeWorkItems: [createWorkItem({ dispatchIds: [dispatch.id] })],
+      activeArtifacts: [artifact],
+      activeWorkItems: [createWorkItem({ artifactIds: [artifact.id] })],
     });
 
-    useCompanyRuntimeStore.getState().deleteDispatchRecord(dispatch.id);
+    useCompanyRuntimeStore.getState().deleteArtifactRecord(artifact.id);
 
     await vi.waitFor(() => {
-      expect(deleteDispatchSpy).toHaveBeenCalledWith({
+      expect(deleteSpy).toHaveBeenCalledWith({
         companyId: "company-1",
-        dispatchId: dispatch.id,
+        artifactId: artifact.id,
       });
-      expect(useCompanyRuntimeStore.getState().activeDispatches).toEqual([]);
-      expect(useCompanyRuntimeStore.getState().activeWorkItems[0]?.dispatchIds).toEqual([]);
+      expect(useCompanyRuntimeStore.getState().activeArtifacts).toEqual([]);
+      expect(useCompanyRuntimeStore.getState().activeWorkItems[0]?.artifactIds).toEqual([]);
     });
   });
 });

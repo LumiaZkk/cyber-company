@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gateway } from "../../../application/gateway";
 import * as authorityControl from "../../../application/gateway/authority-control";
+import { useAuthorityRuntimeSyncStore } from "../../authority/runtime-sync-store";
 import { useCompanyRuntimeStore } from "./store";
 import type { Company, WorkItemRecord } from "./types";
 
@@ -94,6 +95,25 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
       },
       configurable: true,
       writable: true,
+    });
+
+    useAuthorityRuntimeSyncStore.setState({
+      compatibilityPathEnabled: true,
+      commandRoutes: ["requirement.transition", "requirement.promote"],
+      mode: "compatibility_snapshot",
+      lastSnapshotUpdatedAt: null,
+      lastAppliedSignature: null,
+      lastAppliedSource: null,
+      lastAppliedAt: null,
+      lastPushAt: null,
+      lastPullAt: null,
+      lastCommandAt: null,
+      pushCount: 0,
+      pullCount: 0,
+      commandCount: 0,
+      lastError: null,
+      lastErrorAt: null,
+      lastErrorOperation: null,
     });
 
     useCompanyRuntimeStore.setState({
@@ -535,6 +555,179 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
           (event) => event.eventType === "requirement_reopened" && event.aggregateId === "topic:mission:alpha",
         ),
       ).toBe(true);
+    });
+  });
+
+  it("routes primary requirement promotion through authority when runtime is authority-backed", async () => {
+    useCompanyRuntimeStore.setState({
+      authorityBackedState: true,
+      activeRequirementAggregates: [
+        {
+          id: "topic:mission:alpha",
+          companyId: "company-1",
+          topicKey: "mission:alpha",
+          kind: "strategic",
+          primary: true,
+          workItemId: "topic:mission:alpha",
+          roomId: "workitem:topic:mission:alpha",
+          ownerActorId: "co-ceo",
+          ownerLabel: "CEO",
+          lifecyclePhase: "active_requirement",
+          stageGateStatus: "confirmed",
+          stage: "CEO 统筹",
+          summary: "Alpha 主线正在推进。",
+          nextAction: "继续推进 Alpha。",
+          memberIds: ["co-ceo", "co-cto"],
+          sourceConversationId: "agent:co-ceo:main",
+          startedAt: 1_000,
+          updatedAt: 2_000,
+          revision: 2,
+          lastEvidenceAt: 2_000,
+          status: "active",
+          acceptanceStatus: "not_requested",
+        },
+        {
+          id: "topic:mission:beta",
+          companyId: "company-1",
+          topicKey: "mission:beta",
+          kind: "strategic",
+          primary: false,
+          workItemId: "topic:mission:beta",
+          roomId: "workitem:topic:mission:beta",
+          ownerActorId: "co-cto",
+          ownerLabel: "CTO",
+          lifecyclePhase: "active_requirement",
+          stageGateStatus: "confirmed",
+          stage: "CTO 推进",
+          summary: "Beta 主线接管中。",
+          nextAction: "继续推进 Beta。",
+          memberIds: ["co-ceo", "co-cto"],
+          sourceConversationId: "agent:co-cto:main",
+          startedAt: 1_500,
+          updatedAt: 3_000,
+          revision: 4,
+          lastEvidenceAt: 3_000,
+          status: "active",
+          acceptanceStatus: "not_requested",
+        },
+      ],
+      activeRequirementEvidence: [],
+      primaryRequirementId: "topic:mission:alpha",
+    });
+
+    const promoteSpy = vi
+      .spyOn(authorityControl, "promoteAuthorityRequirement")
+      .mockResolvedValue({
+        companyId: "company-1",
+        activeRoomRecords: [],
+        activeMissionRecords: [],
+        activeConversationStates: [],
+        activeWorkItems: [],
+        activeRequirementAggregates: [
+          {
+            id: "topic:mission:beta",
+            companyId: "company-1",
+            topicKey: "mission:beta",
+            kind: "strategic",
+            primary: true,
+            workItemId: "topic:mission:beta",
+            roomId: "workitem:topic:mission:beta",
+            ownerActorId: "co-cto",
+            ownerLabel: "CTO",
+            lifecyclePhase: "active_requirement",
+            stageGateStatus: "confirmed",
+            stage: "CTO 推进",
+            summary: "Beta 主线接管中。",
+            nextAction: "继续推进 Beta。",
+            memberIds: ["co-ceo", "co-cto"],
+            sourceConversationId: "agent:co-cto:main",
+            startedAt: 1_500,
+            updatedAt: 6_000,
+            revision: 4,
+            lastEvidenceAt: 6_000,
+            status: "active",
+            acceptanceStatus: "not_requested",
+          },
+          {
+            id: "topic:mission:alpha",
+            companyId: "company-1",
+            topicKey: "mission:alpha",
+            kind: "strategic",
+            primary: false,
+            workItemId: "topic:mission:alpha",
+            roomId: "workitem:topic:mission:alpha",
+            ownerActorId: "co-ceo",
+            ownerLabel: "CEO",
+            lifecyclePhase: "active_requirement",
+            stageGateStatus: "confirmed",
+            stage: "CEO 统筹",
+            summary: "Alpha 主线正在推进。",
+            nextAction: "继续推进 Alpha。",
+            memberIds: ["co-ceo", "co-cto"],
+            sourceConversationId: "agent:co-ceo:main",
+            startedAt: 1_000,
+            updatedAt: 2_000,
+            revision: 2,
+            lastEvidenceAt: 2_000,
+            status: "active",
+            acceptanceStatus: "not_requested",
+          },
+        ],
+        activeRequirementEvidence: [
+          {
+            id: "local:topic:mission:beta:requirement_promoted:4",
+            companyId: "company-1",
+            aggregateId: "topic:mission:beta",
+            source: "local-command",
+            sessionKey: "agent:co-cto:main",
+            actorId: "co-cto",
+            eventType: "requirement_promoted",
+            timestamp: 6_000,
+            payload: {
+              ownerActorId: "co-cto",
+              ownerLabel: "CTO",
+              stage: "CTO 推进",
+              summary: "Beta 主线接管中。",
+              nextAction: "继续推进 Beta。",
+              memberIds: ["co-ceo", "co-cto"],
+              status: "active",
+              stageGateStatus: "confirmed",
+              acceptanceStatus: "not_requested",
+              acceptanceNote: null,
+              revision: 4,
+              workItemId: "topic:mission:beta",
+              topicKey: "mission:beta",
+              roomId: "workitem:topic:mission:beta",
+              previousStatus: "active",
+              previousStageGateStatus: "confirmed",
+              previousAcceptanceStatus: "not_requested",
+            },
+            applied: true,
+          },
+        ],
+        primaryRequirementId: "topic:mission:beta",
+        activeRoundRecords: [],
+        activeArtifacts: [],
+        activeDispatches: [],
+        activeRoomBindings: [],
+        activeSupportRequests: [],
+        activeEscalations: [],
+        activeDecisionTickets: [],
+        updatedAt: 6_000,
+      });
+
+    useCompanyRuntimeStore.getState().setPrimaryRequirement("topic:mission:beta");
+
+    await vi.waitFor(() => {
+      expect(promoteSpy).toHaveBeenCalledWith({
+        companyId: "company-1",
+        aggregateId: "topic:mission:beta",
+        timestamp: expect.any(Number),
+        source: "local-command",
+      });
+      const state = useCompanyRuntimeStore.getState();
+      expect(state.primaryRequirementId).toBe("topic:mission:beta");
+      expect(state.activeRequirementAggregates.find((aggregate) => aggregate.id === "topic:mission:beta")?.primary).toBe(true);
     });
   });
 });

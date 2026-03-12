@@ -57,6 +57,7 @@ export async function enqueueDelegationDispatch(
   const dispatch: DispatchRecord = {
     id: input.dispatchId,
     workItemId: input.workItemId,
+    revision: 1,
     roomId: input.roomId ?? null,
     title: input.title,
     summary: input.summary,

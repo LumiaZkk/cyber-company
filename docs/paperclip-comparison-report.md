@@ -1,7 +1,7 @@
 # Paperclip 对比分析报告
 
 Status: Draft  
-Last updated: 2026-03-12  
+Last updated: 2026-03-13  
 Scope: 对比 `paperclipai/paperclip` 与当前 `cyber-company` 项目在产品定位、状态建模、技术架构、工程成熟度和战略方向上的异同、优劣与可借鉴点
 
 Related docs:
@@ -25,12 +25,17 @@ Related docs:
 
 - Repo: `https://github.com/paperclipai/paperclip`
 - 分析快照：
-  - 拉取时间：2026-03-12
-  - 快照 commit：`55c145bff25f2be6aa2aec465b92a1e8a46590cc`
+  - 首次快照：2026-03-12
+  - 首次快照 commit：`55c145bff25f2be6aa2aec465b92a1e8a46590cc`
+  - 最新核验：2026-03-13
+  - 最新核验 commit：`5201222ce7c73d50c4cf021ea6fdd24bd401dfe6`
 - 重点参考：
   - `README.md`
   - `doc/DEVELOPING.md`
+  - `cli/src/commands/doctor.ts`
+  - `cli/src/commands/db-backup.ts`
   - `server/package.json`
+  - `server/src/services/issues.ts`
   - `ui/package.json`
   - `packages/db/package.json`
   - `server/src/index.ts`
@@ -66,6 +71,11 @@ Related docs:
 
 - 如果目标是做最好的 OpenClaw 运营产品，`cyber-company` 的方向更有差异化。
 - 如果目标是做通用 agent company 平台，`paperclip` 的底座能力更成熟，也更接近平台化终局。
+
+2026-03-13 按 `paperclip` 最新 master 重新核验后，这个判断没有变化，反而更明确了两边的差异：
+
+- `paperclip` 的强项仍然是 durable object、治理原语和本地 operator tooling。
+- `cyber-company` 的强项仍然是 requirement-centered 的前台主线和协作现场投影。
 
 ## 4. 项目定位对比
 
@@ -174,6 +184,11 @@ Related docs:
 
 从 `packages/db/src/schema/*` 可以看出，它对数据库 schema 的投入很深，系统是围绕长期持久化实体来设计的。
 
+2026-03-13 最新 master 上的 `approvals.ts` 和 `heartbeat_runs.ts` 进一步强化了这一点：
+
+- `approvals` 带完整的 `requestedBy* / decidedBy* / status / payload` 字段，明显是 durable governance entity。
+- `heartbeat_runs` 带 `status / usageJson / resultJson / contextSnapshot / logRef`，说明自动化执行在 `paperclip` 里不是临时日志，而是长期执行账本。
+
 `cyber-company` 的第一性对象更偏协作 runtime object：
 
 - requirement aggregate
@@ -258,9 +273,15 @@ Related docs:
 - embedded PostgreSQL 自动初始化
 - Docker / Compose quickstart
 - `doctor`
+- `db:backup`
 - `worktree init`
 - `allowed-hostname`
 - migration 机制
+
+最新 master 上的 `cli/src/commands/doctor.ts` 和 `cli/src/commands/db-backup.ts` 也说明了这套运维入口的成熟度：
+
+- `doctor` 是分层检查、可修复检查和修复后复验，不只是 health ping。
+- `db:backup` 是显式 CLI 能力，直接暴露 backup dir、retention 和 connection source。
 
 这类能力说明它不仅在做产品，也在做“平台落地链路”。
 

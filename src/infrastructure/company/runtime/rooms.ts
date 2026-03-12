@@ -43,6 +43,10 @@ import {
 
 const ROOM_MESSAGE_LIMIT = 120;
 
+function normalizeRevision(value: number | null | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : 1;
+}
+
 export function mergeRoomTranscript(
   existing: RequirementRoomMessage[],
   incoming: RequirementRoomMessage[],
@@ -105,6 +109,7 @@ function preserveRoomRecordForAuthorityState(
 ): RequirementRoomRecord {
   return {
     ...room,
+    revision: normalizeRevision(room.revision),
     companyId: room.companyId ?? companyId,
     ownerActorId: room.ownerActorId ?? room.ownerAgentId ?? null,
     batonActorId: room.batonActorId ?? null,
@@ -126,7 +131,7 @@ function mergeAuthorityRoomRecord(
   if (!existing) {
     return base;
   }
-  return {
+  const merged: RequirementRoomRecord = {
     ...existing,
     ...base,
     id: existing.id,
@@ -154,6 +159,12 @@ function mergeAuthorityRoomRecord(
     createdAt: existing.createdAt ?? base.createdAt,
     updatedAt: Math.max(existing.updatedAt, base.updatedAt),
   };
+  return {
+    ...merged,
+    revision: areRequirementRoomRecordsEquivalent(existing, merged)
+      ? normalizeRevision(existing.revision)
+      : Math.max(normalizeRevision(existing.revision), normalizeRevision(base.revision)) + 1,
+  };
 }
 
 export function normalizeRoomRecordForState(
@@ -171,6 +182,7 @@ export function normalizeRoomRecordForState(
     : room.id;
   return {
     ...room,
+    revision: normalizeRevision(room.revision),
     id: normalizedRoomId,
     companyId: room.companyId ?? companyId,
     workItemId: normalizedWorkItemId,
@@ -414,6 +426,7 @@ export function buildRoomActions(
           {
             id: roomId,
             sessionKey: meta?.sessionKey ?? roomId,
+            revision: 1,
             title: meta?.title ?? "需求团队房间",
             companyId: meta?.companyId ?? activeCompany.id,
             workItemId: meta?.workItemId,
@@ -492,6 +505,7 @@ export function buildRoomActions(
         {
           id: roomId,
           sessionKey: meta?.sessionKey ?? roomId,
+          revision: 1,
           title: meta?.title ?? "需求团队房间",
           companyId: meta?.companyId ?? activeCompany.id,
           workItemId: meta?.workItemId,

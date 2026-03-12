@@ -216,6 +216,7 @@ describe("runCompanyOpsCycle", () => {
       {
         id: "decision:escalation:org_policy:underload:dep-writing",
         companyId: "company-1",
+        revision: 1,
         sourceType: "escalation",
         sourceId: "escalation:org_policy:underload:dep-writing",
         escalationId: "escalation:org_policy:underload:dep-writing",

@@ -25,6 +25,10 @@ function normalizeRoomTopicKey(value: string | null | undefined): string | null 
   return normalized && normalized.length > 0 ? normalized : null;
 }
 
+function normalizeRevision(value: number | null | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : 1;
+}
+
 function buildRequirementRoomState(input: {
   title: string;
   transcript: RequirementRoomMessage[];
@@ -73,6 +77,7 @@ export function buildRequirementRoomRecord(input: {
   transcript?: RequirementRoomMessage[];
   createdAt?: number;
   updatedAt?: number;
+  revision?: number;
   lastSourceSyncAt?: number;
   providerId?: string;
 }): RequirementRoomRecord {
@@ -90,6 +95,7 @@ export function buildRequirementRoomRecord(input: {
     companyId: input.companyId,
     workItemId,
     sessionKey: input.sessionKey,
+    revision: normalizeRevision(input.revision),
     title: input.title.trim() || "需求团队",
     headline: state.headline,
     topicKey: normalizeRoomTopicKey(input.topicKey) ?? undefined,
@@ -295,6 +301,7 @@ export function mergeRequirementRoomRecordFromSessions(input: {
     transcript,
     createdAt: existingRoom?.createdAt,
     updatedAt,
+    revision: existingRoom?.revision,
     lastSourceSyncAt: latestSourceTimestamp || existingRoom?.lastSourceSyncAt,
     providerId: input.providerId,
   });
@@ -376,6 +383,7 @@ export function mergeRequirementRoomRecordFromSnapshots(input: {
     transcript,
     createdAt: existingRoom?.createdAt,
     updatedAt,
+    revision: existingRoom?.revision,
     lastSourceSyncAt: latestSourceTimestamp || existingRoom?.lastSourceSyncAt,
   });
 }
@@ -437,19 +445,28 @@ export function appendRequirementRoomMessages(input: {
   messages: RequirementRoomMessage[];
   meta?: Partial<Omit<RequirementRoomRecord, "id" | "sessionKey" | "transcript" | "createdAt">>;
 }): RequirementRoomRecord {
+  const mergedTranscript = mergeRequirementRoomTranscript([...input.room.transcript, ...input.messages]);
   const latestTimestamp = input.messages.reduce(
     (latest, message) => Math.max(latest, message.timestamp),
     input.room.updatedAt,
   );
-
-  return {
+  const nextRecord: RequirementRoomRecord = {
     ...input.room,
     ...input.meta,
     memberIds: sortRequirementRoomMemberIds([...(input.room.memberIds ?? []), ...(input.meta?.memberIds ?? [])]),
     topicKey: normalizeRoomTopicKey(input.meta?.topicKey) ?? input.room.topicKey,
-    transcript: mergeRequirementRoomTranscript([...input.room.transcript, ...input.messages]),
+    transcript: mergedTranscript,
     updatedAt: latestTimestamp,
     lastSourceSyncAt: input.meta?.lastSourceSyncAt ?? input.room.lastSourceSyncAt,
+  };
+
+  const materialChanged =
+    areRequirementRoomRecordsEquivalent(input.room, nextRecord)
+      ? false
+      : true;
+  return {
+    ...nextRecord,
+    revision: materialChanged ? normalizeRevision(input.room.revision) + 1 : normalizeRevision(input.room.revision),
   };
 }
 

@@ -143,7 +143,8 @@ export function CompanyAuthoritySyncHost() {
         eventName === "requirement.updated" ||
         eventName === "room.updated" ||
         eventName === "dispatch.updated" ||
-        eventName === "artifact.updated"
+        eventName === "artifact.updated" ||
+        eventName === "decision.updated"
       ) {
         refreshRemoteRuntime();
       }

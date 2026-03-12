@@ -31,6 +31,10 @@ function shallowEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizeRevision(value: number | null | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : 1;
+}
+
 function upsertConversationStateRecord(input: {
   companyId: string;
   conversationStates: ConversationStateRecord[];
@@ -247,6 +251,7 @@ function upsertRequirementDecisionTicket(input: {
         {
           id: `probe:${record.id}`,
           companyId: input.runtime.companyId,
+          revision: normalizeRevision(record.revision),
           sourceType: "requirement",
           sourceId: record.id,
           aggregateId: record.id,
@@ -296,6 +301,10 @@ function upsertRequirementDecisionTicket(input: {
   const nextTicket: DecisionTicketRecord = {
     id: ticketId,
     companyId: input.runtime.companyId,
+    revision:
+      normalizeRevision(
+        input.runtime.activeDecisionTickets.find((ticket) => ticket.id === ticketId)?.revision,
+      ) + (input.runtime.activeDecisionTickets.some((ticket) => ticket.id === ticketId) ? 1 : 0),
     sourceType: "requirement",
     sourceId,
     escalationId: null,

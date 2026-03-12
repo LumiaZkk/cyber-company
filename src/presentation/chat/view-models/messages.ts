@@ -760,7 +760,7 @@ function compactStructuredDisplayItems(displayItems: ChatDisplayItem[]): ChatDis
     sessionsSendReportKeys.add(`${resolveDisplayActorKey(item.message)}:${timestamp}`);
   });
 
-  const compactedItems = displayItems.map((item) => {
+  const compactedItems: ChatDisplayItem[] = displayItems.map((item): ChatDisplayItem => {
     if (item.kind !== "message") {
       return item;
     }

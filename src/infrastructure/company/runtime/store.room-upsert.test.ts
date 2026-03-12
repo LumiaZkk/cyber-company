@@ -344,4 +344,52 @@ describe("useCompanyRuntimeStore upsertRoomRecord", () => {
       topicKey: "mission:wlizub",
     });
   });
+
+  it("routes authority-backed room deletion through authority", async () => {
+    const deleteRoomSpy = vi
+      .spyOn(authorityControl, "deleteAuthorityRoom")
+      .mockResolvedValue({
+        companyId: "company-1",
+        activeRoomRecords: [],
+        activeMissionRecords: [],
+        activeConversationStates: [],
+        activeWorkItems: [],
+        activeRequirementAggregates: [],
+        activeRequirementEvidence: [],
+        primaryRequirementId: null,
+        activeRoundRecords: [],
+        activeArtifacts: [],
+        activeDispatches: [],
+        activeRoomBindings: [],
+        activeSupportRequests: [],
+        activeEscalations: [],
+        activeDecisionTickets: [],
+        updatedAt: 4_000,
+      });
+
+    useCompanyRuntimeStore.setState({
+      authorityBackedState: true,
+      activeRoomRecords: [createRoom()],
+      activeRoomBindings: [
+        {
+          roomId: "workitem:mission-consistency-foundation",
+          providerId: "openclaw",
+          conversationId: "agent:co-cto:main",
+          actorId: "co-cto",
+          updatedAt: 1_000,
+        },
+      ],
+    });
+
+    useCompanyRuntimeStore.getState().deleteRoomRecord("workitem:mission-consistency-foundation");
+
+    await vi.waitFor(() => {
+      expect(deleteRoomSpy).toHaveBeenCalledWith({
+        companyId: "company-1",
+        roomId: "workitem:mission-consistency-foundation",
+      });
+      expect(useCompanyRuntimeStore.getState().activeRoomRecords).toEqual([]);
+      expect(useCompanyRuntimeStore.getState().activeRoomBindings).toEqual([]);
+    });
+  });
 });

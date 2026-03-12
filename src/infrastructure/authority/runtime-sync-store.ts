@@ -34,6 +34,8 @@ const DEFAULT_COMMAND_ROUTES = [
   "artifact.upsert",
   "artifact.sync-mirror",
   "artifact.delete",
+  "decision.upsert",
+  "decision.delete",
 ];
 
 export function buildAuthorityRuntimeSignature(snapshot: AuthorityCompanyRuntimeSnapshot) {

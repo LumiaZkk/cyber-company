@@ -13,38 +13,50 @@ import {
 const ROOM_LIMIT = 24;
 const roomCache = new Map<string, RequirementRoomRecord[]>();
 
+function normalizeRoomRevision(room: RequirementRoomRecord): RequirementRoomRecord {
+  return {
+    ...room,
+    revision:
+      Number.isFinite(room.revision ?? null) && (room.revision ?? 0) > 0
+        ? Math.floor(room.revision ?? 1)
+        : 1,
+  };
+}
+
 function mergeNormalizedRequirementRoomRecords(
   rooms: RequirementRoomRecord[],
 ): RequirementRoomRecord[] {
   const byId = new Map<string, RequirementRoomRecord>();
 
   for (const room of rooms) {
-    const semanticId = buildRequirementRoomSemanticId(room);
+    const normalizedRoom = normalizeRoomRevision(room);
+    const semanticId = buildRequirementRoomSemanticId(normalizedRoom);
     const existing = byId.get(semanticId);
     if (!existing) {
-      byId.set(semanticId, room);
+      byId.set(semanticId, normalizedRoom);
       continue;
     }
 
     byId.set(semanticId, {
       ...existing,
-      ...room,
-      companyId: room.companyId ?? existing.companyId,
-      workItemId: room.workItemId ?? existing.workItemId,
+      ...normalizedRoom,
+      companyId: normalizedRoom.companyId ?? existing.companyId,
+      workItemId: normalizedRoom.workItemId ?? existing.workItemId,
       ownerActorId:
-        room.ownerActorId ?? existing.ownerActorId ?? room.ownerAgentId ?? existing.ownerAgentId ?? null,
-      memberIds: sortRequirementRoomMemberIds([...existing.memberIds, ...room.memberIds]),
+        normalizedRoom.ownerActorId ?? existing.ownerActorId ?? normalizedRoom.ownerAgentId ?? existing.ownerAgentId ?? null,
+      memberIds: sortRequirementRoomMemberIds([...existing.memberIds, ...normalizedRoom.memberIds]),
       memberActorIds: sortRequirementRoomMemberIds([
         ...(existing.memberActorIds ?? existing.memberIds),
-        ...(room.memberActorIds ?? room.memberIds),
+        ...(normalizedRoom.memberActorIds ?? normalizedRoom.memberIds),
       ]),
-      topicKey: room.topicKey ?? existing.topicKey,
+      topicKey: normalizedRoom.topicKey ?? existing.topicKey,
       title:
-        room.updatedAt >= existing.updatedAt
-          ? room.title || existing.title
-          : existing.title || room.title,
-      transcript: mergeRequirementRoomTranscript([...(existing.transcript ?? []), ...(room.transcript ?? [])]),
-      updatedAt: Math.max(existing.updatedAt, room.updatedAt),
+        normalizedRoom.updatedAt >= existing.updatedAt
+          ? normalizedRoom.title || existing.title
+          : existing.title || normalizedRoom.title,
+      transcript: mergeRequirementRoomTranscript([...(existing.transcript ?? []), ...(normalizedRoom.transcript ?? [])]),
+      updatedAt: Math.max(existing.updatedAt, normalizedRoom.updatedAt),
+      revision: Math.max(existing.revision ?? 1, normalizedRoom.revision ?? 1),
     });
   }
 
@@ -114,7 +126,7 @@ export function normalizeRequirementRoomRecordForCompany(
     : room.id;
 
   return {
-    ...room,
+    ...normalizeRoomRevision(room),
     id: normalizedRoomId,
     companyId: room.companyId ?? companyId,
     workItemId: normalizedWorkItemId ?? undefined,

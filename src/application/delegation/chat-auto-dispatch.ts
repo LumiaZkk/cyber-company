@@ -64,6 +64,7 @@ export async function executeAutoDispatchPlan(
     const dispatch: DispatchRecord = {
       id: input.plan.dispatchId,
       workItemId: input.workItemId,
+      revision: 1,
       roomId: null,
       title: input.plan.title,
       summary: input.plan.summary,

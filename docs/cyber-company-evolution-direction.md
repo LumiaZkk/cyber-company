@@ -46,18 +46,64 @@ Depends on:
 - 借到了什么程度
 - 最终有没有带来稳定性和可控性收益
 
+状态口径约束：
+
+- `docs/paperclip-borrowing-tracker.md` 第 4 节总览表是状态单一真相。
+- 这份文档负责解释方向和优先级，不单独维护另一套状态枚举。
+- 当前真正的开发焦点以 `docs/v1-stability-roadmap.md` 里的“当前唯一施工切片”为准，而不是看有多少个顶层项被标成 `in_progress`。
+
 ## 2.2 当前推进到哪里
 
 截至 2026-03-13，V1 已经从“纯规划”进入“第一批实现”：
 
 - `PC-OPS-01` / `PC-OPS-02`
-  设置页已经有一版 Doctor 基线，可以直接区分 `Gateway / Authority / Executor / Runtime`
+  设置页已经有一版 Doctor 基线，可以直接区分 `Gateway / Authority / Executor / Runtime`，`Connect` 与 `Settings Doctor` 也开始共用同一类诊断摘要表达
 - `PC-STATE-02`
-  `requirement.transition`、`room.append`、`room-bindings.upsert`、`dispatch.create` 已经改成 authority command 写入，开始从“浏览器整份 runtime 回灌”收口
+  `requirement.transition`、`requirement.promote`、`room.append`、`room.delete`、`room-bindings.upsert`、`dispatch.create`、`dispatch.delete`、`artifact.upsert`、`artifact.sync-mirror`、`artifact.delete` 已经改成 authority command 写入，开始从“浏览器整份 runtime 回灌”收口
+- `PC-STATE-01` / `PC-STATE-03`
+  已补 `docs/v1-phase3-authority-object-boundaries.md`，开始把关键对象的权威字段、派生字段、revision 和写入边界收成正式设计
 
-这让 Phase 2 的推进更接近“主链路成组收口”，而不再只是单点样板；当前剩余的兼容路径主要集中在 room delete、artifact 和其他非主链对象上。
+与此同时，产品表面也开始配合这条稳定性路线收口：
+
+- Sidebar 已按 `主线 / 执行 / 组织 / 系统` 重排
+- Header 已把误导性的 `ThemeSwitcher` 替换成主线快切
+- `Board / Ops`、`Connect / Settings`、`CEO / Dashboard` 开始复用共享摘要模块
+- `Requirement Center` 不再直接依赖 board 命名的 projection builder
+
+这让 V1 的推进不再只是“底层更稳”，而是“页面语义也更一致”；当前剩余的兼容路径主要集中在 `/runtime` 兼容同步仍保留，以及更深层的对象边界收口上。
 
 这意味着当前项目的稳定性改造，已经从“讨论方向”进入“有代码、有界面、有追踪文档”的阶段。
+
+同时也要注意一个阅读方式：
+
+- 现在文档里出现多个 `in_progress`，表示有多条顶层借鉴项尚未收口
+- 不表示当前在并行推进多条实现主线
+
+当前真正的施工焦点只有一条：
+
+- `PC-STATE-01` / `PC-STATE-03`
+  也就是 V1 Phase 3 的关键对象稳态化
+
+## 2.3 回到 Paperclip 时的一眼判断
+
+如果只想快速回答“回到 `paperclip` 相关任务时，现在最该看什么”，可以先看这三组：
+
+- 已经借到手的：
+  - `PC-OPS-01` / `PC-OPS-02`
+  - `PC-STATE-02`
+  也就是 Doctor 基线、统一诊断表达、authority command 写入样板，这些已经从想法变成代码和界面。
+- 当前正在推进的：
+  - `PC-STATE-01` / `PC-STATE-03`
+  也就是关键对象稳态化，这一轮已经有正式设计稿，下一步是把 revision、字段边界和 decision command 落成实现。
+- 紧随其后的下一步：
+  - `PC-OPS-03` / `PC-OPS-04`
+  也就是 migration / backup / restore / run 前检查，让 authority 的 operator tooling 跟上。
+- 明确不借的：
+  - issue-first 前台叙事
+  - 通用 agent company OS 产品表面
+  - 提前引入重平台复杂度
+
+换句话说，当前阶段“回到 `paperclip`”并不意味着切产品方向，而是继续把 `paperclip` 擅长的稳态底座能力往 `authority` 里吸。
 
 ## 3. 为什么这是更好的方向
 
@@ -77,6 +123,12 @@ Depends on:
 - 部署与自检工具链
 - 审批、预算、heartbeat、治理
 - 持久化 business objects
+
+2026-03-13 按 `paperclip` 最新 master 重新核验后，这个判断更具体了：
+
+- `approvals.ts` 说明 approval 确实是一等治理对象，而不是临时确认框。
+- `heartbeat_runs.ts` 说明自动化执行记录应被当作 durable run ledger 来建模。
+- `doctor.ts` 与 `db-backup.ts` 说明 self-check / backup / restore 应该是显式产品运维入口，而不是藏在实现细节里。
 
 因此更合理的策略不是产品收敛到 `paperclip`，而是架构上吸收它的底层强项。
 

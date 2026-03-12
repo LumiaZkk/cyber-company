@@ -183,6 +183,33 @@ function resolveDispatchTargetActorIds(
   return event.targetActorId?.trim() ? [event.targetActorId.trim()] : [];
 }
 
+function dispatchMaterialChanged(
+  existing: DispatchRecord | undefined,
+  next: DispatchRecord,
+): boolean {
+  if (!existing) {
+    return true;
+  }
+  return (
+    existing.workItemId !== next.workItemId ||
+    (existing.roomId ?? null) !== (next.roomId ?? null) ||
+    existing.title !== next.title ||
+    existing.summary !== next.summary ||
+    (existing.fromActorId ?? null) !== (next.fromActorId ?? null) ||
+    existing.targetActorIds.join("|") !== next.targetActorIds.join("|") ||
+    existing.status !== next.status ||
+    (existing.deliveryState ?? null) !== (next.deliveryState ?? null) ||
+    (existing.sourceMessageId ?? null) !== (next.sourceMessageId ?? null) ||
+    (existing.responseMessageId ?? null) !== (next.responseMessageId ?? null) ||
+    (existing.providerRunId ?? null) !== (next.providerRunId ?? null) ||
+    (existing.topicKey ?? null) !== (next.topicKey ?? null) ||
+    (existing.latestEventId ?? null) !== (next.latestEventId ?? null) ||
+    (existing.consumedAt ?? null) !== (next.consumedAt ?? null) ||
+    (existing.consumerSessionKey ?? null) !== (next.consumerSessionKey ?? null) ||
+    (existing.syncSource ?? null) !== (next.syncSource ?? null)
+  );
+}
+
 function resolveDispatchStatusFromEvent(
   kind: CompanyEventKind,
 ): DispatchRecord["status"] | null {
@@ -420,6 +447,7 @@ export function projectDelegationFromEvents(input: {
       const nextDispatch: DispatchRecord = {
         id: event.dispatchId,
         workItemId: event.workItemId ?? existingDispatch?.workItemId ?? "work:unknown",
+        revision: 1,
         roomId: event.roomId ?? existingDispatch?.roomId ?? null,
         title: resolveDispatchTitle(event, existingDispatch),
         summary: resolveDispatchSummary(event, existingDispatch),
@@ -444,6 +472,11 @@ export function projectDelegationFromEvents(input: {
         createdAt: existingDispatch?.createdAt ?? event.createdAt,
         updatedAt: Math.max(existingDispatch?.updatedAt ?? 0, event.createdAt),
       };
+      nextDispatch.revision = existingDispatch
+        ? dispatchMaterialChanged(existingDispatch, nextDispatch)
+          ? Math.max(existingDispatch.revision ?? 1, 1) + 1
+          : Math.max(existingDispatch.revision ?? 1, 1)
+        : 1;
       dispatchById.set(event.dispatchId, nextDispatch);
       const dispatchSessionKey = resolveDispatchSessionKey(event);
       if (dispatchSessionKey) {

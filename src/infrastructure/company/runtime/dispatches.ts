@@ -6,7 +6,7 @@ import {
   applyAuthorityRuntimeCommandError,
   applyAuthorityRuntimeSnapshotToStore,
 } from "../../authority/runtime-command";
-import { persistDispatchRecords } from "../persistence/dispatch-persistence";
+import { normalizeDispatchRecord, persistDispatchRecords } from "../persistence/dispatch-persistence";
 import type { CompanyRuntimeState, DispatchRecord, RuntimeGet, RuntimeSet } from "./types";
 import {
   persistActiveWorkItems,
@@ -14,6 +14,27 @@ import {
   syncArtifactLinks,
   syncDispatchLinks,
 } from "./work-items";
+
+function dispatchMaterialChanged(existing: DispatchRecord, next: DispatchRecord): boolean {
+  return (
+    existing.workItemId !== next.workItemId ||
+    (existing.roomId ?? null) !== (next.roomId ?? null) ||
+    existing.title !== next.title ||
+    existing.summary !== next.summary ||
+    (existing.fromActorId ?? null) !== (next.fromActorId ?? null) ||
+    existing.targetActorIds.join("|") !== next.targetActorIds.join("|") ||
+    existing.status !== next.status ||
+    (existing.deliveryState ?? null) !== (next.deliveryState ?? null) ||
+    (existing.sourceMessageId ?? null) !== (next.sourceMessageId ?? null) ||
+    (existing.responseMessageId ?? null) !== (next.responseMessageId ?? null) ||
+    (existing.providerRunId ?? null) !== (next.providerRunId ?? null) ||
+    (existing.topicKey ?? null) !== (next.topicKey ?? null) ||
+    (existing.latestEventId ?? null) !== (next.latestEventId ?? null) ||
+    (existing.consumedAt ?? null) !== (next.consumedAt ?? null) ||
+    (existing.consumerSessionKey ?? null) !== (next.consumerSessionKey ?? null) ||
+    (existing.syncSource ?? null) !== (next.syncSource ?? null)
+  );
+}
 
 export function persistActiveDispatches(
   companyId: string | null | undefined,
@@ -40,21 +61,33 @@ export function buildDispatchActions(
         return;
       }
 
-      const normalized: DispatchRecord = {
+      const normalized = normalizeDispatchRecord({
         ...dispatch,
         createdAt: dispatch.createdAt || Date.now(),
         updatedAt: dispatch.updatedAt || Date.now(),
-      };
+      });
       const next = [...activeDispatches];
       const index = next.findIndex((item) => item.id === normalized.id);
       if (index >= 0) {
         const existing = next[index];
-        if (normalized.updatedAt <= existing.updatedAt) {
+        const candidate = normalizeDispatchRecord({ ...existing, ...normalized });
+        const existingRevision = existing.revision ?? 1;
+        const normalizedRevision = normalized.revision ?? 1;
+        const candidateRevision = dispatchMaterialChanged(existing, candidate)
+          ? Math.max(existingRevision, normalizedRevision) + 1
+          : Math.max(existingRevision, normalizedRevision);
+        if (
+          candidateRevision < existingRevision ||
+          (candidateRevision === existingRevision && normalized.updatedAt <= existing.updatedAt)
+        ) {
           return;
         }
-        next[index] = { ...existing, ...normalized };
+        next[index] = {
+          ...candidate,
+          revision: candidateRevision,
+        };
       } else {
-        next.push(normalized);
+        next.push({ ...normalized, revision: normalized.revision || 1 });
       }
 
       if (authorityBackedState) {

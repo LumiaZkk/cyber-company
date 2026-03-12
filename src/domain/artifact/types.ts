@@ -3,6 +3,7 @@ export type ArtifactStatus = "draft" | "ready" | "superseded" | "archived";
 export interface ArtifactRecord {
   id: string;
   workItemId?: string | null;
+  revision?: number;
   title: string;
   kind: string;
   status: ArtifactStatus;

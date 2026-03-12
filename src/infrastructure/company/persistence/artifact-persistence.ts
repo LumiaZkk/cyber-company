@@ -15,6 +15,7 @@ function isArtifactRecord(value: unknown): value is ArtifactRecord {
   const candidate = value as Partial<ArtifactRecord>;
   return (
     typeof candidate.id === "string" &&
+    typeof candidate.revision === "number" &&
     typeof candidate.title === "string" &&
     typeof candidate.kind === "string" &&
     isArtifactStatus(candidate.status) &&
@@ -24,15 +25,32 @@ function isArtifactRecord(value: unknown): value is ArtifactRecord {
   );
 }
 
+export function normalizeArtifactRecord(record: ArtifactRecord): ArtifactRecord {
+  const revision = record.revision;
+  return {
+    ...record,
+    revision: typeof revision === "number" && Number.isFinite(revision) && revision > 0
+      ? Math.floor(revision)
+      : 1,
+  };
+}
+
 export function sanitizeArtifactRecords(records: ArtifactRecord[]): ArtifactRecord[] {
   const deduped = new Map<string, ArtifactRecord>();
   for (const record of records) {
-    if (!isArtifactRecord(record)) {
+    const normalized = normalizeArtifactRecord(record);
+    if (!isArtifactRecord(normalized)) {
       continue;
     }
-    const previous = deduped.get(record.id);
-    if (!previous || record.updatedAt >= previous.updatedAt) {
-      deduped.set(record.id, record);
+    const previous = deduped.get(normalized.id);
+    const normalizedRevision = normalized.revision ?? 1;
+    const previousRevision = previous?.revision ?? 1;
+    if (
+      !previous ||
+      normalizedRevision > previousRevision ||
+      (normalizedRevision === previousRevision && normalized.updatedAt >= previous.updatedAt)
+    ) {
+      deduped.set(normalized.id, normalized);
     }
   }
   return [...deduped.values()].sort((left, right) => right.updatedAt - left.updatedAt);
