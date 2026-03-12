@@ -35,6 +35,10 @@ import {
   buildRequirementWorkflowEvidence,
   resolveRequirementWorkflowEventKind,
 } from "../../../src/application/mission/requirement-workflow";
+import {
+  reconcileRequirementAggregateState,
+  sanitizeRequirementAggregateRecords,
+} from "../../../src/application/mission/requirement-aggregate";
 import { COMPANY_TEMPLATES } from "../../../src/application/company/templates";
 import { normalizeWorkItemDepartmentOwnership } from "../../../src/application/org/department-autonomy";
 import { reconcileStoredWorkItems } from "../../../src/infrastructure/company/runtime/work-items";
@@ -75,6 +79,10 @@ import type {
   AuthorityCompanyRuntimeSnapshot,
   AuthorityCreateCompanyRequest,
   AuthorityCreateCompanyResponse,
+  AuthorityArtifactDeleteRequest,
+  AuthorityArtifactMirrorSyncRequest,
+  AuthorityArtifactUpsertRequest,
+  AuthorityDispatchDeleteRequest,
   AuthorityDispatchUpsertRequest,
   AuthorityEvent,
   AuthorityExecutorConfig,
@@ -83,7 +91,9 @@ import type {
   AuthorityHealthSnapshot,
   AuthorityHireEmployeeRequest,
   AuthorityHireEmployeeResponse,
+  AuthorityRequirementPromoteRequest,
   AuthorityRequirementTransitionRequest,
+  AuthorityRoomDeleteRequest,
   AuthorityRoomBindingsUpsertRequest,
   AuthorityRuntimeSyncRequest,
   AuthoritySessionHistoryResponse,
@@ -3099,10 +3109,26 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/commands/requirement.promote") {
+      const body = await readJsonBody<AuthorityRequirementPromoteRequest>(request);
+      sendJson(response, 200, repository.promoteRequirement(body));
+      companyOpsEngine.schedule("requirement.promote", body.companyId);
+      broadcast({ type: "requirement.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/commands/room.append") {
       const body = await readJsonBody<AuthorityAppendRoomRequest>(request);
       sendJson(response, 200, repository.upsertRoom(body));
       companyOpsEngine.schedule("room.append", body.companyId);
+      broadcast({ type: "room.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/room.delete") {
+      const body = await readJsonBody<AuthorityRoomDeleteRequest>(request);
+      sendJson(response, 200, repository.deleteRoom(body));
+      companyOpsEngine.schedule("room.delete", body.companyId);
       broadcast({ type: "room.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }
@@ -3120,6 +3146,38 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, repository.upsertDispatch(body));
       companyOpsEngine.schedule("dispatch.create", body.companyId);
       broadcast({ type: "dispatch.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/dispatch.delete") {
+      const body = await readJsonBody<AuthorityDispatchDeleteRequest>(request);
+      sendJson(response, 200, repository.deleteDispatch(body));
+      companyOpsEngine.schedule("dispatch.delete", body.companyId);
+      broadcast({ type: "dispatch.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/artifact.upsert") {
+      const body = await readJsonBody<AuthorityArtifactUpsertRequest>(request);
+      sendJson(response, 200, repository.upsertArtifact(body));
+      companyOpsEngine.schedule("artifact.upsert", body.companyId);
+      broadcast({ type: "artifact.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/artifact.sync-mirror") {
+      const body = await readJsonBody<AuthorityArtifactMirrorSyncRequest>(request);
+      sendJson(response, 200, repository.syncArtifactMirrors(body));
+      companyOpsEngine.schedule("artifact.sync-mirror", body.companyId);
+      broadcast({ type: "artifact.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/artifact.delete") {
+      const body = await readJsonBody<AuthorityArtifactDeleteRequest>(request);
+      sendJson(response, 200, repository.deleteArtifact(body));
+      companyOpsEngine.schedule("artifact.delete", body.companyId);
+      broadcast({ type: "artifact.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }
 

@@ -114,6 +114,18 @@ type QuickSwitchProps = {
   hasPrimaryRequirement: boolean;
 };
 
+type NavItem = {
+  path: string;
+  label: string;
+  icon: typeof Building2;
+  primary?: boolean;
+};
+
+type NavGroup = {
+  label: string;
+  items: NavItem[];
+};
+
 function MainlineQuickSwitch({ hasPrimaryRequirement }: QuickSwitchProps) {
   const location = useLocation();
   const options = [{ name: "CEO 首页", path: "/" }];
@@ -343,7 +355,7 @@ export default function App() {
       const workspaceApps = getCompanyWorkspaceApps(resolvedCompany);
       const ceoEmployee =
         resolvedCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
-      const navGroups = [
+      const navGroups: NavGroup[] = [
         {
           label: "主线",
           items: [
@@ -375,7 +387,7 @@ export default function App() {
             { path: "/settings", label: "系统设置", icon: Settings },
           ],
         },
-      ] as const;
+      ];
 
       const connectionIndicatorClass = connected
         ? "bg-green-500"

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Zap, HardDrive, Terminal, RotateCw, Wrench } from "lucide-react";
+import { Zap, HardDrive, Terminal, RotateCw } from "lucide-react";
 import { useGatewayStore } from "../../application/gateway";
 import { toast } from "../../components/system/toast-store";
 import { ConnectionDiagnosisSummary } from "../shared/ConnectionDiagnosisSummary";
