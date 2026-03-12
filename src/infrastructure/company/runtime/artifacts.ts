@@ -1,3 +1,12 @@
+import {
+  deleteAuthorityArtifact,
+  syncAuthorityArtifactMirrors,
+  upsertAuthorityArtifact,
+} from "../../../application/gateway/authority-control";
+import {
+  applyAuthorityRuntimeCommandError,
+  applyAuthorityRuntimeSnapshotToStore,
+} from "../../authority/runtime-command";
 import { persistArtifactRecords } from "../persistence/artifact-persistence";
 import type { ArtifactRecord, CompanyRuntimeState, RuntimeGet, RuntimeSet } from "./types";
 import {
@@ -20,7 +29,14 @@ export function buildArtifactActions(
 ): Pick<CompanyRuntimeState, "upsertArtifactRecord" | "syncArtifactMirrorRecords" | "deleteArtifactRecord"> {
   return {
     upsertArtifactRecord: (artifact) => {
-      const { activeCompany, activeArtifacts, activeWorkItems, activeDispatches, activeRoomRecords } = get();
+      const {
+        activeCompany,
+        authorityBackedState,
+        activeArtifacts,
+        activeWorkItems,
+        activeDispatches,
+        activeRoomRecords,
+      } = get();
       if (!activeCompany) {
         return;
       }
@@ -42,6 +58,30 @@ export function buildArtifactActions(
         next.push(normalized);
       }
 
+      if (authorityBackedState) {
+        void upsertAuthorityArtifact({
+          companyId: activeCompany.id,
+          artifact: normalized,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "artifact.upsert",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to upsert artifact through authority",
+            });
+          });
+        return;
+      }
+
       const sortedArtifacts = next.sort((left, right) => right.updatedAt - left.updatedAt);
       const syncedWorkItems = reconcileStoredWorkItems({
         company: activeCompany,
@@ -61,8 +101,40 @@ export function buildArtifactActions(
     },
 
     syncArtifactMirrorRecords: (artifacts, mirrorPrefix = "workspace:") => {
-      const { activeCompany, activeArtifacts, activeWorkItems, activeDispatches, activeRoomRecords } = get();
+      const {
+        activeCompany,
+        authorityBackedState,
+        activeArtifacts,
+        activeWorkItems,
+        activeDispatches,
+        activeRoomRecords,
+      } = get();
       if (!activeCompany) {
+        return;
+      }
+
+      if (authorityBackedState) {
+        void syncAuthorityArtifactMirrors({
+          companyId: activeCompany.id,
+          artifacts,
+          mirrorPrefix,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "artifact.sync-mirror",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to sync artifact mirrors through authority",
+            });
+          });
         return;
       }
 
@@ -110,12 +182,42 @@ export function buildArtifactActions(
     },
 
     deleteArtifactRecord: (artifactId) => {
-      const { activeCompany, activeArtifacts, activeWorkItems, activeDispatches, activeRoomRecords } = get();
+      const {
+        activeCompany,
+        authorityBackedState,
+        activeArtifacts,
+        activeWorkItems,
+        activeDispatches,
+        activeRoomRecords,
+      } = get();
       if (!activeCompany) {
         return;
       }
 
       const deletedArtifact = activeArtifacts.find((artifact) => artifact.id === artifactId) ?? null;
+      if (authorityBackedState) {
+        void deleteAuthorityArtifact({
+          companyId: activeCompany.id,
+          artifactId,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "artifact.delete",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to delete artifact through authority",
+            });
+          });
+        return;
+      }
       const next = activeArtifacts.filter((artifact) => artifact.id !== artifactId);
       const syncedWorkItems = reconcileStoredWorkItems({
         company: activeCompany,

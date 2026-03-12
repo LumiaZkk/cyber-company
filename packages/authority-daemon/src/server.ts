@@ -1650,6 +1650,87 @@ class AuthorityRepository {
     return nextRuntime;
   }
 
+  promoteRequirement(input: AuthorityRequirementPromoteRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const nextPrimaryRequirementId =
+      input.aggregateId && runtime.activeRequirementAggregates.some((aggregate) => aggregate.id === input.aggregateId)
+        ? input.aggregateId
+        : null;
+    const previousPrimaryRequirementId = runtime.primaryRequirementId;
+    const previousAggregate =
+      previousPrimaryRequirementId
+        ? runtime.activeRequirementAggregates.find((aggregate) => aggregate.id === previousPrimaryRequirementId) ?? null
+        : null;
+    const nextAggregates = sanitizeRequirementAggregateRecords(
+      runtime.activeRequirementAggregates.map((aggregate) =>
+        aggregate.id === nextPrimaryRequirementId
+          ? {
+              ...aggregate,
+              updatedAt: Math.max(aggregate.updatedAt, input.timestamp ?? Date.now()),
+            }
+          : aggregate,
+      ),
+      nextPrimaryRequirementId,
+    );
+    const nextAggregate =
+      nextPrimaryRequirementId
+        ? nextAggregates.find((aggregate) => aggregate.id === nextPrimaryRequirementId) ?? null
+        : null;
+    const timestamp = input.timestamp ?? Date.now();
+    const nextEvidence =
+      nextAggregate && nextPrimaryRequirementId !== previousPrimaryRequirementId
+        ? sanitizeRequirementEvidenceEvents(input.companyId, [
+            buildRequirementWorkflowEvidence({
+              companyId: input.companyId,
+              eventType: "requirement_promoted",
+              aggregate: nextAggregate,
+              previousAggregate,
+              actorId: nextAggregate.ownerActorId ?? previousAggregate?.ownerActorId,
+              timestamp,
+              source: input.source,
+            }),
+            ...runtime.activeRequirementEvidence,
+          ])
+        : runtime.activeRequirementEvidence;
+    const nextRuntime = this.saveRuntime({
+      ...runtime,
+      activeRequirementAggregates: nextAggregates,
+      activeRequirementEvidence: nextEvidence,
+      primaryRequirementId: nextPrimaryRequirementId,
+    });
+    if (nextAggregate && nextPrimaryRequirementId !== previousPrimaryRequirementId) {
+      this.appendCompanyEvent(
+        createCompanyEvent({
+          companyId: input.companyId,
+          kind: "requirement_promoted",
+          workItemId: nextAggregate.workItemId ?? undefined,
+          topicKey: nextAggregate.topicKey ?? undefined,
+          roomId: nextAggregate.roomId ?? undefined,
+          fromActorId:
+            nextAggregate.ownerActorId ??
+            previousAggregate?.ownerActorId ??
+            "system:requirement-aggregate",
+          targetActorId: nextAggregate.ownerActorId ?? undefined,
+          sessionKey: nextAggregate.sourceConversationId ?? undefined,
+          payload: {
+            ownerActorId: nextAggregate.ownerActorId,
+            ownerLabel: nextAggregate.ownerLabel,
+            stage: nextAggregate.stage,
+            summary: nextAggregate.summary,
+            nextAction: nextAggregate.nextAction,
+            memberIds: nextAggregate.memberIds,
+            status: nextAggregate.status,
+            stageGateStatus: nextAggregate.stageGateStatus,
+            acceptanceStatus: nextAggregate.acceptanceStatus,
+            acceptanceNote: nextAggregate.acceptanceNote ?? null,
+            revision: nextAggregate.revision,
+          },
+        }),
+      );
+    }
+    return nextRuntime;
+  }
+
   upsertRoom(input: AuthorityAppendRoomRequest) {
     const runtime = this.loadRuntime(input.companyId);
     const nextRooms = [
@@ -1657,6 +1738,41 @@ class AuthorityRepository {
       ...runtime.activeRoomRecords.filter((room) => room.id !== input.room.id),
     ];
     return this.saveRuntime({ ...runtime, activeRoomRecords: nextRooms });
+  }
+
+  deleteRoom(input: AuthorityRoomDeleteRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const deletedRoom = runtime.activeRoomRecords.find((room) => room.id === input.roomId) ?? null;
+    const nextRooms = runtime.activeRoomRecords.filter((room) => room.id !== input.roomId);
+    const nextBindings = runtime.activeRoomBindings.filter((binding) => binding.roomId !== input.roomId);
+    const nextWorkItems = reconcileStoredWorkItems({
+      company: this.loadCompanyById(input.companyId),
+      companyId: input.companyId,
+      workItems: runtime.activeWorkItems,
+      rooms: nextRooms,
+      artifacts: runtime.activeArtifacts,
+      dispatches: runtime.activeDispatches,
+      targetWorkItemIds: [deletedRoom?.workItemId],
+      targetRoomIds: [input.roomId],
+      targetTopicKeys: [deletedRoom?.topicKey],
+    });
+    const reconciledRequirements = reconcileRequirementAggregateState({
+      companyId: input.companyId,
+      existingAggregates: runtime.activeRequirementAggregates,
+      primaryRequirementId: runtime.primaryRequirementId,
+      activeConversationStates: runtime.activeConversationStates,
+      activeWorkItems: nextWorkItems,
+      activeRoomRecords: nextRooms,
+      activeRequirementEvidence: runtime.activeRequirementEvidence,
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeRoomRecords: nextRooms,
+      activeRoomBindings: nextBindings,
+      activeWorkItems: nextWorkItems,
+      activeRequirementAggregates: reconciledRequirements.activeRequirementAggregates,
+      primaryRequirementId: reconciledRequirements.primaryRequirementId,
+    });
   }
 
   upsertRoomBindings(input: AuthorityRoomBindingsUpsertRequest) {
@@ -1692,6 +1808,118 @@ class AuthorityRepository {
       ...runtime,
       activeWorkItems: nextWorkItems,
       activeDispatches: nextDispatches,
+    });
+  }
+
+  deleteDispatch(input: AuthorityDispatchDeleteRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const deletedDispatch = runtime.activeDispatches.find((dispatch) => dispatch.id === input.dispatchId) ?? null;
+    const nextDispatches = runtime.activeDispatches.filter((dispatch) => dispatch.id !== input.dispatchId);
+    const nextWorkItems = reconcileStoredWorkItems({
+      company: this.loadCompanyById(input.companyId),
+      companyId: input.companyId,
+      workItems: runtime.activeWorkItems,
+      rooms: runtime.activeRoomRecords,
+      artifacts: runtime.activeArtifacts,
+      dispatches: nextDispatches,
+      targetWorkItemIds: [deletedDispatch?.workItemId],
+      targetRoomIds: [deletedDispatch?.roomId],
+      targetTopicKeys: [deletedDispatch?.topicKey],
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeWorkItems: nextWorkItems,
+      activeDispatches: nextDispatches,
+    });
+  }
+
+  upsertArtifact(input: AuthorityArtifactUpsertRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const normalizedArtifact = {
+      ...input.artifact,
+      updatedAt: input.artifact.updatedAt || Date.now(),
+      createdAt: input.artifact.createdAt || Date.now(),
+    };
+    const nextArtifacts = [
+      normalizedArtifact,
+      ...runtime.activeArtifacts.filter((artifact) => artifact.id !== normalizedArtifact.id),
+    ].sort((left, right) => right.updatedAt - left.updatedAt);
+    const nextWorkItems = reconcileStoredWorkItems({
+      company: this.loadCompanyById(input.companyId),
+      companyId: input.companyId,
+      workItems: runtime.activeWorkItems,
+      rooms: runtime.activeRoomRecords,
+      artifacts: nextArtifacts,
+      dispatches: runtime.activeDispatches,
+      targetWorkItemIds: [normalizedArtifact.workItemId],
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeArtifacts: nextArtifacts,
+      activeWorkItems: nextWorkItems,
+    });
+  }
+
+  syncArtifactMirrors(input: AuthorityArtifactMirrorSyncRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const mirrorPrefix = input.mirrorPrefix ?? "workspace:";
+    const preserved = runtime.activeArtifacts.filter((artifact) => !artifact.id.startsWith(mirrorPrefix));
+    const mergedById = new Map<string, ArtifactRecord>();
+    for (const artifact of preserved) {
+      mergedById.set(artifact.id, artifact);
+    }
+    const normalizedIncoming = input.artifacts.map((artifact) => ({
+      ...artifact,
+      updatedAt: artifact.updatedAt || Date.now(),
+      createdAt: artifact.createdAt || Date.now(),
+    }));
+    for (const artifact of normalizedIncoming) {
+      const existing = mergedById.get(artifact.id);
+      if (!existing) {
+        mergedById.set(artifact.id, artifact);
+        continue;
+      }
+      mergedById.set(artifact.id, {
+        ...existing,
+        ...artifact,
+        summary: artifact.summary ?? existing.summary,
+        content: artifact.content ?? existing.content,
+      });
+    }
+    const nextArtifacts = [...mergedById.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    const nextWorkItems = reconcileStoredWorkItems({
+      company: this.loadCompanyById(input.companyId),
+      companyId: input.companyId,
+      workItems: runtime.activeWorkItems,
+      rooms: runtime.activeRoomRecords,
+      artifacts: nextArtifacts,
+      dispatches: runtime.activeDispatches,
+      targetWorkItemIds: normalizedIncoming.map((artifact) => artifact.workItemId),
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeArtifacts: nextArtifacts,
+      activeWorkItems: nextWorkItems,
+    });
+  }
+
+  deleteArtifact(input: AuthorityArtifactDeleteRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const deletedArtifact = runtime.activeArtifacts.find((artifact) => artifact.id === input.artifactId) ?? null;
+    const nextArtifacts = runtime.activeArtifacts.filter((artifact) => artifact.id !== input.artifactId);
+    const nextWorkItems = reconcileStoredWorkItems({
+      company: this.loadCompanyById(input.companyId),
+      companyId: input.companyId,
+      workItems: runtime.activeWorkItems,
+      rooms: runtime.activeRoomRecords,
+      artifacts: nextArtifacts,
+      dispatches: runtime.activeDispatches,
+      targetWorkItemIds: [deletedArtifact?.workItemId],
+    });
+    return this.saveRuntime({
+      ...runtime,
+      activeArtifacts: nextArtifacts,
+      activeWorkItems: nextWorkItems,
     });
   }
 
