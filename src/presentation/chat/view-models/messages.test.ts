@@ -355,6 +355,23 @@ describe("buildChatDisplayItems", () => {
     });
   });
 
+  it("downgrades executive bridge monologues into status rows", () => {
+    const items = buildChatDisplayItems([
+      {
+        role: "assistant",
+        text: "收到 COO 完成报告！让我更新任务看板并验证结果：",
+        timestamp: 2_350,
+      },
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "message",
+      displayTier: "status",
+      narrativeRole: "workflow_status",
+    });
+  });
+
   it("anchors a structured requirement decision card to the matching assistant reply", () => {
     const items = buildChatDisplayItems([
       {

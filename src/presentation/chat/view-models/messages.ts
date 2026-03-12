@@ -242,6 +242,19 @@ function isExecutiveFinalSummaryText(text: string): boolean {
     || /(?:建议下一步|需要你确认|请你确认|可推进)/u.test(normalized);
 }
 
+function isExecutiveBridgeText(message: ChatMessage, text: string): boolean {
+  if (message.role !== "assistant") {
+    return false;
+  }
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /(?:让我(?:更新|继续|检查|查看|确认|处理|同步)|我看到.+让我|收到.+回执.+让我)/u.test(
+    normalized,
+  ) && /[：:]$/.test(normalized);
+}
+
 function createThreadGroupKey(message: ChatMessage): string | null {
   if (typeof message.roomSessionKey === "string" && message.roomSessionKey.trim().length > 0) {
     return message.roomSessionKey.trim();
@@ -372,6 +385,16 @@ function classifyMessageDisplayItem(message: ChatMessage): DisplayClassification
   }
 
   if (isWorkflowStatusText(primaryText) && !isSubstantiveUpdateText(primaryText)) {
+    return {
+      displayTier: "status",
+      narrativeRole: "workflow_status",
+      detailContent,
+      threadGroupKey,
+      displayText: summarizeStatusText(primaryText),
+    };
+  }
+
+  if (isExecutiveBridgeText(message, primaryText)) {
     return {
       displayTier: "status",
       narrativeRole: "workflow_status",
