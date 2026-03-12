@@ -3,15 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { useBoardPageViewModel } from "../../application/mission/board-view-model";
 import { buildRequirementRoomHrefFromRecord } from "../../application/delegation/room-routing";
 import {
-  buildBoardRequirementSurface,
+  buildPrimaryRequirementProjection,
+  buildRequirementExecutionProjection,
   describeRequirementRoomPreview,
-} from "../../application/mission/board-requirement-surface";
+} from "../../application/mission/requirement-execution-projection";
 import { buildPrimaryRequirementSurface } from "../../application/mission/primary-requirement-surface";
 import {
   resolveBoardPreRequirementDraft,
   shouldShowBoardPreRequirementDraft,
 } from "../../application/mission/board-pre-requirement";
-import { buildBoardTaskSurface } from "../../application/mission/board-task-surface";
 import { gateway, useGatewayStore } from "../../application/gateway";
 import { trackChatRequirementMetric } from "../../application/telemetry/chat-requirement-metrics";
 import { toast } from "../../components/system/toast-store";
@@ -128,7 +128,7 @@ function BoardPageContent({
   );
   const requirementSurface = useMemo(
     () =>
-      buildBoardRequirementSurface({
+      buildPrimaryRequirementProjection({
         company: activeCompany,
         activeConversationStates,
         activeWorkItems,
@@ -172,7 +172,7 @@ function BoardPageContent({
   } = requirementSurface;
   const boardTaskSurface = useMemo(
     () =>
-      buildBoardTaskSurface({
+      buildRequirementExecutionProjection({
         activeCompany,
         companySessions,
         currentTime,
@@ -483,27 +483,9 @@ function BoardPageContent({
             : `当前有 ${visiblePendingHandoffs.length} 条待完成交接，缺失项会阻塞后续执行。`
         }
       >
-        {requirementOverview ? (
-          <div className="rounded-lg border border-violet-200 bg-white/80 px-3 py-3 text-xs leading-6 text-slate-700">
-            交接明细默认已收起，避免旧广播和重复交接卡片继续干扰。主线推进请优先看上面的“本次需求总览”和任务顺序。
-          </div>
-        ) : (
-          <div className="grid gap-2 md:grid-cols-2">
-            {visiblePendingHandoffs.slice(0, 4).map((handoff) => (
-              <div
-                key={handoff.id}
-                className="rounded-lg border border-violet-200 bg-white/80 px-3 py-2 text-xs text-slate-700"
-              >
-                <div className="font-medium text-slate-900">{handoff.title}</div>
-                <div className="mt-1">{handoff.summary}</div>
-                <div className="mt-1 text-[11px] text-violet-700">to: {handoff.toAgentIds.join(", ")}</div>
-                {handoff.missingItems && handoff.missingItems.length > 0 ? (
-                  <div className="mt-1 text-[11px] text-amber-700">缺失项 {handoff.missingItems.length}</div>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="rounded-lg border border-violet-200 bg-white/80 px-3 py-3 text-xs leading-6 text-slate-700">
+          工作看板只保留“哪些交接正在影响当前执行顺序”这一层摘要。完整交接条目、缺失项和恢复动作统一留在运营大厅。
+        </div>
       </BoardAlertStrip>
 
       <BoardAlertStrip
@@ -516,26 +498,9 @@ function BoardPageContent({
             : `当前有 ${visibleSlaAlerts.length} 条任务或交接超过 SLA，建议优先处理这里。`
         }
       >
-        {requirementOverview ? (
-          <div className="rounded-lg border border-rose-200 bg-white/80 px-3 py-3 text-xs leading-6 text-slate-700">
-            具体超时条目默认已收起，避免历史噪音抢走注意力。先看“当前负责人 / 下一步”，确实需要排障时再去 CEO 会话或恢复当前阻塞。
-          </div>
-        ) : (
-          <div className="grid gap-2 md:grid-cols-2">
-            {visibleSlaAlerts.slice(0, 4).map((alert) => (
-              <div
-                key={alert.id}
-                className="rounded-lg border border-rose-200 bg-white/80 px-3 py-2 text-xs text-slate-700"
-              >
-                <div className="font-medium text-slate-900">{alert.title}</div>
-                <div className="mt-1">{alert.summary}</div>
-                <div className="mt-1 text-[11px] text-rose-700">
-                  {alert.ageMinutes} 分钟 · {alert.recommendedAction}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="rounded-lg border border-rose-200 bg-white/80 px-3 py-3 text-xs leading-6 text-slate-700">
+          超时提醒在看板里只承担“提醒你执行顺序已受影响”。具体超时条目、恢复建议和全局异常列表统一在运营大厅处理。
+        </div>
       </BoardAlertStrip>
 
       <BoardTaskBoardSection

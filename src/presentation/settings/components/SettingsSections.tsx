@@ -30,6 +30,7 @@ import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/card";
 import { formatTime } from "../../../lib/utils";
+import { ConnectionDiagnosisSummary } from "../../shared/ConnectionDiagnosisSummary";
 
 export function stringifyPreview(value: unknown): string {
   try {
@@ -210,6 +211,24 @@ export function SettingsDoctorSection(props: {
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-4 space-y-4">
+        <ConnectionDiagnosisSummary
+          variant="steady"
+          state={doctorBaseline.overallState}
+          title="连接成功后，从这里看稳态诊断"
+          summary="Settings Doctor 负责解释 Authority 控制面的当前健康度、写入边界和固定回归清单。首次接入流程仍然留在 Connect。"
+          detail={
+            doctorBaseline.lastError
+              ? `最近同步错误：${doctorBaseline.lastError}`
+              : `运行模式 ${doctorBaseline.mode}，已切到 command 的链路：${doctorBaseline.commandRoutes.join(", ")}`
+          }
+          layers={doctorBaseline.layers.map((layer) => ({
+            id: layer.id,
+            label: layer.label,
+            state: layer.state,
+            summary: layer.summary,
+          }))}
+        />
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {doctorBaseline.layers.map((layer) => (
             <div key={layer.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">

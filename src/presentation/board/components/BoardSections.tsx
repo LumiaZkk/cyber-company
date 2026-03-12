@@ -26,6 +26,7 @@ import type { GatewaySessionRow } from "../../../application/gateway";
 import type { BoardTaskItem, BoardTaskSection } from "../../../application/mission/board-task-surface";
 import { resolveExecutionState, type ResolvedExecutionState } from "../../../application/mission/execution-state";
 import { formatTime } from "../../../lib/utils";
+import { RequirementSummaryCard } from "../../shared/RequirementSummaryCard";
 import { BoardTaskCard } from "./BoardTaskCard";
 
 export const TASK_LANE_META: Record<
@@ -174,36 +175,18 @@ export function BoardRequirementCard(props: {
     onOpenCeo,
     onOpenRequirementCenter,
   } = props;
-  if (!visible) {
-    return null;
-  }
   return (
-    <Card className="shrink-0 border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-white shadow-sm">
-      <CardContent className="grid gap-4 p-4 lg:grid-cols-[1.4fr,1fr,auto] lg:items-center">
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-500">
-            本次需求总览
-          </div>
-          <div className="mt-2 text-lg font-semibold text-slate-950">{title}</div>
-          <div className="mt-2 text-sm leading-6 text-slate-700">{currentStep}</div>
-          <div className="mt-1 text-sm leading-6 text-slate-600">{summary}</div>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-          <div className="rounded-xl border border-white/80 bg-white px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              当前负责人
-            </div>
-            <div className="mt-2 text-sm font-semibold text-slate-900">{owner}</div>
-            <div className="mt-1 text-xs leading-5 text-slate-500">当前环节：{stage}</div>
-          </div>
-          <div className="rounded-xl border border-white/80 bg-white px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              下一步
-            </div>
-            <div className="mt-2 text-sm leading-6 text-slate-800">{nextStep}</div>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 lg:justify-end">
+    <RequirementSummaryCard
+      visible={visible}
+      variant="execution"
+      title={title}
+      currentStep={currentStep}
+      summary={summary}
+      owner={owner}
+      stage={stage}
+      nextStep={nextStep}
+      actions={
+        <>
           {onOpenRequirementCenter ? (
             <Button variant="outline" onClick={onOpenRequirementCenter}>
               <BookOpenCheck className="w-4 h-4 mr-2" />
@@ -217,9 +200,9 @@ export function BoardRequirementCard(props: {
             </Button>
           ) : null}
           {onOpenCeo ? <Button variant="outline" onClick={onOpenCeo}>回 CEO 会话</Button> : null}
-        </div>
-      </CardContent>
-    </Card>
+        </>
+      }
+    />
   );
 }
 

@@ -3,6 +3,7 @@ import { useDashboardViewModel } from "../../application/dashboard";
 import { Badge } from "../../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/card";
 import { toast } from "../../components/system/toast-store";
+import { ExecutiveSummaryStrip } from "../shared/ExecutiveSummaryStrip";
 
 export function DashboardPresentationPage() {
   const { activeCompany, persistRetrospective, surface } = useDashboardViewModel();
@@ -66,6 +67,37 @@ export function DashboardPresentationPage() {
         <div className="font-medium">成本口径说明</div>
         <div className="mt-1 text-xs leading-5 text-amber-900/80">{usageScopeNote}</div>
       </div>
+
+      <ExecutiveSummaryStrip
+        title="经营总览"
+        summary="这里是完整历史视图，用来复盘交付、稳定性和成本，不承担当前主线的指挥入口。"
+        items={[
+          {
+            id: "completion",
+            label: "任务完成率",
+            value: `${outcomeReport.completionRate}%`,
+            tone: "success",
+          },
+          {
+            id: "handoff",
+            label: "交接闭环",
+            value: `${outcomeReport.handoffCompletionRate}%`,
+            tone: "accent",
+          },
+          {
+            id: "cost",
+            label: costCardLabel,
+            value: `$ ${totalCostStr}`,
+            tone: "warning",
+          },
+          {
+            id: "reliability",
+            label: "团队稳定性",
+            value: String(outcomeReport.avgReliabilityScore),
+          },
+        ]}
+        footnote={retrospective.summary}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 shrink-0 mt-4">
         <Card className="bg-white border-slate-200">

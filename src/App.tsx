@@ -6,9 +6,10 @@ import {
   BookOpen,
   BookOpenCheck,
   Settings,
-  Palette,
   CalendarClock,
   Menu,
+  ShieldAlert,
+  Sparkles,
 } from "lucide-react";
 import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import { Routes, Route, Link, useLocation, Navigate } from "react-router-dom";
@@ -33,6 +34,7 @@ import { OrgAutopilotHost } from "./presentation/org/OrgAutopilotHost";
 import { extractTextFromMessage } from "./presentation/chat/view-models/messages";
 import { toast } from "./components/system/toast-store";
 import { resolveSessionActorId } from "./lib/sessions";
+import { useCompanyRuntimeStore } from "./infrastructure/company/runtime/store";
 
 const AutomationPage = lazy(() =>
   import("./pages/AutomationPage").then((module) => ({ default: module.AutomationPage })),
@@ -108,18 +110,22 @@ function RouteLoadingScreen() {
   );
 }
 
-function ThemeSwitcher() {
+type QuickSwitchProps = {
+  hasPrimaryRequirement: boolean;
+};
+
+function MainlineQuickSwitch({ hasPrimaryRequirement }: QuickSwitchProps) {
   const location = useLocation();
-  const options = [
-    { name: "CEO 首页", path: "/" },
-    { name: "运营大厅", path: "/ops" },
-  ];
+  const options = [{ name: "CEO 首页", path: "/" }];
+  if (hasPrimaryRequirement) {
+    options.push({ name: "需求中心", path: "/requirement" });
+  }
 
   return (
-    <div className="flex items-center gap-1 bg-secondary/50 rounded-full p-1 border shadow-xs mr-2">
+    <div className="mr-2 flex items-center gap-1 rounded-full border bg-secondary/50 p-1 shadow-xs">
       <div className="px-2 flex items-center text-xs font-semibold text-muted-foreground">
-        <Palette className="w-3.5 h-3.5 mr-1" />
-        切换风格
+        <Sparkles className="mr-1 h-3.5 w-3.5" />
+        主线快切
       </div>
       {options.map((opt) => (
         <Link
@@ -142,6 +148,9 @@ export default function App() {
   const location = useLocation();
   const { loadConfig } = useCompanyShellCommands();
   const { loading, activeCompany, bootstrapPhase } = useCompanyShellQuery();
+  const hasPrimaryRequirement = useCompanyRuntimeStore(
+    (state) => Boolean(state.primaryRequirementId || state.activeRequirementAggregates.some((aggregate) => aggregate.primary)),
+  );
   const {
     connected,
     phase,
@@ -323,15 +332,50 @@ export default function App() {
         return location.pathname === path || location.pathname.startsWith(`${path}/`);
       };
       const navClass = (path: string) => {
-        return `flex items-center px-3 py-2 text-sm font-medium rounded-md ${
+        return `flex items-center rounded-xl px-3 py-2 text-sm font-medium ${
           isRouteActive(path)
-            ? "bg-secondary text-secondary-foreground"
+            ? "bg-secondary text-secondary-foreground shadow-sm"
             : `text-muted-foreground ${linkHover}`
         }`;
       };
+      const navGroupLabelClass =
+        "px-3 pt-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/80";
       const workspaceApps = getCompanyWorkspaceApps(resolvedCompany);
       const ceoEmployee =
         resolvedCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
+      const navGroups = [
+        {
+          label: "主线",
+          items: [
+            { path: "/", label: "CEO 首页", icon: Building2 },
+            { path: "/requirement", label: "需求中心", icon: BookOpenCheck, primary: true },
+          ],
+        },
+        {
+          label: "执行",
+          items: [
+            { path: "/ops", label: "运营大厅", icon: ShieldAlert },
+            { path: "/board", label: "工作看板", icon: LayoutDashboard },
+            ...(workspaceApps.length > 0
+              ? [{ path: "/workspace", label: "工作目录", icon: BookOpen }]
+              : []),
+          ],
+        },
+        {
+          label: "组织",
+          items: [
+            { path: "/employees", label: "员工管理", icon: Users },
+            { path: "/automation", label: "自动化", icon: CalendarClock },
+          ],
+        },
+        {
+          label: "系统",
+          items: [
+            { path: "/dashboard", label: "运营报表", icon: BarChart },
+            { path: "/settings", label: "系统设置", icon: Settings },
+          ],
+        },
+      ] as const;
 
       const connectionIndicatorClass = connected
         ? "bg-green-500"
@@ -367,41 +411,31 @@ export default function App() {
               <span className="font-semibold tracking-tight">赛博公司</span>
             </div>
 
-            <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-2">
-              <Link to="/" className={navClass("/")}>
-                <Building2 className="mr-3 h-4 w-4" />
-                CEO 首页
-              </Link>
-              <Link to="/ops" className={navClass("/ops")}>
-                <Building2 className="mr-3 h-4 w-4" />
-                运营大厅
-              </Link>
-              <Link to="/employees" className={navClass("/employees")}>
-                <Users className="mr-3 h-4 w-4" />
-                员工管理
-              </Link>
-              <Link to="/board" className={navClass("/board")}>
-                <LayoutDashboard className="mr-3 h-4 w-4" />
-                工作看板
-              </Link>
-              <Link to="/requirement" className={navClass("/requirement")}>
-                <BookOpenCheck className="mr-3 h-4 w-4" />
-                需求中心
-              </Link>
-              {workspaceApps.length > 0 && (
-                <Link to="/workspace" className={navClass("/workspace")}>
-                  <BookOpen className="mr-3 h-4 w-4" />
-                  工作目录
-                </Link>
-              )}
-              <Link to="/automation" className={navClass("/automation")}>
-                <CalendarClock className="mr-3 h-4 w-4" />
-                自动化
-              </Link>
-              <Link to="/dashboard" className={navClass("/dashboard")}>
-                <BarChart className="mr-3 h-4 w-4" />
-                运营报表
-              </Link>
+            <nav className="flex-1 overflow-y-auto px-3 py-4">
+              <div className="space-y-3">
+                {navGroups.map((group) => (
+                  <div key={group.label} className="space-y-1">
+                    <div className={navGroupLabelClass}>{group.label}</div>
+                    {group.items.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <Link
+                          key={item.path}
+                          to={item.path}
+                          className={`${navClass(item.path)} ${
+                            item.primary && !isRouteActive(item.path)
+                              ? "border border-indigo-100 bg-indigo-50/60 text-indigo-800 hover:bg-indigo-100/80"
+                              : ""
+                          }`}
+                        >
+                          <Icon className="mr-3 h-4 w-4" />
+                          {item.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
             </nav>
 
             {ceoEmployee && (
@@ -436,13 +470,6 @@ export default function App() {
                 <Building2 className="mr-3 h-4 w-4" />
                 切换公司
               </Link>
-              <Link
-                to="/settings"
-                className={`flex items-center text-sm font-medium ${isRouteActive("/settings") ? "text-foreground bg-secondary/50" : `text-muted-foreground ${linkHover}`} py-2 px-1 rounded-md`}
-              >
-                <Settings className="mr-3 h-4 w-4" />
-                系统设置
-              </Link>
             </div>
           </aside>
 
@@ -465,7 +492,7 @@ export default function App() {
                 </span>
               </div>
               <div className="flex items-center gap-4">
-                <ThemeSwitcher />
+                <MainlineQuickSwitch hasPrimaryRequirement={hasPrimaryRequirement} />
                 <div className="flex items-center gap-2">
                   <div className={`h-2 w-2 rounded-full ${connectionIndicatorClass}`} />
                   <span className="text-sm text-muted-foreground mr-2">{connectionLabel}</span>

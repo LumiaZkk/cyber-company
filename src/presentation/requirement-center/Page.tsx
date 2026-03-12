@@ -16,12 +16,12 @@ import { useNavigate } from "react-router-dom";
 import { buildRequirementRoomHrefFromRecord } from "../../application/delegation/room-routing";
 import { useMissionBoardApp, useMissionBoardQuery } from "../../application/mission";
 import {
-  buildBoardRequirementSurface,
+  buildPrimaryRequirementProjection,
   describeRequirementRoomPreview,
-} from "../../application/mission/board-requirement-surface";
+  buildRequirementExecutionProjection,
+} from "../../application/mission/requirement-execution-projection";
 import { buildPrimaryRequirementSurface } from "../../application/mission/primary-requirement-surface";
 import { buildRequirementDecisionTicketId } from "../../application/mission/requirement-decision-ticket";
-import { buildBoardTaskSurface } from "../../application/mission/board-task-surface";
 import {
   getRequirementStatusToneClass,
   resolveRequirementProductStatus,
@@ -223,7 +223,7 @@ function RequirementCenterContent({
 
   const requirementSurface = useMemo(
     () =>
-      buildBoardRequirementSurface({
+      buildPrimaryRequirementProjection({
         company: activeCompany,
         activeConversationStates,
         activeWorkItems,
@@ -251,7 +251,7 @@ function RequirementCenterContent({
 
   const boardTaskSurface = useMemo(
     () =>
-      buildBoardTaskSurface({
+      buildRequirementExecutionProjection({
         activeCompany,
         companySessions,
         currentTime,

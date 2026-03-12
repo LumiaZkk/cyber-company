@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Zap, HardDrive, Terminal, RotateCw, Wrench } from "lucide-react";
 import { useGatewayStore } from "../../application/gateway";
 import { toast } from "../../components/system/toast-store";
+import { ConnectionDiagnosisSummary } from "../shared/ConnectionDiagnosisSummary";
 
 type GatewayStoreSnapshot = ReturnType<typeof useGatewayStore.getState>;
 
@@ -150,47 +151,37 @@ function ConnectForm({
             ) : null}
 
             {isFailed ? (
-              <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                <div className="flex items-center gap-2 font-semibold">
-                  <Wrench className="h-4 w-4" />
-                  {connectError?.title || "自动重连已停止"}（已重试 {reconnectAttempts} 次）
-                </div>
-                <div className="text-xs leading-5 opacity-90">
-                  {connectError?.message || "系统已经停止自动重连，请根据错误类型修正配置后再重试。"}
-                </div>
-                {connectError?.steps?.length ? (
-                  <ul className="space-y-1 text-xs">
-                    {connectError.steps.map((step) => (
-                      <li key={step}>- {step}</li>
-                    ))}
-                  </ul>
-                ) : null}
-                {connectError?.debug || lastCloseReason ? (
-                  <div className="text-xs opacity-70">最后错误：{connectError?.debug || lastCloseReason}</div>
-                ) : null}
-                {!connectError?.steps?.length ? (
-                  <ul className="space-y-1 text-xs">
-                    {[
-                      "确认 authority daemon 正在运行",
-                      `检查控制面地址是否正确（当前默认 ${currentProvider?.defaultUrl || "http://127.0.0.1:18790"}）`,
-                      "如果 authority 开启了鉴权，确认 Token 输入无误",
-                      "如果 authority 已连接但聊天仍失败，再检查设置页里的 OpenClaw 执行后端状态",
-                      "检查本机与目标地址网络可达（防火墙/端口）",
-                    ].map((step) => (
-                      <li key={step}>- {step}</li>
-                    ))}
-                  </ul>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => connect(url, token)}
-                  disabled={connecting}
-                  className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <RotateCw className="h-3.5 w-3.5" />
-                  重试连接
-                </button>
-              </div>
+              <ConnectionDiagnosisSummary
+                variant="onboarding"
+                state="blocked"
+                title={`${connectError?.title || "自动重连已停止"}（已重试 ${reconnectAttempts} 次）`}
+                summary={
+                  connectError?.message || "系统已经停止自动重连，请根据错误类型修正配置后再重试。"
+                }
+                detail={connectError?.debug || lastCloseReason || null}
+                steps={
+                  connectError?.steps?.length
+                    ? connectError.steps
+                    : [
+                        "确认 authority daemon 正在运行",
+                        `检查控制面地址是否正确（当前默认 ${currentProvider?.defaultUrl || "http://127.0.0.1:18790"}）`,
+                        "如果 authority 开启了鉴权，确认 Token 输入无误",
+                        "如果 authority 已连接但聊天仍失败，再检查设置页里的 OpenClaw 执行后端状态",
+                        "检查本机与目标地址网络可达（防火墙/端口）",
+                      ]
+                }
+                actions={
+                  <button
+                    type="button"
+                    onClick={() => connect(url, token)}
+                    disabled={connecting}
+                    className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                    重试连接
+                  </button>
+                }
+              />
             ) : null}
 
             <button

@@ -19,6 +19,7 @@ import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/card";
 import { ImmersiveHireDialog, type HireConfig } from "../../../components/ui/immersive-hire-dialog";
+import { RequirementSummaryCard } from "../../shared/RequirementSummaryCard";
 
 type TopAction = {
   id: string;
@@ -135,36 +136,18 @@ export function LobbyRequirementCard(props: {
     onOpenBoard,
     onOpenRequirementCenter,
   } = props;
-  if (!visible) {
-    return null;
-  }
   return (
-    <Card className="border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-white shadow-sm">
-      <CardContent className="grid gap-4 p-4 lg:grid-cols-[1.4fr,1fr,auto] lg:items-center">
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-500">
-            本次需求总览
-          </div>
-          <div className="mt-2 text-lg font-semibold text-slate-950">{title}</div>
-          <div className="mt-2 text-sm leading-6 text-slate-700">{currentStep}</div>
-          <div className="mt-1 text-sm leading-6 text-slate-600">{summary}</div>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-          <div className="rounded-xl border border-white/80 bg-white px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              当前负责人
-            </div>
-            <div className="mt-2 text-sm font-semibold text-slate-900">{owner}</div>
-            <div className="mt-1 text-xs leading-5 text-slate-500">当前环节：{stage}</div>
-          </div>
-          <div className="rounded-xl border border-white/80 bg-white px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              下一步
-            </div>
-            <div className="mt-2 text-sm leading-6 text-slate-800">{nextStep}</div>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 lg:justify-end">
+    <RequirementSummaryCard
+      visible={visible}
+      variant="summary"
+      title={title}
+      currentStep={currentStep}
+      summary={summary}
+      owner={owner}
+      stage={stage}
+      nextStep={nextStep}
+      actions={
+        <>
           {onOpenRequirementCenter ? (
             <Button variant="outline" onClick={onOpenRequirementCenter}>
               <BookOpenCheck className="mr-2 h-4 w-4" />
@@ -180,9 +163,9 @@ export function LobbyRequirementCard(props: {
           <Button variant="outline" onClick={onOpenBoard}>
             查看工作看板
           </Button>
-        </div>
-      </CardContent>
-    </Card>
+        </>
+      }
+    />
   );
 }
 

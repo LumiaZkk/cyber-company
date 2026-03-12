@@ -33,6 +33,7 @@ import { toast } from "../../components/system/toast-store";
 import { useCeoRuntimeState } from "./hooks/useCeoRuntimeState";
 import { usePageVisibility } from "../../lib/use-page-visibility";
 import { formatTime, getAvatarUrl } from "../../lib/utils";
+import { ExecutiveSummaryStrip } from "../shared/ExecutiveSummaryStrip";
 
 export function CEOHomePageScreen() {
   const navigate = useNavigate();
@@ -401,10 +402,31 @@ export function CEOHomePageScreen() {
                 </Badge>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-                CEO 首页默认只聚焦升级项和真正需要拍板的事项。普通部门推进和支持协作留在部门内部或运营大厅处理。
-                <div className="mt-3 text-xs leading-5 text-slate-500">
-                  完成率 {outcomeReport.completionRate}% · 交接闭环 {outcomeReport.handoffCompletionRate}% · {retrospective.summary}
-                </div>
+                <ExecutiveSummaryStrip
+                  title="轻量经营摘要"
+                  summary="CEO 首页只保留当前最值得拍板的经营信号。完整趋势、成本和复盘继续留在运营报表。"
+                  items={[
+                    {
+                      id: "completion",
+                      label: "完成率",
+                      value: `${outcomeReport.completionRate}%`,
+                      tone: "success",
+                    },
+                    {
+                      id: "handoff",
+                      label: "交接闭环",
+                      value: `${outcomeReport.handoffCompletionRate}%`,
+                      tone: "accent",
+                    },
+                    {
+                      id: "takeover",
+                      label: "人工接管",
+                      value: String(outcomeReport.manualTakeovers),
+                      tone: "warning",
+                    },
+                  ]}
+                  footnote={retrospective.summary}
+                />
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button variant="outline" onClick={() => navigate(`/chat/${ceo.agentId}`)}>
