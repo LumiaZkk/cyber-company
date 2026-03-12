@@ -47,6 +47,9 @@ export function useChatFocusAction(input: {
       if (!action.message) {
         return;
       }
+      if (action.confirmMessage && !window.confirm(action.confirmMessage)) {
+        return;
+      }
       if (input.routeCompanyConflictMessage) {
         toast.error("无法发送", input.routeCompanyConflictMessage);
         return;
@@ -78,8 +81,9 @@ export function useChatFocusAction(input: {
           (action.followupTargetAgentId && input.activeCompany
             ? formatAgentLabel(input.activeCompany, action.followupTargetAgentId)
             : null);
+        const trackingId = result.dispatchId ?? result.actionTrackingId;
         input.appendLocalProgressEvent({
-          id: `focus:${result.providerRunId}`,
+          id: trackingId,
           timestamp: actionStartedAt,
           actorLabel: "系统",
           actorAgentId: result.runtimeTargetAgentId ?? undefined,
@@ -102,7 +106,7 @@ export function useChatFocusAction(input: {
           ? []
           : [
               {
-                id: `${result.providerRunId}:owner`,
+                id: `${trackingId}:owner`,
                 sessionKey: result.resolvedSessionKey,
                 actionLabel: action.label,
                 targetLabel,
@@ -128,7 +132,7 @@ export function useChatFocusAction(input: {
             });
             if (followupConversation.conversationRef.conversationId) {
               nextWatches.push({
-                id: `${result.providerRunId}:handoff:${action.followupTargetAgentId}`,
+                id: `${trackingId}:handoff:${action.followupTargetAgentId}`,
                 sessionKey: followupConversation.conversationRef.conversationId,
                 actionLabel: action.label,
                 targetLabel: followupTargetLabel ?? action.followupTargetAgentId,

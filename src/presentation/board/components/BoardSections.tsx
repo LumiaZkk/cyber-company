@@ -19,6 +19,7 @@ import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/card";
 import type { RequirementRoomRecord } from "../../../domain/delegation/types";
+import type { DraftRequirementRecord } from "../../../domain/mission/types";
 import type { EmployeeRef } from "../../../domain/org/types";
 import type { TaskLane } from "../../../domain/mission/task-lane";
 import type { GatewaySessionRow } from "../../../application/gateway";
@@ -411,6 +412,8 @@ export function BoardTaskBoardSection(props: {
   setShowArchived: (next: boolean) => void;
   activeRoomRecords: RequirementRoomRecord[];
   activeCompanyEmployees: EmployeeRef[];
+  preRequirementDraft?: DraftRequirementRecord | null;
+  onOpenCeo?: () => void;
   onOpenRoute: (route: string) => void;
 }) {
   const {
@@ -422,10 +425,53 @@ export function BoardTaskBoardSection(props: {
     setShowArchived,
     activeRoomRecords,
     activeCompanyEmployees,
+    preRequirementDraft = null,
+    onOpenCeo,
     onOpenRoute,
   } = props;
 
   if (trackedTasks <= 0) {
+    if (preRequirementDraft) {
+      return (
+        <Card className="flex-1 border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-white shadow-sm">
+          <CardContent className="grid gap-4 p-6 lg:grid-cols-[1.3fr,1fr,auto] lg:items-center">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-500">
+                CEO 正在收敛目标
+              </div>
+              <div className="mt-3 text-lg font-semibold text-slate-950">当前还没有正式的任务主线</div>
+              <div className="mt-2 text-sm leading-6 text-slate-700">{preRequirementDraft.summary}</div>
+              <div className="mt-2 text-sm leading-6 text-slate-600">
+                等 CEO 确认或继续推进后，这里会自动切换成 requirement/work item 看板。
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+              <div className="rounded-xl border border-white/80 bg-white px-3 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  当前阶段
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">{preRequirementDraft.stage}</div>
+              </div>
+              <div className="rounded-xl border border-white/80 bg-white px-3 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  建议下一步
+                </div>
+                <div className="mt-2 text-sm leading-6 text-slate-800">{preRequirementDraft.nextAction}</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 lg:justify-end">
+              {onOpenCeo ? (
+                <Button variant="default" onClick={onOpenCeo}>
+                  <MessageSquare className="w-4 h-4 mr-2" />
+                  打开 CEO 会话
+                </Button>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
     return (
       <div className="flex-1 flex flex-col items-center justify-center py-20">
         <div className="bg-indigo-50 p-6 rounded-2xl mb-6">

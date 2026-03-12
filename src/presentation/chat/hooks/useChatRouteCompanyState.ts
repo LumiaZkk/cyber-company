@@ -7,13 +7,43 @@ import {
   findCompaniesByAgentId,
 } from "../../../lib/chat-routes";
 import { buildRoomRecordIdFromWorkItem } from "../../../application/mission/work-item";
-import { convertRequirementRoomRecordToChatMessages } from "../../../application/delegation/room-routing";
+import {
+  convertRequirementRoomRecordToChatMessages,
+  mergeRequirementRoomMessages,
+} from "../../../application/delegation/room-routing";
 import type { ChatMessage } from "../../../application/gateway";
 import type { CyberCompanyConfig } from "../../../domain/org/types";
 import type { RoomConversationBindingRecord, RequirementRoomRecord } from "../../../domain/delegation/types";
 import type { ConversationStateRecord } from "../../../domain/mission/types";
 
+export function selectRouteChatMessages(input: {
+  isGroup: boolean;
+  authorityBackedState: boolean;
+  activeRequirementRoom: RequirementRoomRecord | null;
+  sessionMessages: ChatMessage[];
+}): ChatMessage[] {
+  if (!input.isGroup) {
+    return input.sessionMessages;
+  }
+
+  const roomMessages = convertRequirementRoomRecordToChatMessages(input.activeRequirementRoom);
+  if (!input.authorityBackedState) {
+    return roomMessages;
+  }
+  if (roomMessages.length === 0) {
+    return input.sessionMessages;
+  }
+  if (input.sessionMessages.length === 0) {
+    return roomMessages;
+  }
+  return mergeRequirementRoomMessages({
+    existing: input.sessionMessages,
+    incoming: roomMessages,
+  });
+}
+
 export function useChatRouteCompanyState(input: {
+  authorityBackedState: boolean;
   config: CyberCompanyConfig | null;
   activeCompanyId: string | null;
   activeRoomRecords: RequirementRoomRecord[];
@@ -135,8 +165,14 @@ export function useChatRouteCompanyState(input: {
   );
 
   const messages = useMemo(
-    () => (isGroup ? convertRequirementRoomRecordToChatMessages(activeRequirementRoom) : sessionMessages),
-    [activeRequirementRoom, isGroup, sessionMessages],
+    () =>
+      selectRouteChatMessages({
+        isGroup,
+        authorityBackedState: input.authorityBackedState,
+        activeRequirementRoom,
+        sessionMessages,
+      }),
+    [activeRequirementRoom, input.authorityBackedState, isGroup, sessionMessages],
   );
 
   const groupTitle = activeRequirementRoom?.title ?? rawGroupTitle;

@@ -6,6 +6,7 @@ import {
 import { toast } from "../../components/system/toast-store";
 import {
   SettingsAdvancedSection,
+  SettingsDoctorSection,
   SettingsDialogs,
   SettingsGatewayCompanySection,
   SettingsHeader,
@@ -30,6 +31,7 @@ export function SettingsPresentationPage() {
     orgAutopilotEnabled,
     providerConfigs,
     telegramConfig,
+    doctorBaseline,
     executorStatus,
     executorConfig,
     refreshRuntime,
@@ -49,6 +51,7 @@ export function SettingsPresentationPage() {
     handleExecutorConfigSubmit,
     handleExecutorReconnect,
     handleToggleOrgAutopilot,
+    handleUpdateCollaborationPolicy,
     telegramSaving,
     providerKeySaving,
     addProviderSaving,
@@ -58,6 +61,7 @@ export function SettingsPresentationPage() {
     codexRefreshing,
     executorSaving,
     orgAutopilotSaving,
+    collaborationPolicySaving,
   } = useGatewaySettingsCommands(query);
 
   const [telegramDialogOpen, setTelegramDialogOpen] = useState(false);
@@ -109,6 +113,8 @@ export function SettingsPresentationPage() {
         </div>
       )}
 
+      <SettingsDoctorSection doctorBaseline={doctorBaseline} />
+
       <SettingsGatewayCompanySection
         token={token}
         connected={connected}
@@ -118,11 +124,13 @@ export function SettingsPresentationPage() {
         companyCount={companyCount}
         orgAutopilotEnabled={orgAutopilotEnabled}
         orgAutopilotSaving={orgAutopilotSaving}
+        collaborationPolicySaving={collaborationPolicySaving}
         switchCompany={switchCompany}
         loadConfig={loadConfig}
         reconnectGateway={reconnectGateway}
         disconnectGateway={disconnectGateway}
         handleToggleOrgAutopilot={handleToggleOrgAutopilot}
+        handleUpdateCollaborationPolicy={handleUpdateCollaborationPolicy}
         runCommand={runCommand}
       />
 

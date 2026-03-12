@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../../../application/gateway";
+import type { CollaboratorReportCardVM } from "./message-reports";
 
 export type ChatBlock = {
   type?: string;
@@ -14,6 +15,12 @@ export type ChatDisplayItem =
       kind: "message";
       id: string;
       message: ChatMessage;
+    }
+  | {
+      kind: "report";
+      id: string;
+      message: ChatMessage;
+      report: CollaboratorReportCardVM;
     }
   | {
       kind: "tool";

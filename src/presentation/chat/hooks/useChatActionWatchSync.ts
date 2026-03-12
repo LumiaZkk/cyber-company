@@ -22,8 +22,17 @@ export function useChatActionWatchSync(input: {
   setActionWatches: React.Dispatch<React.SetStateAction<FocusActionWatch[]>>;
   syncCompanyCommunication: (options?: { force?: boolean }) => Promise<unknown>;
 }) {
+  const {
+    connected,
+    isPageVisible,
+    actionWatches,
+    appendLocalProgressEvent,
+    setActionWatches,
+    syncCompanyCommunication,
+  } = input;
+
   useEffect(() => {
-    if (!input.connected || !input.isPageVisible || input.actionWatches.length === 0) {
+    if (!connected || !isPageVisible || actionWatches.length === 0) {
       return;
     }
 
@@ -32,7 +41,7 @@ export function useChatActionWatchSync(input: {
       const refreshed: FocusActionWatch[] = [];
       let shouldSyncCompanyState = false;
 
-      for (const watch of input.actionWatches) {
+      for (const watch of actionWatches) {
         try {
           const history = await gateway.getChatHistory(watch.sessionKey, 10);
           const newAssistantMessages = (history.messages ?? [])
@@ -49,7 +58,7 @@ export function useChatActionWatchSync(input: {
             const text = extractTextFromMessage(latestMeaningfulMessage);
             const summary = text ? summarizeProgressText(text) : null;
             if (summary) {
-              input.appendLocalProgressEvent({
+              appendLocalProgressEvent({
                 id: `watch:${watch.id}:${latestMeaningfulMessage.timestamp ?? Date.now()}`,
                 timestamp: latestMeaningfulMessage.timestamp ?? Date.now(),
                 actorLabel: watch.targetLabel,
@@ -88,7 +97,7 @@ export function useChatActionWatchSync(input: {
             newAssistantMessages[0]?.timestamp ?? watch.lastSeenTimestamp;
           const elapsed = Date.now() - watch.startedAt;
           if (elapsed >= 45_000 && !watch.hasReminder) {
-            input.appendLocalProgressEvent({
+            appendLocalProgressEvent({
               id: `watch-waiting:${watch.id}`,
               timestamp: Date.now(),
               actorLabel: watch.targetLabel,
@@ -125,12 +134,12 @@ export function useChatActionWatchSync(input: {
       if (!cancelled) {
         if (shouldSyncCompanyState) {
           try {
-            await input.syncCompanyCommunication();
+            await syncCompanyCommunication();
           } catch (error) {
             console.error("focus action sync failed", error);
           }
         }
-        input.setActionWatches(refreshed);
+        setActionWatches(refreshed);
       }
     }, 6000);
 
@@ -138,5 +147,12 @@ export function useChatActionWatchSync(input: {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [input]);
+  }, [
+    actionWatches,
+    appendLocalProgressEvent,
+    connected,
+    isPageVisible,
+    setActionWatches,
+    syncCompanyCommunication,
+  ]);
 }

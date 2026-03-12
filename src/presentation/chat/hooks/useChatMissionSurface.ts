@@ -11,7 +11,7 @@ import { buildChatMissionSurface, type ChatMissionSurface, type TaskPlanOverview
 import { pickConversationMissionRecord } from "../../../application/mission/conversation-mission";
 import type { RequirementTeamView } from "../../../application/assignment/requirement-team";
 import type { ChatMessage } from "../../../application/gateway";
-import type { FocusProgressTone, StageGateSnapshot } from "../../../application/governance/chat-progress";
+import type { FocusProgressTone } from "../../../application/governance/chat-progress";
 import type { WorkItemPrimaryView } from "../../../application/mission/conversation-work-item-view";
 import type {
   RequirementExecutionOverview,
@@ -52,7 +52,6 @@ type UseChatMissionSurfaceInput = {
   requirementOverview: RequirementExecutionOverview | null;
   requirementProgressGroups: RequirementProgressGroups | null;
   taskPlanOverview: TaskPlanOverview | null;
-  latestStageGate: StageGateSnapshot | null;
   shouldAdvanceToNextPhase: boolean;
   shouldDispatchPublish: boolean;
   shouldDirectToTechDispatch: boolean;
@@ -127,7 +126,6 @@ export function useChatMissionSurface(
       requirementProgressWorkingCount: input.requirementProgressGroups?.working.length ?? 0,
       requirementRoomSummary,
       taskPlanOverview: input.taskPlanOverview,
-      latestStageGate: input.latestStageGate,
       shouldAdvanceToNextPhase: input.shouldAdvanceToNextPhase,
       shouldDispatchPublish: input.shouldDispatchPublish,
       shouldDirectToTechDispatch: input.shouldDirectToTechDispatch,
@@ -168,7 +166,6 @@ export function useChatMissionSurface(
     input.isFreshConversation,
     input.isGroup,
     input.isRequirementBootstrapPending,
-    input.latestStageGate,
     input.messages,
     input.persistedWorkItem,
     input.productRoomId,

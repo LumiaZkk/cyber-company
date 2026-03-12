@@ -14,6 +14,7 @@ type ChatAssignmentActionsProps = {
   companyId: string | null;
   employees: EmployeeRef[];
   isCeoSession: boolean;
+  isGroup: boolean;
   targetAgentId: string | null;
   currentConversationRequirementTopicKey: string | null;
   requirementOverviewTopicKey: string | null;
@@ -25,7 +26,13 @@ type ChatAssignmentActionsProps = {
 
 export const ChatAssignmentActions = memo(function ChatAssignmentActions(input: ChatAssignmentActionsProps) {
   const mentions = useMemo(
-    () => resolveMentionedEmployeesInEmployees(input.messageText, input.employees),
+    () =>
+      [...new Map(
+        resolveMentionedEmployeesInEmployees(input.messageText, input.employees).map((member) => [
+          member.agentId,
+          member,
+        ]),
+      ).values()],
     [input.employees, input.messageText],
   );
   if (!input.companyId || mentions.length === 0) {
@@ -58,7 +65,7 @@ export const ChatAssignmentActions = memo(function ChatAssignmentActions(input: 
             </span>
           </button>
         ))}
-        {mentions.length >= 2 ? (
+        {mentions.length >= 2 && !input.isGroup ? (
           <button
             type="button"
             onClick={() => {

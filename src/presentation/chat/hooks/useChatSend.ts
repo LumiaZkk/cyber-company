@@ -141,6 +141,8 @@ export function useChatSend(input: {
 
         if (result.runId) {
           input.beginGeneratingState(generationStartedAt, { runId: result.runId });
+        } else if (input.isGroup) {
+          input.clearGeneratingState();
         }
 
         if (result.resetRoomBroadcastMode) {

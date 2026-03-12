@@ -10,23 +10,26 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useCompanyShellCommands } from "../../application/company/shell";
+import { buildRequirementRoomHrefFromRecord } from "../../application/delegation/room-routing";
+import { buildRequirementRoomRecordSignature } from "../../application/delegation/room-routing";
 import { type RequirementSessionSnapshot } from "../../domain/mission/requirement-snapshot";
 import {
   doesConversationWorkItemMatch,
 } from "../../application/mission/chat-work-item-state";
-import {
-  getRequirementStatusToneClass,
-  resolveRequirementProductStatus,
-} from "../../application/mission/requirement-product-status";
+import { buildRequirementCollaborationSurface } from "../../application/mission/requirement-collaboration-surface";
 import { selectPrimaryRequirementProjection } from "../../application/mission/requirement-aggregate";
+import { buildPrimaryRequirementSurface } from "../../application/mission/primary-requirement-surface";
+import { backfillRequirementRoomRecord } from "../../application/mission/requirement-room-backfill";
+import { buildRequirementDecisionResolutionMessage } from "../../application/mission/requirement-decision-ticket";
 import { ChatAutoDispatchController } from "./components/ChatAutoDispatchController";
 import { ChatComposerFooter } from "./components/ChatComposerFooter";
 import { ChatConversationWorkItemSync } from "./components/ChatConversationWorkItemSync";
 import { ChatMessageFeed } from "./components/ChatMessageFeed";
 import { ChatMissionStrip } from "./components/ChatMissionStrip";
+import { ChatRequirementDraftCard } from "./components/ChatRequirementDraftCard";
 import { ChatSessionHeader } from "./components/ChatSessionHeader";
-import { ChatSettledRequirementCard } from "./components/ChatSettledRequirementCard";
 import { ChatSummaryPanel } from "./components/ChatSummaryPanel";
+import { ChatSyncStatusBanner } from "./components/ChatSyncStatusBanner";
 import { ChatWaitingBanner } from "./components/ChatWaitingBanner";
 import { useChatConversationTruth } from "./hooks/useChatConversationTruth";
 import { useChatCompanySnapshots } from "./hooks/useChatCompanySnapshots";
@@ -57,6 +60,7 @@ import {
 } from "../../application/gateway";
 import { useGatewayStore } from "../../application/gateway";
 import { AgentOps } from "../../application/org/employee-ops";
+import { trackChatRequirementMetric } from "../../application/telemetry/chat-requirement-metrics";
 import { toast } from "../../components/system/toast-store";
 import {
   appendCompanyScopeToChatRoute,
@@ -68,6 +72,7 @@ import { useChatActionSurface } from "./hooks/useChatActionSurface";
 import { useChatPreviewPersistence } from "./hooks/useChatPreviewPersistence";
 import { useChatRuntimeEffects } from "./hooks/useChatRuntimeEffects";
 import { useChatRouteCompanyState } from "./hooks/useChatRouteCompanyState";
+import { buildRequirementPromotionSystemMessages } from "./view-models/promotion-system-events";
 import {
   clearLiveChatSession,
   type LiveChatSessionState,
@@ -84,13 +89,17 @@ export function ChatPageScreen() {
   const {
     config,
     activeCompany,
+    authorityBackedState,
     activeRoomRecords,
     activeMissionRecords,
     activeConversationStates,
     activeWorkItems,
     activeRequirementAggregates,
+    activeRequirementEvidence,
+    activeDecisionTickets,
     primaryRequirementId,
     activeRoundRecords,
+    activeDispatches,
     activeRoomBindings,
     updateCompany,
     upsertTask,
@@ -100,12 +109,14 @@ export function ChatPageScreen() {
     upsertRoundRecord,
     deleteRoundRecord,
     appendRoomMessages,
+    ensureRequirementRoomForAggregate,
     upsertRoomConversationBindings,
     upsertMissionRecord,
     setConversationCurrentWorkKey,
     setConversationDraftRequirement,
     clearConversationState,
     upsertWorkItemRecord,
+    upsertDecisionTicketRecord,
     upsertDispatchRecord,
     replaceDispatchRecords,
   } = useChatWorkspaceViewModel();
@@ -123,6 +134,8 @@ export function ChatPageScreen() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [runningFocusActionId, setRunningFocusActionId] = useState<string | null>(null);
   const [recoveringCommunication, setRecoveringCommunication] = useState(false);
+  const [sessionSyncStale, setSessionSyncStale] = useState(false);
+  const [sessionSyncError, setSessionSyncError] = useState<string | null>(null);
   const [streamText, setStreamText] = useState<string | null>(null);
   const streamTextRef = useRef<string | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
@@ -135,9 +148,14 @@ export function ChatPageScreen() {
   const programmaticScrollRef = useRef(false);
   const userScrollLockRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const lastEnsuredRequirementRoomRef = useRef<string | null>(null);
   const lockedScrollTopRef = useRef<number | null>(null);
   const lastSyncedRoomSignatureRef = useRef<string | null>(null);
+  const lastTrackedDraftKeyRef = useRef<string | null>(null);
+  const lastTrackedAutoPromotionRef = useRef<string | null>(null);
+  const lastTrackedStaleRef = useRef<string | null>(null);
   const [composerPrefill, setComposerPrefill] = useState<{ id: string | number; text: string } | null>(null);
+  const [decisionSubmittingOptionId, setDecisionSubmittingOptionId] = useState<string | null>(null);
 
   const [attachments, setAttachments] = useState<{ mimeType: string; dataUrl: string }[]>([]);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -176,6 +194,7 @@ export function ChatPageScreen() {
     targetAgentId,
     conversationStateKey: groupConversationStateKey,
   } = useChatRouteCompanyState({
+    authorityBackedState,
     config,
     activeCompanyId: activeCompany?.id ?? null,
     activeRoomRecords,
@@ -246,8 +265,11 @@ export function ChatPageScreen() {
 
   const {
     companySessionSnapshots,
+    companySyncError,
+    companySyncStale,
     setCompanySessionSnapshots,
     setHasBootstrappedCompanySync,
+    setCompanySyncStale,
   } = useChatCompanySnapshots(activeCompany?.id ?? null);
   const {
     displayWindowSize,
@@ -493,27 +515,66 @@ export function ChatPageScreen() {
       primaryRequirementId,
     ],
   );
-  const settledRequirementAggregate = primaryRequirementProjection.aggregate;
-  const settledRequirementProductStatus = resolveRequirementProductStatus({
-    aggregate: settledRequirementAggregate,
-    workItem: stableDisplayWorkItem ?? primaryRequirementProjection.workItem,
-  });
-  const settledRequirementStatusClassName = getRequirementStatusToneClass(
-    settledRequirementProductStatus.tone,
+  const primaryRequirementSurface = useMemo(
+    () =>
+      activeCompany
+        ? buildPrimaryRequirementSurface({
+            company: activeCompany,
+            activeConversationStates,
+            activeWorkItems,
+            activeRequirementAggregates,
+            activeRequirementEvidence,
+            activeDecisionTickets,
+            primaryRequirementId,
+            activeRoomRecords,
+            companySessions: [],
+            companySessionSnapshots,
+            currentTime,
+            ceoAgentId:
+              activeCompany.employees.find((employee) => employee.metaRole === "ceo")?.agentId ?? null,
+          })
+        : null,
+    [
+      activeCompany,
+      activeConversationStates,
+      activeDecisionTickets,
+      activeRequirementAggregates,
+      activeRequirementEvidence,
+      activeRoomRecords,
+      activeWorkItems,
+      companySessionSnapshots,
+      currentTime,
+      primaryRequirementId,
+    ],
   );
-  const requirementCenterRoute = activeCompany?.id
-    ? `/requirement?cid=${encodeURIComponent(activeCompany.id)}`
-    : "/requirement";
-  const settledRequirementOwnerAgentId =
-    settledRequirementAggregate?.ownerActorId ??
-    stableDisplayWorkItem?.ownerActorId ??
-    primaryRequirementProjection.workItem?.ownerActorId ??
-    null;
+  const settledRequirementAggregate = primaryRequirementProjection.aggregate;
+  const requirementCollaborationSurface = useMemo(
+    () =>
+      isGroup
+        ? buildRequirementCollaborationSurface({
+            company: activeCompany,
+            surface: primaryRequirementSurface,
+            roomMessages: messages,
+          })
+        : null,
+    [activeCompany, isGroup, messages, primaryRequirementSurface],
+  );
   const showSettledRequirementCard =
     !isArchiveView &&
     !isGroup &&
     isCeoSession &&
     Boolean(settledRequirementAggregate);
+  const settledRequirementSummary =
+    stableDisplayWorkItem?.displaySummary ??
+    stableDisplayWorkItem?.summary ??
+    requirementOverview?.summary ??
+    settledRequirementAggregate?.summary ??
+    "CEO 已经把这件事收敛成一条可推进的主线。";
+  const settledRequirementNextAction =
+    stableDisplayWorkItem?.displayNextAction ??
+    stableDisplayWorkItem?.nextAction ??
+    settledRequirementAggregate?.nextAction ??
+    "进入需求中心继续推进。";
   const doesWorkItemMatchCurrentConversation = useCallback(
     (item: WorkItemRecord | null | undefined) =>
       doesConversationWorkItemMatch({
@@ -525,7 +586,6 @@ export function ChatPageScreen() {
   );
   const {
     focusSummary,
-    latestStageGate,
     isChapterExecutionRequirement,
     requirementTechParticipant,
     shouldAdvanceToNextPhase,
@@ -639,7 +699,6 @@ export function ChatPageScreen() {
     requirementOverview,
     requirementProgressGroups,
     taskPlanOverview,
-    latestStageGate,
     shouldAdvanceToNextPhase,
     shouldDispatchPublish,
     shouldDirectToTechDispatch,
@@ -662,6 +721,7 @@ export function ChatPageScreen() {
     shouldUseTaskPlanPrimaryView,
     effectiveOwnerAgentId,
     effectiveOwnerLabel,
+    effectiveStepLabel,
     effectiveStage,
     effectiveStatusLabel,
     effectiveSummary,
@@ -681,6 +741,7 @@ export function ChatPageScreen() {
   const {
     conversationMissionRecord,
     shouldPersistConversationTruth,
+    conversationDraftRequirement,
   } = useChatConversationTruth({
     isGroup,
     isCeoSession,
@@ -702,6 +763,7 @@ export function ChatPageScreen() {
     displayNextBatonAgentId,
     missionIsCompleted,
     activeCompany,
+    authorityBackedState,
     activeRoomRecords,
     activeConversationState,
     requirementTeam: requirementTeam
@@ -722,6 +784,7 @@ export function ChatPageScreen() {
     setConversationDraftRequirement,
     conversationStateKey,
     messages,
+    structuredTaskPreview,
     previewConversationWorkItem,
     shouldPreferPreviewConversationWorkItem,
     ceoReplyExplicitlyRequestsNewTask,
@@ -734,7 +797,6 @@ export function ChatPageScreen() {
     displayRequirementProgressGroups,
     headerStatusBadgeClass,
     primaryOpenAction,
-    showRequirementTeamEntry,
     teamGroupRoute,
     currentConversationWorkItemId,
     currentConversationTopicKey,
@@ -767,7 +829,6 @@ export function ChatPageScreen() {
     workbenchOpenAction,
     focusActions,
     summaryRecoveryAction,
-    latestStageGate,
     taskPlanOverview,
     displayPlanCurrentStep,
     canonicalNextBatonAgentId,
@@ -792,6 +853,12 @@ export function ChatPageScreen() {
     requirementTechParticipant,
     focusSummaryOwnerRole: focusSummary.ownerRole,
   });
+  const resolvedRequirementRoom = linkedRequirementRoom ?? primaryRequirementSurface?.room ?? null;
+  const showRequirementTeamEntryResolved = Boolean(
+    !isArchiveView &&
+      !isGroup &&
+      primaryRequirementSurface?.aggregateId,
+  );
   const { handleCopyTakeoverPack, handleRecoverCommunication } = useChatCoordinationActions({
     takeoverPack: takeoverPack ? { operatorNote: takeoverPack.operatorNote } : null,
     activeCompanyId: activeCompany?.id ?? null,
@@ -819,6 +886,376 @@ export function ChatPageScreen() {
     handleRecoverCommunication,
     navigateToHref: (href) => navigate(appendCompanyScopeToChatRoute(href, activeCompany?.id)),
   });
+  const isSyncStale = companySyncStale || sessionSyncStale;
+  const syncStaleDetail = sessionSyncError ?? companySyncError ?? null;
+  const openRequirementRoom = useCallback(() => {
+    if (activeCompany && primaryRequirementSurface?.aggregateId) {
+      const ensuredRoom = ensureRequirementRoomForAggregate(primaryRequirementSurface.aggregateId);
+      if (ensuredRoom) {
+        navigate(buildRequirementRoomHrefFromRecord(ensuredRoom));
+        return;
+      }
+    }
+    if (resolvedRequirementRoom) {
+      navigate(buildRequirementRoomHrefFromRecord(resolvedRequirementRoom));
+      return;
+    }
+    if (teamGroupRoute) {
+      navigate(teamGroupRoute);
+      return;
+    }
+    openSummaryPanel("team");
+  }, [
+    activeCompany,
+    ensureRequirementRoomForAggregate,
+    navigate,
+    openSummaryPanel,
+    primaryRequirementSurface?.aggregateId,
+    resolvedRequirementRoom,
+    teamGroupRoute,
+  ]);
+  const shouldShowDraftCard = Boolean(
+    !isArchiveView &&
+      !authorityBackedState &&
+      !isGroup &&
+      isCeoSession &&
+      conversationDraftRequirement &&
+      !showSettledRequirementCard &&
+      ["draft_ready", "awaiting_promotion_choice", "promoted_manual", "promoted_auto"].includes(
+        conversationDraftRequirement.state,
+      ),
+  );
+  const openRequirementDecisionTicket =
+    !isArchiveView && (isGroup || isCeoSession)
+      ? primaryRequirementSurface?.openDecisionTicket ?? null
+      : null;
+  const isStructuredRequirementDecisionPending = Boolean(
+    openRequirementDecisionTicket?.requiresHuman,
+  );
+  const isLegacyRequirementDecisionPending = Boolean(
+    !openRequirementDecisionTicket &&
+      primaryRequirementSurface?.stageGateStatus === "waiting_confirmation",
+  );
+  const resolvedAuthorityOwnerLabel =
+    primaryRequirementSurface?.ownerLabel ?? effectiveOwnerLabel;
+  const resolvedAuthorityStepLabel =
+    primaryRequirementSurface?.currentStep ?? effectiveStepLabel;
+  const resolvedAuthoritySummary =
+    primaryRequirementSurface?.summary ?? effectiveSummary;
+  const resolvedAuthorityNextBatonLabel =
+    primaryRequirementSurface?.nextBatonLabel ?? displayNextBatonLabel;
+  const resolvedAuthorityNextBatonAgentId =
+    primaryRequirementSurface?.nextBatonActorId ?? displayNextBatonAgentId;
+  const isCurrentRoomPrimaryAction = Boolean(
+    isGroup &&
+      resolvedRequirementRoom &&
+      primaryOpenAction?.href &&
+      primaryOpenAction.href === buildRequirementRoomHrefFromRecord(resolvedRequirementRoom),
+  );
+  const isRequirementRoomPrimaryAction = Boolean(
+    primaryOpenAction &&
+      (/需求房间/.test(primaryOpenAction.label) || /需求团队/.test(primaryOpenAction.label)),
+  );
+  const displayRequirementHeadline =
+    primaryRequirementSurface?.title ??
+    (isGroup ? groupTitle : null) ??
+    effectiveHeadline;
+  const isManualConfirmationPending =
+    isStructuredRequirementDecisionPending || isLegacyRequirementDecisionPending;
+  const chatSurfaceHeadline = displayRequirementHeadline;
+  const chatSurfaceStatusLabel = isStructuredRequirementDecisionPending
+    ? "待你确认"
+    : isLegacyRequirementDecisionPending
+      ? "待确认"
+      : effectiveStatusLabel;
+  const chatSurfaceOwnerLabel = resolvedAuthorityOwnerLabel;
+  const chatSurfaceStepLabel = isStructuredRequirementDecisionPending
+    ? openRequirementDecisionTicket?.decisionType === "requirement_change"
+      ? "需求变更待确认"
+      : "待你确认下一步"
+    : isLegacyRequirementDecisionPending
+      ? "等待 CEO 补发结构化选项"
+    : resolvedAuthorityStepLabel;
+  const chatSurfaceStage = isStructuredRequirementDecisionPending
+    ? "待你确认"
+    : isLegacyRequirementDecisionPending
+      ? "待确认"
+      : resolvedAuthorityStepLabel;
+  const chatSurfaceSummary = isStructuredRequirementDecisionPending
+    ? openRequirementDecisionTicket?.summary ?? resolvedAuthoritySummary ?? settledRequirementSummary
+    : isLegacyRequirementDecisionPending
+      ? resolvedAuthoritySummary ?? "当前主线停在待确认状态，但这轮还没有可操作的结构化决策选项。"
+    : resolvedAuthoritySummary;
+  const chatSurfaceNextBatonLabel = isManualConfirmationPending ? "你" : resolvedAuthorityNextBatonLabel;
+  const chatSurfaceNextBatonAgentId = isManualConfirmationPending ? null : resolvedAuthorityNextBatonAgentId;
+  const chatSurfaceActionHint = isStructuredRequirementDecisionPending
+    ? "请直接在对应 CEO 回复下方完成结构化决策。状态会以票据形式持久化，不再依赖聊天文本猜测。"
+    : isLegacyRequirementDecisionPending
+      ? "当前还没有可点选的决策票。只有 CEO 补发结构化决策后，消息下方才会出现选项按钮。"
+      : effectiveActionHint;
+  const chatSurfaceTone = isStructuredRequirementDecisionPending
+    ? "amber"
+    : isLegacyRequirementDecisionPending
+      ? "slate"
+      : effectiveTone;
+  const chatSurfacePrimaryOpenAction =
+    isStructuredRequirementDecisionPending ||
+    isCurrentRoomPrimaryAction ||
+    (isGroup && isRequirementRoomPrimaryAction)
+      ? null
+      : primaryOpenAction;
+  const chatSurfaceSettledRequirementNextAction = isStructuredRequirementDecisionPending
+    ? "请先完成当前待决策事项。"
+    : isLegacyRequirementDecisionPending
+      ? "请让 CEO 补发结构化决策选项后再继续。"
+      : settledRequirementNextAction;
+  const displayGroupTitle = isGroup
+    ? primaryRequirementSurface?.title ?? groupTitle
+    : groupTitle;
+  const displayGroupSubtitle = isGroup
+    ? [
+        requirementCollaborationSurface?.phaseLabel
+          ? `阶段：${requirementCollaborationSurface.phaseLabel}`
+          : chatSurfaceStepLabel
+            ? `阶段：${chatSurfaceStepLabel}`
+            : null,
+        requirementCollaborationSurface?.currentBlocker
+          ? `当前卡点：${requirementCollaborationSurface.currentBlocker}`
+          : null,
+        requirementCollaborationSurface?.latestConclusionSummary ??
+          primaryRequirementSurface?.latestReportSummary ??
+          primaryRequirementSurface?.summary ??
+          null,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" · ") || "多人协作需求房"
+    : null;
+  const promotionActionLabel =
+    !authorityBackedState &&
+    conversationDraftRequirement &&
+    ["draft_ready", "awaiting_promotion_choice"].includes(conversationDraftRequirement.state)
+      ? "确认并转为需求"
+      : null;
+  const handlePromoteRequirementDraft = useCallback(() => {
+    if (!conversationStateKey || !conversationDraftRequirement) {
+      return;
+    }
+    setConversationDraftRequirement(conversationStateKey, {
+      ...conversationDraftRequirement,
+      state: "promoted_manual",
+      promotionReason: "manual_confirmation",
+      promotable: true,
+      updatedAt: Date.now(),
+    });
+    trackChatRequirementMetric({
+      companyId: activeCompany?.id ?? null,
+      conversationId: conversationStateKey,
+      requirementId: persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+      name: "draft_requirement_promoted_manual",
+    });
+    toast.success("已转为需求", "后续会自动绑定需求房和工作看板。");
+  }, [
+    activeCompany?.id,
+    conversationDraftRequirement,
+    conversationMissionRecord?.id,
+    conversationStateKey,
+    persistedWorkItem?.id,
+    setConversationDraftRequirement,
+  ]);
+  const handleContinueDraftChat = useCallback(() => {
+    if (!conversationStateKey || !conversationDraftRequirement) {
+      return;
+    }
+    setConversationDraftRequirement(conversationStateKey, {
+      ...conversationDraftRequirement,
+      state:
+        conversationDraftRequirement.state === "draft_ready"
+          ? "awaiting_promotion_choice"
+          : conversationDraftRequirement.state,
+      updatedAt: Date.now(),
+    });
+    trackChatRequirementMetric({
+      companyId: activeCompany?.id ?? null,
+      conversationId: conversationStateKey,
+      requirementId: persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+      name: "draft_requirement_continue_chat",
+    });
+  }, [
+    activeCompany?.id,
+    conversationDraftRequirement,
+    conversationMissionRecord?.id,
+    conversationStateKey,
+    persistedWorkItem?.id,
+    setConversationDraftRequirement,
+  ]);
+  const displayMessages = useMemo(
+    () =>
+      [...messages, ...buildRequirementPromotionSystemMessages({
+        draftRequirement: conversationDraftRequirement,
+      })].sort((left, right) => {
+        const leftTimestamp = typeof left.timestamp === "number" ? left.timestamp : 0;
+        const rightTimestamp = typeof right.timestamp === "number" ? right.timestamp : 0;
+        if (leftTimestamp !== rightTimestamp) {
+          return leftTimestamp - rightTimestamp;
+        }
+        if (left.role === right.role) {
+          return 0;
+        }
+        return left.role === "system" ? 1 : -1;
+      }),
+    [conversationDraftRequirement, messages],
+  );
+
+  useEffect(() => {
+    if (!conversationDraftRequirement || !shouldShowDraftCard) {
+      return;
+    }
+    const draftKey = `${conversationStateKey ?? "none"}:${conversationDraftRequirement.updatedAt}:${conversationDraftRequirement.state}`;
+    if (lastTrackedDraftKeyRef.current === draftKey) {
+      return;
+    }
+    lastTrackedDraftKeyRef.current = draftKey;
+    trackChatRequirementMetric({
+      companyId: activeCompany?.id ?? null,
+      conversationId: conversationStateKey,
+      requirementId: persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+      name: "draft_requirement_shown",
+      metadata: {
+        state: conversationDraftRequirement.state,
+      },
+    });
+  }, [
+    activeCompany?.id,
+    conversationDraftRequirement,
+    conversationMissionRecord?.id,
+    conversationStateKey,
+    persistedWorkItem?.id,
+    shouldShowDraftCard,
+  ]);
+
+  useEffect(() => {
+    if (!conversationDraftRequirement) {
+      return;
+    }
+    if (
+      !["promoted_auto", "active_requirement"].includes(conversationDraftRequirement.state) ||
+      conversationDraftRequirement.promotionReason === "manual_confirmation"
+    ) {
+      return;
+    }
+    const promotionKey = `${conversationStateKey ?? "none"}:${conversationDraftRequirement.updatedAt}:${conversationDraftRequirement.promotionReason ?? "auto"}`;
+    if (lastTrackedAutoPromotionRef.current === promotionKey) {
+      return;
+    }
+    lastTrackedAutoPromotionRef.current = promotionKey;
+    trackChatRequirementMetric({
+      companyId: activeCompany?.id ?? null,
+      conversationId: conversationStateKey,
+      requirementId: persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+      name: "draft_requirement_promoted_auto",
+      metadata: {
+        reason: conversationDraftRequirement.promotionReason ?? "auto",
+      },
+    });
+  }, [
+    activeCompany?.id,
+    conversationDraftRequirement,
+    conversationMissionRecord?.id,
+    conversationStateKey,
+    persistedWorkItem?.id,
+  ]);
+
+  useEffect(() => {
+    if (!isSyncStale) {
+      lastTrackedStaleRef.current = null;
+      return;
+    }
+    const staleKey = `${conversationStateKey ?? "none"}:${syncStaleDetail ?? "stale"}`;
+    if (lastTrackedStaleRef.current === staleKey) {
+      return;
+    }
+    lastTrackedStaleRef.current = staleKey;
+    trackChatRequirementMetric({
+      companyId: activeCompany?.id ?? null,
+      conversationId: conversationStateKey,
+      requirementId: persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+      name: "sync_stale_warning_shown",
+      metadata: {
+        detail: syncStaleDetail ?? "stale",
+      },
+    });
+  }, [
+    activeCompany?.id,
+    conversationMissionRecord?.id,
+    conversationStateKey,
+    isSyncStale,
+    persistedWorkItem?.id,
+    syncStaleDetail,
+  ]);
+
+  useEffect(() => {
+    setSessionSyncStale(false);
+    setSessionSyncError(null);
+  }, [activeCompany?.id, sessionKey]);
+
+  useEffect(() => {
+    if (
+      !authorityBackedState ||
+      !activeCompany ||
+      !primaryRequirementSurface?.aggregateId ||
+      primaryRequirementSurface.roomStatus === "ready"
+    ) {
+      return;
+    }
+    const ensureKey = `${activeCompany.id}:${primaryRequirementSurface.aggregateId}`;
+    if (lastEnsuredRequirementRoomRef.current === ensureKey) {
+      return;
+    }
+    lastEnsuredRequirementRoomRef.current = ensureKey;
+    ensureRequirementRoomForAggregate(primaryRequirementSurface.aggregateId);
+  }, [
+    activeCompany,
+    authorityBackedState,
+    ensureRequirementRoomForAggregate,
+    primaryRequirementSurface?.aggregateId,
+    primaryRequirementSurface?.roomStatus,
+  ]);
+
+  useEffect(() => {
+    if (!activeCompany || !primaryRequirementSurface?.aggregate || !resolvedRequirementRoom) {
+      return;
+    }
+    const backfilledRoom = backfillRequirementRoomRecord({
+      company: activeCompany,
+      aggregate: primaryRequirementSurface.aggregate,
+      workItem: primaryRequirementSurface.workItem,
+      room: resolvedRequirementRoom,
+      dispatches: activeDispatches,
+      requests: activeCompany.requests ?? [],
+      evidence: activeRequirementEvidence,
+      snapshots: companySessionSnapshots.filter((snapshot) =>
+        primaryRequirementSurface.roomMemberIds.includes(snapshot.agentId),
+      ),
+    });
+    const existingSignature = buildRequirementRoomRecordSignature(resolvedRequirementRoom);
+    const nextSignature = buildRequirementRoomRecordSignature(backfilledRoom);
+    if (
+      nextSignature === existingSignature ||
+      nextSignature === lastSyncedRoomSignatureRef.current
+    ) {
+      return;
+    }
+    lastSyncedRoomSignatureRef.current = nextSignature;
+    upsertRoomRecord(backfilledRoom);
+  }, [
+    activeCompany,
+    activeDispatches,
+    activeRequirementEvidence,
+    companySessionSnapshots,
+    primaryRequirementSurface,
+    resolvedRequirementRoom,
+    upsertRoomRecord,
+  ]);
 
   useChatPreviewPersistence({
     activeCompanyId: activeCompany?.id ?? null,
@@ -844,6 +1281,7 @@ export function ChatPageScreen() {
     teamMemberCards,
     emptyStateText,
   } = useChatPageSurface({
+    authorityBackedState,
     isGroup,
     sessionKey,
     recentAgentSessionsLength: recentAgentSessions.length,
@@ -859,7 +1297,7 @@ export function ChatPageScreen() {
     effectiveRequirementRoom,
     roomBoundWorkItem,
     persistedWorkItem,
-    messages,
+    messages: displayMessages,
     displayWindowSize,
     displayRequirementProgressGroups,
     latestProgressEvent,
@@ -877,6 +1315,7 @@ export function ChatPageScreen() {
       agentId,
       archiveId,
       activeArchivedRound,
+      authorityBackedState,
       companyRouteReady,
       connected,
       routeCompanyConflictMessage,
@@ -907,6 +1346,7 @@ export function ChatPageScreen() {
       pendingGenerationStartedAtRef,
       setActiveRunId,
       setLoading,
+      setSessionSyncStale,
       setSessionKey,
       setMessages,
       setIsGenerating,
@@ -925,6 +1365,7 @@ export function ChatPageScreen() {
       activeRoomBindings,
       agentId,
       archiveId,
+      authorityBackedState,
       appendRoomMessages,
       companyRouteReady,
       connected,
@@ -950,6 +1391,7 @@ export function ChatPageScreen() {
       routeCompanyConflictMessage,
       restoreGeneratingState,
       sessionKey,
+      setSessionSyncStale,
       setActiveRunId,
       targetAgentId,
       updateStreamText,
@@ -994,6 +1436,7 @@ export function ChatPageScreen() {
     companySyncIntervalMs,
     companySessionSnapshotsRef,
     setHasBootstrappedCompanySync,
+    setCompanySyncStale,
     connected,
     isPageVisible,
     actionWatches,
@@ -1119,6 +1562,39 @@ export function ChatPageScreen() {
     upsertDispatchRecord,
     appendRoomMessages,
   });
+  const handleResolveRequirementDecision = useCallback(
+    async (optionId: string) => {
+      if (!openRequirementDecisionTicket) {
+        return;
+      }
+      const option =
+        openRequirementDecisionTicket.options.find((candidate) => candidate.id === optionId) ?? null;
+      if (!option) {
+        return;
+      }
+      const timestamp = Date.now();
+      setDecisionSubmittingOptionId(optionId);
+      upsertDecisionTicketRecord({
+        ...openRequirementDecisionTicket,
+        status: "resolved",
+        resolutionOptionId: option.id,
+        resolution: option.summary ?? option.label,
+        updatedAt: timestamp,
+      });
+      const resolutionMessage = buildRequirementDecisionResolutionMessage({
+        ticket: openRequirementDecisionTicket,
+        optionId: option.id,
+      });
+      if (resolutionMessage) {
+        const sent = await handleSend(resolutionMessage);
+        if (!sent) {
+          toast.warning("已记录你的决策", "状态已更新，但通知 CEO/需求房失败了。你可以稍后重试发送。");
+        }
+      }
+      setDecisionSubmittingOptionId(null);
+    },
+    [handleSend, openRequirementDecisionTicket, upsertDecisionTicketRecord],
+  );
 
   if (loading) {
     return (
@@ -1141,6 +1617,7 @@ export function ChatPageScreen() {
     >
       <ChatConversationWorkItemSync
         activeCompany={activeCompany}
+        authorityBackedState={authorityBackedState}
         conversationMissionRecord={conversationMissionRecord}
         conversationStateKey={conversationStateKey}
         effectiveRequirementRoom={effectiveRequirementRoom}
@@ -1164,6 +1641,7 @@ export function ChatPageScreen() {
           !isArchiveView &&
           !isFreshConversation &&
           !isRequirementBootstrapPending &&
+          !isManualConfirmationPending &&
           !routeCompanyConflictMessage
         }
         upsertDispatchRecord={upsertDispatchRecord}
@@ -1173,8 +1651,8 @@ export function ChatPageScreen() {
         summary={effectiveSummary}
         actionHint={effectiveActionHint}
         currentStep={displayPlanCurrentStep}
-        nextBatonAgentId={displayNextBatonAgentId}
-        nextBatonLabel={displayNextBatonLabel}
+        nextBatonAgentId={chatSurfaceNextBatonAgentId}
+        nextBatonLabel={chatSurfaceNextBatonLabel}
         shouldDispatchPublish={shouldDispatchPublish}
       />
       {/* 拖拽上传遮罩 */}
@@ -1190,14 +1668,17 @@ export function ChatPageScreen() {
       <ChatSessionHeader
         isGroup={isGroup}
         groupTopic={groupTopic}
-        groupTitle={groupTitle}
+        groupTitle={displayGroupTitle}
+        groupSubtitle={displayGroupSubtitle}
         emp={emp ?? null}
         isArchiveView={isArchiveView}
         showRequirementStatus={Boolean(requirementOverview || isRequirementBootstrapPending)}
         headerStatusBadgeClass={headerStatusBadgeClass}
-        effectiveStatusLabel={effectiveStatusLabel}
+        effectiveStatusLabel={chatSurfaceStatusLabel}
         sessionExecution={sessionExecution}
         sessionKey={sessionKey}
+        connected={connected}
+        isSyncStale={isSyncStale}
         historyLoading={historyLoading}
         canShowSessionHistory={canShowSessionHistory}
         isHistoryMenuOpen={isHistoryMenuOpen}
@@ -1225,9 +1706,23 @@ export function ChatPageScreen() {
         onDeleteArchivedRound={handleDeleteArchivedRound}
         onStopTask={(currentSessionKey, activeRunId) => AgentOps.stopTask(currentSessionKey, activeRunId)}
       />
+      <ChatSyncStatusBanner
+        visible={!isArchiveView && isSyncStale}
+        detail={syncStaleDetail}
+        retrying={recoveringCommunication}
+        onRetry={() => void handleRecoverCommunication()}
+      />
 
       {!isArchiveView ? (
         <>
+          {conversationDraftRequirement ? (
+            <ChatRequirementDraftCard
+              visible={shouldShowDraftCard}
+              draft={conversationDraftRequirement}
+              onPromote={handlePromoteRequirementDraft}
+              onContinueChat={handleContinueDraftChat}
+            />
+          ) : null}
           <ChatMissionStrip
             open={isSummaryOpen}
             onOpenChange={setIsSummaryOpen}
@@ -1238,45 +1733,54 @@ export function ChatPageScreen() {
             isRequirementBootstrapPending={isRequirementBootstrapPending}
             stableDisplayWorkItem={Boolean(stableDisplayWorkItem)}
             sessionExecution={sessionExecution}
-            effectiveHeadline={effectiveHeadline}
-            effectiveTone={effectiveTone}
-            effectiveStatusLabel={effectiveStatusLabel}
-            effectiveOwnerLabel={effectiveOwnerLabel}
-            effectiveStage={effectiveStage}
-            displayNextBatonLabel={displayNextBatonLabel}
+            effectiveHeadline={chatSurfaceHeadline}
+            effectiveTone={chatSurfaceTone}
+            effectiveStatusLabel={chatSurfaceStatusLabel}
+            effectiveOwnerLabel={chatSurfaceOwnerLabel}
+            effectiveStepLabel={chatSurfaceStepLabel}
+            effectiveStage={chatSurfaceStage}
+            displayNextBatonLabel={chatSurfaceNextBatonLabel}
+            collaborationSurface={requirementCollaborationSurface}
             missionIsCompleted={missionIsCompleted}
             sending={sending}
             isGenerating={isGenerating}
-            primaryOpenAction={primaryOpenAction}
-            showRequirementTeamEntry={showRequirementTeamEntry}
-            hasTeamGroupRoute={Boolean(teamGroupRoute)}
+            primaryOpenAction={chatSurfacePrimaryOpenAction}
+            promotionActionLabel={promotionActionLabel}
+            showRequirementTeamEntry={showRequirementTeamEntryResolved}
+            hasTeamGroupRoute={primaryRequirementSurface?.roomStatus === "ready"}
+            showSettledRequirementSummary={showSettledRequirementCard}
+            settledRequirementSummary={settledRequirementSummary}
+            settledRequirementNextAction={chatSurfaceSettledRequirementNextAction}
             hasContextSummary={hasContextSummary}
             onClearSession={() => void handleClearSession()}
             onRunPrimaryAction={(action) => void handleFocusAction(action)}
+            onRunPromotionAction={() => void handlePromoteRequirementDraft()}
             onOpenRequirementTeam={() => {
-              if (teamGroupRoute) {
-                navigate(teamGroupRoute);
-                return;
-              }
-              openSummaryPanel("team");
+              trackChatRequirementMetric({
+                companyId: activeCompany?.id ?? null,
+                conversationId: conversationStateKey,
+                requirementId: persistedWorkItem?.id ?? conversationMissionRecord?.id ?? null,
+                name: "requirement_room_opened_from_ceo_chat",
+              });
+              openRequirementRoom();
             }}
             onOpenSummaryPanel={() => openSummaryPanel("owner")}
             summaryPanel={
               <ChatSummaryPanel
                 open={isSummaryOpen}
                 summaryPanelView={summaryPanelView}
+                isGroup={isGroup}
                 hasTechnicalSummary={hasTechnicalSummary}
-                effectiveHeadline={effectiveHeadline}
+                effectiveHeadline={chatSurfaceHeadline}
                 headerStatusBadgeClass={headerStatusBadgeClass}
-                effectiveStatusLabel={effectiveStatusLabel}
-                effectiveOwnerLabel={effectiveOwnerLabel}
+                effectiveStatusLabel={chatSurfaceStatusLabel}
+                effectiveOwnerLabel={chatSurfaceOwnerLabel}
                 requirementTeamBatonLabel={requirementTeam?.batonLabel ?? null}
-                displayNextBatonLabel={displayNextBatonLabel}
-                effectiveStage={effectiveStage}
-                effectiveActionHint={effectiveActionHint}
+                displayNextBatonLabel={chatSurfaceNextBatonLabel}
+                effectiveStage={chatSurfaceStage}
+                effectiveActionHint={chatSurfaceActionHint}
                 onSummaryPanelViewChange={setSummaryPanelView}
                 activeConversationMission={activeConversationMission}
-                latestStageGate={latestStageGate}
                 isRequirementBootstrapPending={isRequirementBootstrapPending}
                 progressGroupSummary={progressGroupSummary}
                 latestProgressDisplay={latestProgressDisplay}
@@ -1292,10 +1796,16 @@ export function ChatPageScreen() {
                 recoveringCommunication={recoveringCommunication}
                 requirementTeam={requirementTeam}
                 teamMemberCards={teamMemberCards}
-                displayNextBatonAgentId={displayNextBatonAgentId}
+                displayNextBatonAgentId={chatSurfaceNextBatonAgentId}
                 targetAgentId={targetAgentId ?? null}
-                teamGroupRoute={teamGroupRoute}
-                primaryOpenAction={primaryOpenAction}
+                teamGroupRoute={
+                  showRequirementTeamEntryResolved
+                    ? resolvedRequirementRoom
+                      ? buildRequirementRoomHrefFromRecord(resolvedRequirementRoom)
+                      : "__ensure__"
+                    : null
+                }
+                primaryOpenAction={chatSurfacePrimaryOpenAction}
                 summaryRecoveryAction={summaryRecoveryAction}
                 isTechnicalSummaryOpen={isTechnicalSummaryOpen}
                 takeoverPack={
@@ -1309,16 +1819,17 @@ export function ChatPageScreen() {
                 structuredTaskPreview={
                   structuredTaskPreview
                     ? {
-                        summary: structuredTaskPreview.summary ?? effectiveSummary,
+                        summary: structuredTaskPreview.summary ?? chatSurfaceSummary,
                         state: structuredTaskPreview.state ?? null,
                       }
                     : null
                 }
                 hasRequirementOverview={Boolean(requirementOverview)}
-                effectiveSummary={effectiveSummary}
+                effectiveSummary={chatSurfaceSummary}
                 requestPreview={requestPreview}
                 requestHealth={requestHealth}
                 ceoSurface={ceoSurface}
+                collaborationSurface={requirementCollaborationSurface}
                 orgAdvisorSummary={orgAdvisor?.summary ?? null}
                 handoffPreview={handoffPreview}
                 summaryAlertCount={summaryAlertCount}
@@ -1329,64 +1840,10 @@ export function ChatPageScreen() {
                 onNavigateToChat={(nextAgentId) =>
                   navigate(buildCompanyChatRoute(nextAgentId, activeCompany?.id))
                 }
-                onNavigateToTeamGroup={() => {
-                  if (teamGroupRoute) {
-                    navigate(teamGroupRoute);
-                  }
-                }}
+                onNavigateToTeamGroup={openRequirementRoom}
                 onToggleTechnicalSummary={() => setIsTechnicalSummaryOpen((open) => !open)}
                 onCopyTakeoverPack={handleCopyTakeoverPack}
               />
-            }
-          />
-
-          <ChatSettledRequirementCard
-            visible={showSettledRequirementCard}
-            title={
-              stableDisplayWorkItem?.title ??
-              primaryRequirementProjection.workItem?.title ??
-              requirementOverview?.title ??
-              settledRequirementAggregate?.summary ??
-              "当前主线需求"
-            }
-            statusLabel={settledRequirementProductStatus.label}
-            statusClassName={settledRequirementStatusClassName}
-            summary={
-              stableDisplayWorkItem?.displaySummary ??
-              stableDisplayWorkItem?.summary ??
-              requirementOverview?.summary ??
-              settledRequirementAggregate?.summary ??
-              "CEO 已经把这件事收敛成一条可推进的主线。"
-            }
-            ownerLabel={
-              stableDisplayWorkItem?.displayOwnerLabel ??
-              stableDisplayWorkItem?.ownerLabel ??
-              settledRequirementAggregate?.ownerLabel ??
-              "当前负责人"
-            }
-            stage={
-              stableDisplayWorkItem?.displayStage ??
-              stableDisplayWorkItem?.stageLabel ??
-              settledRequirementAggregate?.stage ??
-              "待推进"
-            }
-            nextAction={
-              stableDisplayWorkItem?.displayNextAction ??
-              stableDisplayWorkItem?.nextAction ??
-              settledRequirementAggregate?.nextAction ??
-              "进入需求中心继续推进。"
-            }
-            onOpenRequirementCenter={() => navigate(requirementCenterRoute)}
-            onOpenTeamRoom={
-              teamGroupRoute
-                ? () => navigate(teamGroupRoute)
-                : null
-            }
-            onOpenOwner={
-              settledRequirementOwnerAgentId
-                ? () =>
-                    navigate(buildCompanyChatRoute(settledRequirementOwnerAgentId, activeCompany?.id))
-                : null
             }
           />
 
@@ -1456,11 +1913,15 @@ export function ChatPageScreen() {
           conversationMissionRecordId={conversationMissionRecord?.id ?? null}
           persistedWorkItemId={persistedWorkItem?.id ?? null}
           groupWorkItemId={groupWorkItemId ?? null}
+          openRequirementDecisionTicket={openRequirementDecisionTicket}
+          showLegacyDecisionCard={false}
+          decisionSubmittingOptionId={decisionSubmittingOptionId}
           hasActiveRun={hasActiveRun}
           streamText={deferredStreamText}
           isGenerating={isGenerating}
           emptyStateText={emptyStateText}
           onExpandDisplayWindow={expandDisplayWindow}
+          onSelectDecisionOption={(optionId) => void handleResolveRequirementDecision(optionId)}
           onNavigateToRoute={navigate}
         />
         <div ref={endRef} />

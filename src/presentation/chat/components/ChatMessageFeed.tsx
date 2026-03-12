@@ -2,10 +2,11 @@ import { Sparkles } from "lucide-react";
 import { memo, useMemo } from "react";
 import { useConversationDispatches } from "../../../application/mission";
 import { Avatar, AvatarFallback, AvatarImage } from "../../../components/ui/avatar";
-import type { DispatchRecord } from "../../../domain/delegation/types";
+import type { DecisionTicketRecord, DispatchRecord } from "../../../domain/delegation/types";
 import type { ChatDisplayItem } from "../view-models/messages";
 import {
   extractTextFromMessage,
+  findInlineRequirementDecisionAnchorId,
   getRenderableMessageContent,
 } from "../view-models/messages";
 import { getChatSenderIdentity } from "../view-models/sender-identity";
@@ -13,8 +14,22 @@ import type { EmployeeRef } from "../../../domain/org/types";
 import { cn, formatTime, getAvatarUrl } from "../../../lib/utils";
 import { ChatContent } from "./ChatContent";
 import { ChatAssignmentActions } from "./ChatAssignmentActions";
+import { ChatDecisionTicketCard } from "./ChatDecisionTicketCard";
 
-function getDispatchStatusMeta(status: DispatchRecord["status"]) {
+function getDispatchStatusMeta(dispatch: DispatchRecord) {
+  if (dispatch.status === "pending" && dispatch.deliveryState === "unknown") {
+    return {
+      label: "投递未确认",
+      className: "border-amber-200 bg-amber-50 text-amber-700",
+    };
+  }
+  if (dispatch.status === "pending" && dispatch.deliveryState === "pending") {
+    return {
+      label: "待发送",
+      className: "border-slate-200 bg-slate-50 text-slate-500",
+    };
+  }
+  const status = dispatch.status;
   if (status === "answered") {
     return {
       label: "已回复",
@@ -70,11 +85,15 @@ type ChatMessageFeedProps = {
   conversationMissionRecordId: string | null;
   persistedWorkItemId: string | null;
   groupWorkItemId: string | null;
+  openRequirementDecisionTicket: DecisionTicketRecord | null;
+  showLegacyDecisionCard: boolean;
+  decisionSubmittingOptionId: string | null;
   hasActiveRun: boolean;
   streamText: string | null;
   isGenerating: boolean;
   emptyStateText: string;
   onExpandDisplayWindow: (nextSize: number) => void;
+  onSelectDecisionOption: (optionId: string) => Promise<unknown> | void;
   onNavigateToRoute: (route: string) => void;
 };
 
@@ -104,14 +123,30 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
     const records = new Map<string, DispatchRecord>();
     activeDispatches.forEach((dispatch) => {
       if (dispatch.sourceMessageId?.trim()) {
-        records.set(dispatch.sourceMessageId, dispatch);
+        const current = records.get(dispatch.sourceMessageId);
+        if (!current || dispatch.updatedAt >= current.updatedAt) {
+          records.set(dispatch.sourceMessageId, dispatch);
+        }
       }
       if (dispatch.responseMessageId?.trim()) {
-        records.set(dispatch.responseMessageId, dispatch);
+        const current = records.get(dispatch.responseMessageId);
+        if (!current || dispatch.updatedAt >= current.updatedAt) {
+          records.set(dispatch.responseMessageId, dispatch);
+        }
       }
     });
     return records;
   }, [activeDispatches]);
+
+  const inlineDecisionAnchorId = useMemo(
+    () =>
+      findInlineRequirementDecisionAnchorId({
+        displayItems: input.visibleDisplayItems,
+        openDecisionTicket: input.openRequirementDecisionTicket,
+        showLegacyPending: input.showLegacyDecisionCard,
+      }),
+    [input.openRequirementDecisionTicket, input.showLegacyDecisionCard, input.visibleDisplayItems],
+  );
 
   return (
     <>
@@ -170,13 +205,102 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
           activeCompany: null,
           employeesByAgentId,
           isGroup: input.isGroup,
+          isCeoSession: input.isCeoSession,
           groupTopic: input.groupTopic,
           emp: input.emp,
           effectiveOwnerAgentId: input.effectiveOwnerAgentId,
           requirementRoomSessionsLength: input.requirementRoomSessionsLength,
         });
+        if (item.kind === "report") {
+          const statusClassName =
+            item.report.status === "answered"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : item.report.status === "acknowledged"
+                ? "border-sky-200 bg-sky-50 text-sky-700"
+                : "border-rose-200 bg-rose-50 text-rose-700";
+
+          return (
+            <div
+              key={item.id}
+              className={`group flex max-w-full ${sender.isOutgoing ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`flex max-w-full gap-3 lg:max-w-[95%] xl:max-w-[90%] ${sender.isOutgoing ? "flex-row-reverse" : "flex-row"}`}
+              >
+                {sender.isOutgoing ? (
+                  <Avatar className="mt-1 h-6 w-6 shrink-0 rounded-md border border-slate-200 bg-slate-100">
+                    <AvatarImage
+                      src={getAvatarUrl(undefined, undefined, sender.avatarSeed)}
+                      className="object-cover"
+                    />
+                    <AvatarFallback className="rounded-md bg-zinc-800 font-mono text-[10px] text-zinc-500">
+                      {sender.name.slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                ) : (
+                  <Avatar className="mt-1 h-8 w-8 shrink-0 border bg-white">
+                    <AvatarImage src={`https://api.dicebear.com/7.x/bottts/svg?seed=${sender.avatarSeed}`} />
+                  </Avatar>
+                )}
+                <div className={`min-w-0 ${sender.isOutgoing ? "items-end" : "items-start"} flex flex-col`}>
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="select-none text-xs text-muted-foreground">
+                      {sender.name} · {formatTime(msg.timestamp || undefined)}
+                    </span>
+                    {sender.metaLabel ? (
+                      <span className="text-[10px] text-slate-400">{sender.metaLabel}</span>
+                    ) : null}
+                  </div>
+                  <div className="max-w-full rounded-2xl border border-indigo-200 bg-white px-4 py-3 shadow-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
+                        协作者回执
+                      </span>
+                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusClassName}`}>
+                        {item.report.statusLabel}
+                      </span>
+                      <span className="text-[11px] font-medium text-slate-500">
+                        {item.report.reportType}
+                      </span>
+                    </div>
+                    <div className="mt-3 text-sm font-medium leading-6 text-slate-900">
+                      {item.report.summary}
+                    </div>
+                    {item.report.detail && !item.report.showFullContent ? (
+                      <div className="mt-2 text-sm leading-6 text-slate-600">
+                        {item.report.detail}
+                      </div>
+                    ) : null}
+                    {item.report.showFullContent ? (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                        <ChatContent
+                          content={[{ type: "text", text: item.report.cleanText }]}
+                          hideToolActivityBlocks
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                  {item.id === inlineDecisionAnchorId ? (
+                    <ChatDecisionTicketCard
+                      ticket={input.openRequirementDecisionTicket}
+                      legacyPending={input.showLegacyDecisionCard && !input.openRequirementDecisionTicket}
+                      submittingOptionId={input.decisionSubmittingOptionId}
+                      disabled={false}
+                      onSelectOption={input.onSelectDecisionOption}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          );
+        }
         const renderableContent = getRenderableMessageContent(msg.content);
-        const bubbleContent = renderableContent ?? msg.content;
+        const bubbleContent =
+          renderableContent ??
+          msg.content ??
+          (typeof msg.text === "string" && msg.text.trim().length > 0
+            ? [{ type: "text", text: msg.text }]
+            : undefined);
         const assignmentText = msg.role === "assistant" ? extractTextFromMessage(msg) : null;
         const roomMessageId =
           typeof msg.roomMessageId === "string" && msg.roomMessageId.trim().length > 0
@@ -199,9 +323,10 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
             : typeof msg.roomSenderLabel === "string" && msg.roomSenderLabel.trim().length > 0
               ? msg.roomSenderLabel.trim()
               : null;
-        const dispatchMeta = linkedDispatch ? getDispatchStatusMeta(linkedDispatch.status) : null;
+        const dispatchMeta = linkedDispatch ? getDispatchStatusMeta(linkedDispatch) : null;
         const showRoomMeta =
           input.isGroup &&
+          !sender.isOutgoing &&
           (audienceLabels.length > 0 ||
             Boolean(sourceLabel) ||
             Boolean(linkedDispatch) ||
@@ -279,6 +404,7 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
                       companyId={input.companyId}
                       employees={input.employees}
                       isCeoSession={input.isCeoSession}
+                      isGroup={input.isGroup}
                       targetAgentId={input.targetAgentId}
                       currentConversationRequirementTopicKey={
                         input.currentConversationRequirementTopicKey
@@ -344,6 +470,15 @@ const ChatMessageList = memo(function ChatMessageList(input: ChatMessageListProp
                     </div>
                   ) : null}
                 </div>
+                {item.id === inlineDecisionAnchorId ? (
+                  <ChatDecisionTicketCard
+                    ticket={input.openRequirementDecisionTicket}
+                    legacyPending={input.showLegacyDecisionCard && !input.openRequirementDecisionTicket}
+                    submittingOptionId={input.decisionSubmittingOptionId}
+                    disabled={false}
+                    onSelectOption={input.onSelectDecisionOption}
+                  />
+                ) : null}
               </div>
             </div>
           </div>
@@ -444,8 +579,12 @@ export const ChatMessageFeed = memo(function ChatMessageFeed(input: ChatMessageF
         conversationMissionRecordId={input.conversationMissionRecordId}
         persistedWorkItemId={input.persistedWorkItemId}
         groupWorkItemId={input.groupWorkItemId}
+        openRequirementDecisionTicket={input.openRequirementDecisionTicket}
+        showLegacyDecisionCard={input.showLegacyDecisionCard}
+        decisionSubmittingOptionId={input.decisionSubmittingOptionId}
         emptyStateText={input.emptyStateText}
         onExpandDisplayWindow={input.onExpandDisplayWindow}
+        onSelectDecisionOption={input.onSelectDecisionOption}
         onNavigateToRoute={input.onNavigateToRoute}
       />
       <ChatStreamingState

@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -10,11 +11,20 @@ import {
 } from "lucide-react";
 import type {
   GatewayConfigSnapshot,
+  GatewayDoctorBaseline,
   GatewayProviderConfig,
   GatewaySettingsCommandsResult,
   GatewaySettingsQueryResult,
   GatewayTelegramConfig,
 } from "../../../application/gateway/settings";
+import { buildCollaborationContextSnapshot } from "../../../application/company/collaboration-context";
+import { buildDefaultOrgSettings } from "../../../domain/org/autonomy-policy";
+import type {
+  CollaborationEdge,
+  CompanyCollaborationPolicy,
+  Department,
+  EmployeeRef,
+} from "../../../domain/org/types";
 import { ActionFormDialog } from "../../../components/ui/action-form-dialog";
 import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
@@ -33,6 +43,105 @@ type RunCommand = (
   command: () => Promise<{ title: string; description: string } | null>,
   fallbackError: string,
 ) => Promise<{ title: string; description: string } | null>;
+
+type EndpointKind = "department" | "agent";
+
+function doctorToneClass(state: "ready" | "degraded" | "blocked") {
+  if (state === "ready") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (state === "blocked") {
+    return "border-red-200 bg-red-50 text-red-700";
+  }
+  return "border-amber-200 bg-amber-50 text-amber-700";
+}
+
+function formatEmployeeLabel(employee: EmployeeRef) {
+  return `${employee.nickname} (${employee.role})`;
+}
+
+function formatDepartmentLabel(
+  department: Department,
+  employeesById: Map<string, EmployeeRef>,
+) {
+  const lead = employeesById.get(department.leadAgentId);
+  return `${department.name}${lead ? ` · ${lead.nickname}` : ""}`;
+}
+
+function describeCollaborationEdge(
+  edge: CollaborationEdge,
+  employeesById: Map<string, EmployeeRef>,
+  departmentsById: Map<string, Department>,
+) {
+  const from =
+    (edge.fromAgentId && employeesById.get(edge.fromAgentId)
+      ? formatEmployeeLabel(employeesById.get(edge.fromAgentId)!)
+      : null) ??
+    (edge.fromDepartmentId && departmentsById.get(edge.fromDepartmentId)
+      ? formatDepartmentLabel(departmentsById.get(edge.fromDepartmentId)!, employeesById)
+      : null) ??
+    edge.fromAgentId ??
+    edge.fromDepartmentId ??
+    "未知来源";
+  const to =
+    (edge.toAgentId && employeesById.get(edge.toAgentId)
+      ? formatEmployeeLabel(employeesById.get(edge.toAgentId)!)
+      : null) ??
+    (edge.toDepartmentId && departmentsById.get(edge.toDepartmentId)
+      ? formatDepartmentLabel(departmentsById.get(edge.toDepartmentId)!, employeesById)
+      : null) ??
+    edge.toAgentId ??
+    edge.toDepartmentId ??
+    "未知目标";
+  const fromKind = edge.fromDepartmentId ? "部门" : "员工";
+  const toKind = edge.toDepartmentId ? "部门" : "员工";
+  return `${fromKind} ${from} -> ${toKind} ${to}`;
+}
+
+function isSameEdge(left: CollaborationEdge, right: CollaborationEdge) {
+  return (
+    left.fromAgentId === right.fromAgentId &&
+    left.fromDepartmentId === right.fromDepartmentId &&
+    left.toAgentId === right.toAgentId &&
+    left.toDepartmentId === right.toDepartmentId
+  );
+}
+
+function createCollaborationEdgeDraft(
+  fromKind: EndpointKind,
+  fromId: string,
+  toKind: EndpointKind,
+  toId: string,
+): CollaborationEdge {
+  return {
+    ...(fromKind === "agent" ? { fromAgentId: fromId } : { fromDepartmentId: fromId }),
+    ...(toKind === "agent" ? { toAgentId: toId } : { toDepartmentId: toId }),
+  };
+}
+
+function CollaborationPolicyToggle(props: {
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  const { label, active, disabled, onToggle } = props;
+  return (
+    <button
+      type="button"
+      className={`rounded-lg border px-3 py-2 text-left text-sm transition ${
+        active
+          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+          : "border-slate-200 bg-white text-slate-600"
+      } ${disabled ? "cursor-not-allowed opacity-60" : "hover:border-indigo-300 hover:bg-indigo-50/60"}`}
+      onClick={() => onToggle(!active)}
+      disabled={disabled}
+    >
+      <div className="font-medium">{label}</div>
+      <div className="mt-1 text-[11px]">{active ? "已启用" : "已关闭"}</div>
+    </button>
+  );
+}
 
 export function SettingsHeader(props: {
   connected: boolean;
@@ -79,6 +188,81 @@ export function SettingsHeader(props: {
   );
 }
 
+export function SettingsDoctorSection(props: {
+  doctorBaseline: GatewayDoctorBaseline;
+}) {
+  const { doctorBaseline } = props;
+
+  return (
+    <Card className="shadow-sm border-slate-200">
+      <CardHeader className="pb-3 border-b bg-slate-50/70">
+        <CardTitle className="flex items-center justify-between gap-3 text-lg">
+          <div className="flex items-center gap-2">
+            <Server className="w-5 h-5 text-slate-500" />
+            V1 稳定性 Doctor 基线
+          </div>
+          <Badge variant="outline" className={doctorToneClass(doctorBaseline.overallState)}>
+            {doctorBaseline.overallState}
+          </Badge>
+        </CardTitle>
+        <CardDescription>
+          先分清 Gateway / Authority / Executor / Runtime 四层状态，再决定该修哪里。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-4 space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          {doctorBaseline.layers.map((layer) => (
+            <div key={layer.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-slate-900">{layer.label}</div>
+                <Badge variant="outline" className={doctorToneClass(layer.state)}>
+                  {layer.state}
+                </Badge>
+              </div>
+              <div className="text-xs text-slate-700">{layer.summary}</div>
+              <div className="text-[11px] text-slate-500 break-all">{layer.detail}</div>
+              {layer.timestamp ? (
+                <div className="text-[11px] text-slate-400">最近时间：{formatTime(layer.timestamp)}</div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-sm font-semibold text-slate-900">当前写入边界</div>
+            <div className="mt-2 text-xs text-slate-600">
+              运行模式：<span className="font-mono">{doctorBaseline.mode}</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-600">
+              `/runtime` 兼容路径：{doctorBaseline.compatibilityPathEnabled ? "仍开启" : "已关闭"}
+            </div>
+            <div className="mt-1 text-xs text-slate-600">
+              已切到 command 的链路：{doctorBaseline.commandRoutes.join(", ")}
+            </div>
+            {doctorBaseline.lastError ? (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                最近同步错误：{doctorBaseline.lastError}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-sm font-semibold text-slate-900">固定回归清单</div>
+            <div className="mt-2 space-y-1">
+              {doctorBaseline.validationChecklist.map((item) => (
+                <div key={item} className="text-xs text-slate-600">
+                  - {item}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsGatewayCompanySection(props: {
   token: string | null;
   connected: boolean;
@@ -86,16 +270,20 @@ export function SettingsGatewayCompanySection(props: {
     companies: Array<{ id: string; icon?: string; name: string }>;
     activeCompanyId?: string | null;
   } | null;
-  activeCompany: { orgSettings?: { lastAutoCalibratedAt?: number | null; lastAutoCalibrationActions?: string[] | null }; name: string } | null;
+  activeCompany: GatewaySettingsQueryResult["activeCompany"];
   loading: boolean;
   companyCount: number;
   orgAutopilotEnabled: boolean;
   orgAutopilotSaving: boolean;
+  collaborationPolicySaving: boolean;
   switchCompany: (id: string) => void;
   loadConfig: () => Promise<unknown>;
   reconnectGateway: () => void;
   disconnectGateway: () => void;
   handleToggleOrgAutopilot: () => Promise<{ title: string; description: string } | null>;
+  handleUpdateCollaborationPolicy: (
+    collaborationPolicy: CompanyCollaborationPolicy,
+  ) => Promise<{ title: string; description: string } | null>;
   runCommand: RunCommand;
 }) {
   const {
@@ -107,13 +295,128 @@ export function SettingsGatewayCompanySection(props: {
     companyCount,
     orgAutopilotEnabled,
     orgAutopilotSaving,
+    collaborationPolicySaving,
     switchCompany,
     loadConfig,
     reconnectGateway,
     disconnectGateway,
     handleToggleOrgAutopilot,
+    handleUpdateCollaborationPolicy,
     runCommand,
   } = props;
+
+  const orgSettings = useMemo(
+    () => (activeCompany ? buildDefaultOrgSettings(activeCompany.orgSettings) : null),
+    [activeCompany],
+  );
+  const collaborationPolicy = orgSettings?.collaborationPolicy ?? null;
+  const employeeOptions = useMemo(
+    () =>
+      (activeCompany?.employees ?? [])
+        .slice()
+        .sort((left, right) => left.nickname.localeCompare(right.nickname, "zh-CN")),
+    [activeCompany],
+  );
+  const departmentOptions = useMemo(
+    () =>
+      (activeCompany?.departments ?? [])
+        .filter((department) => !department.archived)
+        .slice()
+        .sort((left, right) => (left.order ?? 0) - (right.order ?? 0)),
+    [activeCompany],
+  );
+  const employeesById = useMemo(
+    () => new Map(employeeOptions.map((employee) => [employee.agentId, employee] as const)),
+    [employeeOptions],
+  );
+  const departmentsById = useMemo(
+    () => new Map(departmentOptions.map((department) => [department.id, department] as const)),
+    [departmentOptions],
+  );
+  const [previewAgentId, setPreviewAgentId] = useState("");
+  const [edgeFromKind, setEdgeFromKind] = useState<EndpointKind>("department");
+  const [edgeFromId, setEdgeFromId] = useState("");
+  const [edgeToKind, setEdgeToKind] = useState<EndpointKind>("department");
+  const [edgeToId, setEdgeToId] = useState("");
+
+  useEffect(() => {
+    if (!employeeOptions.some((employee) => employee.agentId === previewAgentId)) {
+      setPreviewAgentId(employeeOptions[0]?.agentId ?? "");
+    }
+  }, [employeeOptions, previewAgentId]);
+
+  useEffect(() => {
+    const options = edgeFromKind === "agent" ? employeeOptions : departmentOptions;
+    const optionIds = new Set(
+      options.map((option) => ("agentId" in option ? option.agentId : option.id)),
+    );
+    if (!optionIds.has(edgeFromId)) {
+      setEdgeFromId(
+        edgeFromKind === "agent"
+          ? employeeOptions[0]?.agentId ?? ""
+          : departmentOptions[0]?.id ?? "",
+      );
+    }
+  }, [departmentOptions, edgeFromId, edgeFromKind, employeeOptions]);
+
+  useEffect(() => {
+    const options = edgeToKind === "agent" ? employeeOptions : departmentOptions;
+    const optionIds = new Set(
+      options.map((option) => ("agentId" in option ? option.agentId : option.id)),
+    );
+    if (!optionIds.has(edgeToId)) {
+      setEdgeToId(
+        edgeToKind === "agent"
+          ? employeeOptions[0]?.agentId ?? ""
+          : departmentOptions[0]?.id ?? "",
+      );
+    }
+  }, [departmentOptions, edgeToId, edgeToKind, employeeOptions]);
+
+  const previewScope = useMemo(() => {
+    if (!activeCompany || !previewAgentId) {
+      return null;
+    }
+    return buildCollaborationContextSnapshot({
+      company: activeCompany,
+      agentId: previewAgentId,
+    });
+  }, [activeCompany, previewAgentId]);
+
+  const updatePolicy = (nextPolicy: CompanyCollaborationPolicy) =>
+    runCommand(
+      () => handleUpdateCollaborationPolicy(nextPolicy),
+      "协作策略更新失败",
+    );
+
+  const explicitEdges = collaborationPolicy?.explicitEdges ?? [];
+
+  const addExplicitEdge = async () => {
+    if (!collaborationPolicy || !edgeFromId || !edgeToId) {
+      return null;
+    }
+    const nextEdge = createCollaborationEdgeDraft(edgeFromKind, edgeFromId, edgeToKind, edgeToId);
+    if (explicitEdges.some((edge) => isSameEdge(edge, nextEdge))) {
+      return {
+        title: "协作边未变化",
+        description: "这条显式协作边已经存在。",
+      };
+    }
+    return updatePolicy({
+      ...collaborationPolicy,
+      explicitEdges: [...explicitEdges, nextEdge],
+    });
+  };
+
+  const removeExplicitEdge = async (edge: CollaborationEdge) => {
+    if (!collaborationPolicy) {
+      return null;
+    }
+    return updatePolicy({
+      ...collaborationPolicy,
+      explicitEdges: explicitEdges.filter((current) => !isSameEdge(current, edge)),
+    });
+  };
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -237,6 +540,269 @@ export function SettingsGatewayCompanySection(props: {
                         : "开启自动调整"}
                   </Button>
                 </div>
+              </div>
+            </div>
+          )}
+          {activeCompany && collaborationPolicy && (
+            <div className="rounded-xl border border-sky-200 bg-sky-50/40 p-4 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">协作策略</div>
+                  <div className="mt-1 text-xs leading-5 text-slate-600">
+                    维护谁可以正式使用 <span className="font-mono">company_dispatch</span> 协作，以及默认汇报链与显式跨部门边。
+                  </div>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={
+                    collaborationPolicySaving
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-sky-200 bg-white text-sky-700"
+                  }
+                >
+                  {collaborationPolicySaving ? "保存中" : "中心规则"}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  默认规则
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <CollaborationPolicyToggle
+                    label="CEO / HR 全局协作"
+                    active={collaborationPolicy.globalDispatchMetaRoles?.includes("ceo") ?? false}
+                    disabled={collaborationPolicySaving}
+                    onToggle={(next) =>
+                      void updatePolicy({
+                        ...collaborationPolicy,
+                        globalDispatchMetaRoles: next ? ["ceo", "hr"] : [],
+                      })
+                    }
+                  />
+                  <CollaborationPolicyToggle
+                    label="负责人可派本部门成员"
+                    active={collaborationPolicy.allowDepartmentLeadToDispatchWithinDepartment ?? false}
+                    disabled={collaborationPolicySaving}
+                    onToggle={(next) =>
+                      void updatePolicy({
+                        ...collaborationPolicy,
+                        allowDepartmentLeadToDispatchWithinDepartment: next,
+                      })
+                    }
+                  />
+                  <CollaborationPolicyToggle
+                    label="负责人可联系支持负责人"
+                    active={collaborationPolicy.allowDepartmentLeadToDispatchToSupportLeads ?? false}
+                    disabled={collaborationPolicySaving}
+                    onToggle={(next) =>
+                      void updatePolicy({
+                        ...collaborationPolicy,
+                        allowDepartmentLeadToDispatchToSupportLeads: next,
+                      })
+                    }
+                  />
+                  <CollaborationPolicyToggle
+                    label="负责人可直接联系 CEO"
+                    active={collaborationPolicy.allowDepartmentLeadToDispatchToCeo ?? false}
+                    disabled={collaborationPolicySaving}
+                    onToggle={(next) =>
+                      void updatePolicy({
+                        ...collaborationPolicy,
+                        allowDepartmentLeadToDispatchToCeo: next,
+                      })
+                    }
+                  />
+                  <CollaborationPolicyToggle
+                    label="员工可派同部门同事"
+                    active={collaborationPolicy.allowDepartmentMembersWithinDepartment ?? false}
+                    disabled={collaborationPolicySaving}
+                    onToggle={(next) =>
+                      void updatePolicy({
+                        ...collaborationPolicy,
+                        allowDepartmentMembersWithinDepartment: next,
+                      })
+                    }
+                  />
+                  <CollaborationPolicyToggle
+                    label="员工可向直属经理派单"
+                    active={collaborationPolicy.allowDepartmentMembersToManager ?? false}
+                    disabled={collaborationPolicySaving}
+                    onToggle={(next) =>
+                      void updatePolicy({
+                        ...collaborationPolicy,
+                        allowDepartmentMembersToManager: next,
+                      })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  显式协作边
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-[auto,1fr,auto,1fr,auto]">
+                  <select
+                    value={edgeFromKind}
+                    onChange={(event) => setEdgeFromKind(event.target.value as EndpointKind)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="department">来源部门</option>
+                    <option value="agent">来源员工</option>
+                  </select>
+                  <select
+                    value={edgeFromId}
+                    onChange={(event) => setEdgeFromId(event.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                  >
+                    {(edgeFromKind === "agent" ? employeeOptions : departmentOptions).map((option) => (
+                      <option
+                        key={"agentId" in option ? option.agentId : option.id}
+                        value={"agentId" in option ? option.agentId : option.id}
+                      >
+                        {"agentId" in option
+                          ? formatEmployeeLabel(option)
+                          : formatDepartmentLabel(option, employeesById)}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex items-center justify-center text-xs font-semibold text-slate-500">
+                    可以正式协作给
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <select
+                      value={edgeToKind}
+                      onChange={(event) => setEdgeToKind(event.target.value as EndpointKind)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                    >
+                      <option value="department">目标部门</option>
+                      <option value="agent">目标员工</option>
+                    </select>
+                    <select
+                      value={edgeToId}
+                      onChange={(event) => setEdgeToId(event.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                    >
+                      {(edgeToKind === "agent" ? employeeOptions : departmentOptions).map((option) => (
+                        <option
+                          key={"agentId" in option ? option.agentId : option.id}
+                          value={"agentId" in option ? option.agentId : option.id}
+                        >
+                          {"agentId" in option
+                            ? formatEmployeeLabel(option)
+                            : formatDepartmentLabel(option, employeesById)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => void addExplicitEdge()}
+                    disabled={collaborationPolicySaving || !edgeFromId || !edgeToId}
+                  >
+                    添加
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {explicitEdges.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-slate-200 bg-white px-3 py-4 text-sm text-slate-500">
+                      当前没有显式跨默认规则的协作边。新员工会先按默认部门规则自动获得通信范围。
+                    </div>
+                  ) : (
+                    explicitEdges.map((edge, index) => (
+                      <div
+                        key={`${edge.fromAgentId ?? edge.fromDepartmentId ?? "?"}:${edge.toAgentId ?? edge.toDepartmentId ?? "?"}:${index}`}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <div className="text-sm text-slate-700">
+                          {describeCollaborationEdge(edge, employeesById, departmentsById)}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                          onClick={() => void removeExplicitEdge(edge)}
+                          disabled={collaborationPolicySaving}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">作用域预览</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      选择任意员工，查看当前协作策略实际展开后的可派单对象和汇报链。
+                    </div>
+                  </div>
+                  <select
+                    value={previewAgentId}
+                    onChange={(event) => setPreviewAgentId(event.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                  >
+                    {employeeOptions.map((employee) => (
+                      <option key={employee.agentId} value={employee.agentId}>
+                        {formatEmployeeLabel(employee)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {previewScope && (
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Allowed Dispatch Targets
+                      </div>
+                      <div className="mt-2 space-y-1 text-sm text-slate-700">
+                        {previewScope.allowedDispatchTargets.map((target) => (
+                          <div key={target.agentId}>
+                            {target.nickname} · {target.reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Default Report Chain
+                      </div>
+                      <div className="mt-2 space-y-1 text-sm text-slate-700">
+                        {previewScope.defaultReportChain.length === 0 ? (
+                          <div>当前没有上级链路</div>
+                        ) : (
+                          previewScope.defaultReportChain.map((actor) => (
+                            <div key={actor.agentId}>{actor.nickname}</div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Support Targets
+                      </div>
+                      <div className="mt-2 space-y-1 text-sm text-slate-700">
+                        {previewScope.supportTargets.map((target) => (
+                          <div key={target.agentId}>{target.nickname}</div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Escalation Targets
+                      </div>
+                      <div className="mt-2 space-y-1 text-sm text-slate-700">
+                        {previewScope.escalationTargets.map((target) => (
+                          <div key={target.agentId}>{target.nickname}</div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

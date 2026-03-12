@@ -16,6 +16,7 @@ import {
 } from "../view-models/summary-cards";
 
 type UseChatPageSurfaceInput = {
+  authorityBackedState: boolean;
   isGroup: boolean;
   sessionKey: string | null;
   recentAgentSessionsLength: number;
@@ -46,6 +47,7 @@ export function useChatPageSurface(input: UseChatPageSurfaceInput) {
   const pageState = useMemo(
     () =>
       buildChatPageState({
+        authorityBackedState: input.authorityBackedState,
         isGroup: input.isGroup,
         sessionKey: input.sessionKey,
         recentAgentSessionsLength: input.recentAgentSessionsLength,
@@ -65,6 +67,7 @@ export function useChatPageSurface(input: UseChatPageSurfaceInput) {
     [
       input.actionWatches.length,
       input.archiveHistoryNotice,
+      input.authorityBackedState,
       input.connected,
       input.effectiveRequirementRoom,
       input.hasActiveCompany,

@@ -12,6 +12,7 @@ import type { Company } from "../../../domain/org/types";
 
 type ChatConversationWorkItemSyncProps = {
   activeCompany: Company | null;
+  authorityBackedState: boolean;
   conversationMissionRecord: ConversationMissionRecord | null;
   conversationStateKey: string | null;
   effectiveRequirementRoom: RequirementRoomRecord | null;
@@ -34,6 +35,7 @@ export const ChatConversationWorkItemSync = memo(function ChatConversationWorkIt
 ) {
   const {
     activeCompany,
+    authorityBackedState,
     conversationMissionRecord,
     conversationStateKey,
     effectiveRequirementRoom,
@@ -91,6 +93,7 @@ export const ChatConversationWorkItemSync = memo(function ChatConversationWorkIt
 
   useEffect(() => {
     if (
+      authorityBackedState ||
       !shouldPersistConversationTruth ||
       !reconciledConversationWorkItem ||
       !shouldPersistReconciledConversationWorkItem
@@ -107,6 +110,7 @@ export const ChatConversationWorkItemSync = memo(function ChatConversationWorkIt
       );
     }
   }, [
+    authorityBackedState,
     conversationStateKey,
     setConversationCurrentWorkKey,
     shouldPersistConversationTruth,

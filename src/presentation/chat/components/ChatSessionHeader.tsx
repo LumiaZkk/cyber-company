@@ -13,6 +13,7 @@ export function ChatSessionHeader(input: {
   isGroup: boolean;
   groupTopic: string | null;
   groupTitle: string;
+  groupSubtitle?: string | null;
   emp: EmployeeRef | null;
   isArchiveView: boolean;
   showRequirementStatus: boolean;
@@ -20,6 +21,8 @@ export function ChatSessionHeader(input: {
   effectiveStatusLabel: string;
   sessionExecution: ResolvedExecutionState;
   sessionKey: string | null;
+  connected: boolean;
+  isSyncStale?: boolean;
   historyLoading: boolean;
   canShowSessionHistory: boolean;
   isHistoryMenuOpen: boolean;
@@ -51,6 +54,7 @@ export function ChatSessionHeader(input: {
     isGroup,
     groupTopic,
     groupTitle,
+    groupSubtitle,
     emp,
     isArchiveView,
     showRequirementStatus,
@@ -58,6 +62,8 @@ export function ChatSessionHeader(input: {
     effectiveStatusLabel,
     sessionExecution,
     sessionKey,
+    connected,
+    isSyncStale,
     historyLoading,
     canShowSessionHistory,
     isHistoryMenuOpen,
@@ -106,7 +112,7 @@ export function ChatSessionHeader(input: {
           <div className="flex flex-col">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold text-slate-900">
-                {isGroup ? `需求团队: ${groupTitle}` : emp?.nickname}
+                {isGroup ? groupTitle : emp?.nickname}
               </span>
               {isArchiveView ? (
                 <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">
@@ -119,16 +125,25 @@ export function ChatSessionHeader(input: {
               )}
             </div>
             <span className="text-[10px] text-slate-500">
-              {isArchiveView ? "归档轮次（只读）" : isGroup ? "需求团队房间" : emp?.role}
+              {isArchiveView
+                ? "归档轮次（只读）"
+                : isGroup
+                  ? (groupSubtitle?.trim() || "需求团队房间")
+                  : emp?.role}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-1.5 text-xs text-slate-400">
-            {sessionKey ? (
+            {sessionKey && connected && !isSyncStale ? (
               <>
                 <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.5)]" />
                 <span className="select-none">会话已连接</span>
+              </>
+            ) : sessionKey && isSyncStale ? (
+              <>
+                <div className="h-1.5 w-1.5 rounded-full bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.4)]" />
+                <span className="select-none">状态可能过期</span>
               </>
             ) : (
               <>

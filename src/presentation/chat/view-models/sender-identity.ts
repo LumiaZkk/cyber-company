@@ -17,6 +17,7 @@ type GetChatSenderIdentityInput = {
   activeCompany?: Company | null;
   employeesByAgentId?: Map<string, EmployeeRef>;
   isGroup: boolean;
+  isCeoSession?: boolean;
   groupTopic?: string | null;
   emp?: EmployeeRef | null;
   effectiveOwnerAgentId?: string | null;
@@ -124,6 +125,18 @@ export function getChatSenderIdentity({
     };
   }
 
+  if (!isGroup && msg.role === "user" && roomEmployee) {
+    return {
+      name: roomEmployee.nickname,
+      avatarSeed: roomEmployee.agentId,
+      isOutgoing: false,
+      isRelayed: true,
+      badgeLabel: "协作回传",
+      badgeTone: "indigo",
+      metaLabel: roomEmployee.role,
+    };
+  }
+
   if (isGroup && msg.role === "user" && roomSessionEmployee) {
     return {
       name: roomSessionEmployee.nickname,
@@ -136,16 +149,25 @@ export function getChatSenderIdentity({
     };
   }
 
+  if (msg.role === "user" && !isGroup) {
+    return {
+      name: "我",
+      avatarSeed: "me",
+      isOutgoing: true,
+      isRelayed: false,
+    };
+  }
+
   const extractedName = rawText ? extractNameFromMessage(rawText) : null;
   if (extractedName && msg.role === "user") {
     return {
-      name: extractedName.length > 10 ? "外部消息" : extractedName,
+      name: extractedName.length > 10 ? "同步转发" : extractedName,
       avatarSeed: extractedName,
       isOutgoing: false,
       isRelayed: true,
-      badgeLabel: isGroup ? "团队转述" : "代传消息",
+      badgeLabel: "同步转发",
       badgeTone: "amber",
-      metaLabel: isGroup ? "来自需求团队房间" : "来源未完全确认",
+      metaLabel: "跨会话消息",
     };
   }
 

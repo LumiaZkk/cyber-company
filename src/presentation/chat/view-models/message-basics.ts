@@ -44,8 +44,18 @@ export function normalizeMessage(raw: ChatMessage): ChatMessage {
   };
 }
 
+function stripSyntheticDispatchAudienceTitle(message: ChatMessage, text: string): string {
+  if (message.roomMessageSource !== "owner_dispatch") {
+    return text;
+  }
+  return text
+    .replace(/^(?:需求团队派单\s*·\s*[^\n]+|[^\n]+?\s*·\s*群发派单)\n+/u, "")
+    .trim();
+}
+
 function normalizeChatDisplaySignature(message: ChatMessage): string {
-  const text = extractTextFromMessage(message);
+  const rawText = extractTextFromMessage(message);
+  const text = rawText ? stripSyntheticDispatchAudienceTitle(message, rawText) : null;
   if (!text) {
     return "";
   }
@@ -117,7 +127,13 @@ export function dedupeVisibleChatMessages(messages: ChatMessage[]): ChatMessage[
       const scopeKey = resolveDisplayConversationScopeKey(message);
       const semanticKey = `${scopeKey}::${message.role}::${senderKey}::${currentText}`;
       const userEchoKey = message.role === "user" ? `${scopeKey}::user-echo::${currentText}` : null;
-      const candidateKeys = userEchoKey ? [semanticKey, userEchoKey] : [semanticKey];
+      const ownerDispatchEchoKey =
+        message.role === "user" && message.roomMessageSource === "owner_dispatch"
+          ? `owner-dispatch::${currentText}`
+          : null;
+      const candidateKeys = [semanticKey, userEchoKey, ownerDispatchEchoKey].filter(
+        (key): key is string => Boolean(key),
+      );
       const dedupeWindowMs = message.role === "user" ? 120_000 : 5_000;
       const matchedEntry = candidateKeys
         .map((key) => recentBySemanticKey.get(key))
@@ -164,6 +180,9 @@ export function dedupeVisibleChatMessages(messages: ChatMessage[]): ChatMessage[
       recentBySemanticKey.set(semanticKey, nextEntry);
       if (message.role === "user") {
         recentBySemanticKey.set(`${scopeKey}::user-echo::${currentText}`, nextEntry);
+        if (message.roomMessageSource === "owner_dispatch") {
+          recentBySemanticKey.set(`owner-dispatch::${currentText}`, nextEntry);
+        }
       }
     }
   }

@@ -10,7 +10,7 @@ import {
   CalendarClock,
   Menu,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import { Routes, Route, Link, useLocation, Navigate } from "react-router-dom";
 import { ApprovalModalHost } from "./components/system/approval-modal-host";
 import { CompanyAuthoritySyncHost } from "./components/system/company-authority-sync-host";
@@ -32,22 +32,57 @@ import { getCompanyWorkspaceApps } from "./application/company/workspace-apps";
 import { OrgAutopilotHost } from "./presentation/org/OrgAutopilotHost";
 import { extractTextFromMessage } from "./presentation/chat/view-models/messages";
 import { toast } from "./components/system/toast-store";
-import { AutomationPage } from "./pages/AutomationPage";
-import { BoardPage } from "./pages/BoardPage";
-import { ChatPage } from "./pages/ChatPage";
-import { CompanyCreate } from "./pages/CompanyCreate";
-import { CompanyLobby } from "./pages/CompanyLobby";
-import { CompanySelect } from "./pages/CompanySelect";
-import { ConnectPage } from "./pages/ConnectPage";
-import { CodexOAuthCallbackPage } from "./pages/CodexOAuthCallbackPage";
-import { CEOHomePage } from "./pages/CEOHomePage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { EmployeeList } from "./pages/EmployeeList";
-import { EmployeeProfile } from "./pages/EmployeeProfile";
-import { RequirementCenterPage } from "./pages/RequirementCenterPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { WorkspacePage } from "./pages/WorkspacePage";
 import { resolveSessionActorId } from "./lib/sessions";
+
+const AutomationPage = lazy(() =>
+  import("./pages/AutomationPage").then((module) => ({ default: module.AutomationPage })),
+);
+const BoardPage = lazy(() =>
+  import("./pages/BoardPage").then((module) => ({ default: module.BoardPage })),
+);
+const ChatPage = lazy(() =>
+  import("./pages/ChatPage").then((module) => ({ default: module.ChatPage })),
+);
+const CompanyCreate = lazy(() =>
+  import("./pages/CompanyCreate").then((module) => ({ default: module.CompanyCreate })),
+);
+const CompanyLobby = lazy(() =>
+  import("./pages/CompanyLobby").then((module) => ({ default: module.CompanyLobby })),
+);
+const CompanySelect = lazy(() =>
+  import("./pages/CompanySelect").then((module) => ({ default: module.CompanySelect })),
+);
+const ConnectPage = lazy(() =>
+  import("./pages/ConnectPage").then((module) => ({ default: module.ConnectPage })),
+);
+const CodexOAuthCallbackPage = lazy(() =>
+  import("./pages/CodexOAuthCallbackPage").then((module) => ({
+    default: module.CodexOAuthCallbackPage,
+  })),
+);
+const CEOHomePage = lazy(() =>
+  import("./pages/CEOHomePage").then((module) => ({ default: module.CEOHomePage })),
+);
+const DashboardPage = lazy(() =>
+  import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })),
+);
+const EmployeeList = lazy(() =>
+  import("./pages/EmployeeList").then((module) => ({ default: module.EmployeeList })),
+);
+const EmployeeProfile = lazy(() =>
+  import("./pages/EmployeeProfile").then((module) => ({ default: module.EmployeeProfile })),
+);
+const RequirementCenterPage = lazy(() =>
+  import("./pages/RequirementCenterPage").then((module) => ({
+    default: module.RequirementCenterPage,
+  })),
+);
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })),
+);
+const WorkspacePage = lazy(() =>
+  import("./pages/WorkspacePage").then((module) => ({ default: module.WorkspacePage })),
+);
 
 function CompanyBootstrapScreen() {
   return (
@@ -56,6 +91,18 @@ function CompanyBootstrapScreen() {
         <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
         <div className="text-sm font-medium">正在恢复公司上下文...</div>
         <div className="mt-1 text-xs text-muted-foreground">完成后会自动返回你上次所在的组织。</div>
+      </div>
+    </div>
+  );
+}
+
+function RouteLoadingScreen() {
+  return (
+    <div className="flex h-full min-h-[320px] items-center justify-center p-8">
+      <div className="rounded-2xl border bg-card px-6 py-5 text-center shadow-sm">
+        <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+        <div className="text-sm font-medium">正在加载页面...</div>
+        <div className="mt-1 text-xs text-muted-foreground">当前路由模块正在按需加载。</div>
       </div>
     </div>
   );
@@ -235,12 +282,14 @@ export default function App() {
     content = (
       <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
         <main className="flex-1 flex flex-col h-full overflow-y-auto relative">
-          <Routes>
-            <Route path="/select" element={<CompanySelect />} />
-            <Route path="/connect" element={<ConnectPage />} />
-            <Route path="/create" element={<CompanyCreate />} />
-            <Route path="/oauth/codex/callback" element={<CodexOAuthCallbackPage />} />
-          </Routes>
+          <Suspense fallback={<RouteLoadingScreen />}>
+            <Routes>
+              <Route path="/select" element={<CompanySelect />} />
+              <Route path="/connect" element={<ConnectPage />} />
+              <Route path="/create" element={<CompanyCreate />} />
+              <Route path="/oauth/codex/callback" element={<CodexOAuthCallbackPage />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
     );
@@ -430,22 +479,24 @@ export default function App() {
                   正在后台恢复最新状态，你可以继续停留在当前页面。
                 </div>
               ) : null}
-              <Routes>
-                <Route path="/" element={<CEOHomePage />} />
-                <Route path="/ops" element={<CompanyLobby />} />
-                <Route path="/lobby" element={<Navigate to="/ops" replace />} />
-                <Route path="/chat/:agentId" element={<ChatPage />} />
-                <Route path="/employees" element={<EmployeeList />} />
-                <Route path="/employees/:id" element={<EmployeeProfile />} />
-                <Route path="/board" element={<BoardPage />} />
-                <Route path="/requirement" element={<RequirementCenterPage />} />
-                <Route path="/workspace" element={<WorkspacePage />} />
-                <Route path="/automation" element={<AutomationPage />} />
-                <Route path="/dashboard" element={<DashboardPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/oauth/codex/callback" element={<CodexOAuthCallbackPage />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
+              <Suspense fallback={<RouteLoadingScreen />}>
+                <Routes>
+                  <Route path="/" element={<CEOHomePage />} />
+                  <Route path="/ops" element={<CompanyLobby />} />
+                  <Route path="/lobby" element={<Navigate to="/ops" replace />} />
+                  <Route path="/chat/:agentId" element={<ChatPage />} />
+                  <Route path="/employees" element={<EmployeeList />} />
+                  <Route path="/employees/:id" element={<EmployeeProfile />} />
+                  <Route path="/board" element={<BoardPage />} />
+                  <Route path="/requirement" element={<RequirementCenterPage />} />
+                  <Route path="/workspace" element={<WorkspacePage />} />
+                  <Route path="/automation" element={<AutomationPage />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/oauth/codex/callback" element={<CodexOAuthCallbackPage />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Suspense>
             </div>
           </main>
         </div>

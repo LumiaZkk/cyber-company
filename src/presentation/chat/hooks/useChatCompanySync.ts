@@ -7,37 +7,66 @@ export function useChatCompanySync(input: {
   companySessionSnapshotsRef: MutableRefObject<RequirementSessionSnapshot[]>;
   syncCompanyCommunication: (options?: { force?: boolean }) => Promise<unknown>;
   setHasBootstrappedCompanySync: (value: boolean) => void;
+  setCompanySyncStale: (value: boolean, error?: string | null) => void;
 }) {
+  const {
+    shouldRun,
+    intervalMs,
+    companySessionSnapshotsRef,
+    syncCompanyCommunication,
+    setHasBootstrappedCompanySync,
+    setCompanySyncStale,
+  } = input;
+
   useEffect(() => {
-    if (!input.shouldRun) {
+    if (!shouldRun) {
       return;
     }
 
     let cancelled = false;
+    let inFlight = false;
     const run = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+
       try {
         if (!cancelled) {
-          await input.syncCompanyCommunication({
-            force: input.companySessionSnapshotsRef.current.length === 0,
+          await syncCompanyCommunication({
+            force: companySessionSnapshotsRef.current.length === 0,
           });
+          setHasBootstrappedCompanySync(true);
+          setCompanySyncStale(false, null);
         }
       } catch (error) {
         console.error("background company sync failed", error);
-      } finally {
         if (!cancelled) {
-          input.setHasBootstrappedCompanySync(true);
+          setCompanySyncStale(
+            true,
+            error instanceof Error ? error.message : String(error),
+          );
         }
+      } finally {
+        inFlight = false;
       }
     };
 
     void run();
     const timer = window.setInterval(() => {
       void run();
-    }, input.intervalMs);
+    }, intervalMs);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [input]);
+  }, [
+    companySessionSnapshotsRef,
+    intervalMs,
+    setCompanySyncStale,
+    setHasBootstrappedCompanySync,
+    shouldRun,
+    syncCompanyCommunication,
+  ]);
 }

@@ -16,6 +16,8 @@ import type { RequirementRoomRecord } from "../../../domain/delegation/types";
 import type {
   ConversationStateRecord,
   ConversationMissionRecord,
+  DraftRequirementRecord,
+  TrackedTask,
   WorkItemRecord,
 } from "../../../domain/mission/types";
 import type { Company } from "../../../domain/org/types";
@@ -44,6 +46,7 @@ export function useChatConversationTruth(input: {
   displayNextBatonAgentId: string | null;
   missionIsCompleted: boolean;
   activeCompany: Company | null;
+  authorityBackedState: boolean;
   activeRoomRecords: RequirementRoomRecord[];
   activeConversationState: ConversationStateRecord | null;
   requirementTeam:
@@ -72,12 +75,17 @@ export function useChatConversationTruth(input: {
   ) => void;
   conversationStateKey: string | null;
   messages: ChatMessage[];
+  structuredTaskPreview: TrackedTask | null;
   previewConversationWorkItem: WorkItemRecord | null;
   shouldPreferPreviewConversationWorkItem: boolean;
   ceoReplyExplicitlyRequestsNewTask: boolean;
   doesWorkItemMatchCurrentConversation: (workItem: WorkItemRecord) => boolean;
   lastSyncedRoomSignatureRef: MutableRefObject<string | null>;
-}) {
+}): {
+  conversationMissionRecord: ConversationMissionRecord | null;
+  shouldPersistConversationTruth: boolean;
+  conversationDraftRequirement: DraftRequirementRecord | null;
+} {
   const {
     isGroup,
     isCeoSession,
@@ -99,6 +107,7 @@ export function useChatConversationTruth(input: {
     displayNextBatonAgentId,
     missionIsCompleted,
     activeCompany,
+    authorityBackedState,
     activeRoomRecords,
     activeConversationState,
     requirementTeam,
@@ -112,6 +121,7 @@ export function useChatConversationTruth(input: {
     setConversationDraftRequirement,
     conversationStateKey,
     messages,
+    structuredTaskPreview,
     previewConversationWorkItem,
     shouldPreferPreviewConversationWorkItem,
     ceoReplyExplicitlyRequestsNewTask,
@@ -134,6 +144,14 @@ export function useChatConversationTruth(input: {
             activeConversationState?.currentWorkItemId ||
             activeConversationState?.currentWorkKey,
         ),
+        hasMultiActorDispatchSignal: Boolean(requirementTeam && requirementTeam.memberIds.length >= 2),
+        hasTaskBoardSignal: Boolean(
+          (structuredTaskPreview && structuredTaskPreview.steps.length >= 2) ||
+            previewConversationWorkItem ||
+            activeConversationState?.currentWorkItemId ||
+            activeConversationState?.currentWorkKey,
+        ),
+        hasRequirementTeamSignal: Boolean(requirementTeam && requirementTeam.memberIds.length >= 2),
       }),
     [
       activeCompany,
@@ -144,15 +162,29 @@ export function useChatConversationTruth(input: {
       isGroup,
       messages,
       persistedWorkItem,
+      previewConversationWorkItem,
+      requirementTeam,
+      structuredTaskPreview,
     ],
   );
   const allowConversationPersistence =
-    isGroup || !isCeoSession || Boolean(persistedWorkItem || nextDraftRequirement?.promotable);
+    isGroup ||
+    !isCeoSession ||
+    Boolean(persistedWorkItem || nextDraftRequirement);
+  const authorityDraftRequirement =
+    authorityBackedState ? activeConversationState?.draftRequirement ?? null : nextDraftRequirement;
 
   const conversationTruth = useMemo(
     () =>
       buildConversationMissionTruth({
         allowConversationPersistence,
+        draftRequirement: authorityDraftRequirement
+          ? {
+              state: authorityDraftRequirement.state,
+              promotionReason: authorityDraftRequirement.promotionReason ?? null,
+              stageGateStatus: authorityDraftRequirement.stageGateStatus ?? null,
+            }
+          : null,
         isGroup,
         isCeoSession,
         sessionKey,
@@ -174,6 +206,8 @@ export function useChatConversationTruth(input: {
         missionIsCompleted,
       }),
     [
+      authorityBackedState,
+      authorityDraftRequirement,
       conversationMission,
       displayNextBatonAgentId,
       effectiveOwnerAgentId,
@@ -228,22 +262,25 @@ export function useChatConversationTruth(input: {
   );
   const nextRequirementTeamRoomRecord = useMemo(
     () =>
-      buildRequirementTeamRoomTruth({
-        activeCompany,
-        requirementTeam,
-        isFreshConversation,
-        isRequirementBootstrapPending,
-        persistedWorkItem,
-        groupWorkItemId,
-        conversationMissionRecord,
-        activeRoomRecords,
-        effectiveOwnerAgentId,
-        targetAgentId,
-        effectiveRequirementRoomSnapshots,
-      }),
+      authorityBackedState
+        ? null
+        : buildRequirementTeamRoomTruth({
+            activeCompany,
+            requirementTeam,
+            isFreshConversation,
+            isRequirementBootstrapPending,
+            persistedWorkItem,
+            groupWorkItemId,
+            conversationMissionRecord,
+            activeRoomRecords,
+            effectiveOwnerAgentId,
+            targetAgentId,
+            effectiveRequirementRoomSnapshots,
+          }),
     [
       activeCompany,
       activeRoomRecords,
+      authorityBackedState,
       conversationMissionRecord,
       effectiveOwnerAgentId,
       effectiveRequirementRoomSnapshots,
@@ -287,11 +324,18 @@ export function useChatConversationTruth(input: {
   );
 
   useEffect(() => {
-    if (!conversationStateKey || isGroup || !isCeoSession || isArchiveView) {
+    if (
+      authorityBackedState ||
+      !conversationStateKey ||
+      isGroup ||
+      !isCeoSession ||
+      isArchiveView
+    ) {
       return;
     }
     setConversationDraftRequirement(conversationStateKey, nextDraftRequirement ?? null);
   }, [
+    authorityBackedState,
     conversationStateKey,
     isArchiveView,
     isCeoSession,
@@ -314,6 +358,7 @@ export function useChatConversationTruth(input: {
 
   useEffect(() => {
     if (
+      authorityBackedState ||
       !shouldPersistPreviewWorkItem ||
       !previewConversationWorkItem
     ) {
@@ -330,6 +375,7 @@ export function useChatConversationTruth(input: {
     }
   }, [
     activeCompany,
+    authorityBackedState,
     conversationStateKey,
     previewConversationWorkItem,
     setConversationCurrentWorkKey,
@@ -367,17 +413,24 @@ export function useChatConversationTruth(input: {
   ]);
 
   useEffect(() => {
+    if (authorityBackedState) {
+      return;
+    }
     if (!shouldClearConversationCurrentWork || !conversationStateKey) {
       return;
     }
     setConversationCurrentWorkKey(conversationStateKey, null, null, null);
   }, [
+    authorityBackedState,
     conversationStateKey,
     setConversationCurrentWorkKey,
     shouldClearConversationCurrentWork,
   ]);
 
   useEffect(() => {
+    if (authorityBackedState) {
+      return;
+    }
     if (!conversationStateKey || !currentConversationWorkSelection) {
       return;
     }
@@ -388,6 +441,7 @@ export function useChatConversationTruth(input: {
       currentConversationWorkSelection.roundId,
     );
   }, [
+    authorityBackedState,
     conversationStateKey,
     currentConversationWorkSelection,
     setConversationCurrentWorkKey,
@@ -396,5 +450,6 @@ export function useChatConversationTruth(input: {
   return {
     conversationMissionRecord,
     shouldPersistConversationTruth,
+    conversationDraftRequirement: authorityDraftRequirement,
   };
 }

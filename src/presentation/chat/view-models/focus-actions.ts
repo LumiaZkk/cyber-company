@@ -1,5 +1,6 @@
 import { formatAgentLabel, type ExecutionFocusSummary } from "../../../application/governance/focus-summary";
 import { type FocusProgressEvent } from "../../../application/governance/chat-progress";
+import { DISPATCH_BUSINESS_ACK_REMINDER_MS } from "../../../application/delegation/dispatch-policy";
 import { buildCompanyChatRoute } from "../../../lib/chat-routes";
 import type { Company } from "../../../domain/org/types";
 import type { RequestRecord } from "../../../domain/delegation/types";
@@ -36,6 +37,7 @@ export function buildChatFocusActions({
   summaryAlertCount,
 }: BuildChatFocusActionsInput): FocusActionButton[] {
   const actions: FocusActionButton[] = [];
+  const now = Date.now();
   const primaryRequest = requestPreview
     .slice()
     .sort((left, right) => {
@@ -106,7 +108,7 @@ export function buildChatFocusActions({
       kind: "message",
       tone: "primary",
       targetAgentId: nextOpenTaskStepAgentId,
-      message: `请立即处理「${nextOpenTaskStepLabel}」。${actionContext}。完成后请明确回复“已完成”并附结果摘要；如果仍阻塞，请直接说明原因。`,
+      message: `请立即处理「${nextOpenTaskStepLabel}」。${actionContext}。收到后请先立即明确回复“已收到并开始处理”；如果已经完成，直接给出结果摘要；如果仍阻塞，请直接说明原因。`,
     });
     if (!sameAsCurrentSession) {
       actions.push({
@@ -126,6 +128,9 @@ export function buildChatFocusActions({
 
     if (requestResponderId) {
       const targetLabel = formatAgentLabel(activeCompany, requestResponderId);
+      const pendingRequestNeedsReminder =
+        primaryRequest.status === "pending" &&
+        now - primaryRequest.updatedAt >= DISPATCH_BUSINESS_ACK_REMINDER_MS;
       const requestTitle =
         /^(紧急|当前任务|任务|问题|同步|继续)$/u.test(primaryRequest.title.trim())
           ? primaryRequest.responseSummary || primaryRequest.summary || primaryRequest.title
@@ -147,15 +152,29 @@ export function buildChatFocusActions({
         description:
           primaryRequest.status === "answered"
             ? `对方已经给出结果，现在要提醒 ${targetLabel} 接住结果并继续推进。`
-            : `当前链路在等 ${targetLabel} 的明确回复。`,
+            : pendingRequestNeedsReminder
+              ? `${targetLabel} 超过 5 分钟没有业务回执，需要先明确接单或直接回结果。`
+              : `当前链路在等 ${targetLabel} 的明确回复。`,
         kind: "message",
         tone: "primary",
         targetAgentId: requestResponderId,
         message:
           primaryRequest.status === "answered"
             ? `最新结果已经回传，请你现在直接继续推进。${requestContext}。请不要只汇报状态，直接说明你现在要做什么并继续执行。`
-            : `请优先回复「${requestTitle}」。${requestContext}。请直接给出结果摘要；如果仍阻塞，请明确说明原因。`,
+            : `请优先回复「${requestTitle}」。${requestContext}。收到后请先立即明确回复“已收到并开始处理”；如果已经完成，直接给出结果摘要；如果仍阻塞，请明确说明原因。`,
       });
+      if (pendingRequestNeedsReminder) {
+        actions.push({
+          id: `retry-request:${requestResponderId}:${primaryRequest.id}`,
+          label: `重新派单给 ${targetLabel}`,
+          description: `当前超过 5 分钟没有回执，会重新生成一条派单。这可能造成重复执行。`,
+          kind: "message",
+          tone: "secondary",
+          targetAgentId: requestResponderId,
+          confirmMessage: `这会重新派单给 ${targetLabel}。如果对方其实已经在执行，可能造成重复执行。确定继续吗？`,
+          message: `这是对「${requestTitle}」的重新派发。${requestContext}。如果你已经在处理，请先立即明确回复“已收到并继续处理”，再补充当前进度；如果已经完成，直接给结果；如果阻塞，请说明原因。`,
+        });
+      }
       actions.push({
         id: `open-request:${requestResponderId}`,
         label: `打开 ${targetLabel} 会话`,

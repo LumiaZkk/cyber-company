@@ -19,12 +19,13 @@ import {
   buildBoardRequirementSurface,
   describeRequirementRoomPreview,
 } from "../../application/mission/board-requirement-surface";
+import { buildPrimaryRequirementSurface } from "../../application/mission/primary-requirement-surface";
+import { buildRequirementDecisionTicketId } from "../../application/mission/requirement-decision-ticket";
 import { buildBoardTaskSurface } from "../../application/mission/board-task-surface";
 import {
   getRequirementStatusToneClass,
   resolveRequirementProductStatus,
 } from "../../application/mission/requirement-product-status";
-import { selectPrimaryRequirementProjection } from "../../application/mission/requirement-aggregate";
 import {
   loadRequirementMetricEvents,
   trackRequirementMetric,
@@ -67,6 +68,7 @@ function getExecutionStateLabel(state: string | null | undefined) {
 function getRequirementTimelineLabel(eventType: string) {
   if (eventType === "requirement_seeded") return "主线已立项";
   if (eventType === "requirement_promoted") return "主线已切换";
+  if (eventType === "requirement_change_requested") return "需求变更待确认";
   if (eventType === "requirement_owner_changed") return "负责人已变更";
   if (eventType === "requirement_room_bound") return "需求房已绑定";
   if (eventType === "requirement_completed") return "执行已收口";
@@ -150,6 +152,7 @@ function RequirementCenterContent({
   activeWorkItems,
   activeRequirementAggregates,
   activeRequirementEvidence,
+  activeDecisionTickets,
   primaryRequirementId,
   activeArtifacts,
   replaceDispatchRecords,
@@ -157,6 +160,8 @@ function RequirementCenterContent({
   updateCompany,
   applyRequirementTransition,
   upsertWorkItemRecord,
+  upsertDecisionTicketRecord,
+  ensureRequirementRoomForAggregate,
 }: RequirementCenterContentProps) {
   const navigate = useNavigate();
   const isPageVisible = usePageVisibility();
@@ -178,29 +183,43 @@ function RequirementCenterContent({
     supportsAgentFiles,
   });
   const workspaceViewModel = useWorkspaceViewModel({ isPageVisible });
-  const [acceptanceSubmitting, setAcceptanceSubmitting] = useState<null | "request" | "accept" | "revise" | "reopen">(null);
+  const [acceptanceSubmitting, setAcceptanceSubmitting] = useState<null | "request" | "accept" | "revise" | "reopen" | "change">(null);
+  const [decisionSubmittingOptionId, setDecisionSubmittingOptionId] = useState<string | null>(null);
   const [metricRevision, setMetricRevision] = useState(0);
   const trackedOpenKeyRef = useRef<string | null>(null);
 
-  const primaryRequirementProjection = useMemo(
+  const ceo = activeCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
+  const primaryRequirementSurface = useMemo(
     () =>
-      selectPrimaryRequirementProjection({
+      buildPrimaryRequirementSurface({
         company: activeCompany,
-        activeRequirementAggregates,
-        primaryRequirementId,
+        activeConversationStates,
         activeWorkItems,
+        activeRequirementAggregates,
+        activeRequirementEvidence,
+        activeDecisionTickets,
+        primaryRequirementId,
         activeRoomRecords,
+        companySessions,
+        companySessionSnapshots,
+        currentTime,
+        ceoAgentId: ceo?.agentId ?? null,
       }),
     [
       activeCompany,
+      activeConversationStates,
+      activeDecisionTickets,
       activeRequirementAggregates,
-      primaryRequirementId,
-      activeWorkItems,
+      activeRequirementEvidence,
       activeRoomRecords,
+      activeWorkItems,
+      companySessionSnapshots,
+      companySessions,
+      currentTime,
+      ceo?.agentId,
+      primaryRequirementId,
     ],
   );
-
-  const ceo = activeCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
 
   const requirementSurface = useMemo(
     () =>
@@ -275,9 +294,10 @@ function RequirementCenterContent({
     isPageVisible,
   });
 
-  const aggregate = primaryRequirementProjection.aggregate;
-  const workItem = primaryRequirementProjection.workItem ?? requirementSurface.currentWorkItem ?? null;
-  const room = requirementSurface.requirementRoomRecords[0] ?? primaryRequirementProjection.room ?? null;
+  const aggregate = primaryRequirementSurface.aggregate;
+  const workItem = primaryRequirementSurface.workItem ?? requirementSurface.currentWorkItem ?? null;
+  const room = primaryRequirementSurface.room ?? requirementSurface.requirementRoomRecords[0] ?? null;
+  const openRequirementDecisionTicket = primaryRequirementSurface.openDecisionTicket;
   const productStatus = resolveRequirementProductStatus({
     aggregate,
     workItem,
@@ -392,6 +412,28 @@ function RequirementCenterContent({
   const canRejectReopen =
     Boolean(aggregate) &&
     (aggregate?.acceptanceStatus === "pending" || aggregate?.status === "completed");
+  const canRequestChange = Boolean(aggregate) && aggregate?.status !== "archived";
+
+  const resolveRequirementDecision = (optionId: string) => {
+    if (!openRequirementDecisionTicket) {
+      return;
+    }
+    const option =
+      openRequirementDecisionTicket.options.find((candidate) => candidate.id === optionId) ?? null;
+    if (!option) {
+      return;
+    }
+    setDecisionSubmittingOptionId(optionId);
+    upsertDecisionTicketRecord({
+      ...openRequirementDecisionTicket,
+      status: "resolved",
+      resolutionOptionId: option.id,
+      resolution: option.summary ?? option.label,
+      updatedAt: Date.now(),
+    });
+    setDecisionSubmittingOptionId(null);
+    toast.success("已记录你的决策", "当前主线会按这张决策票继续推进。");
+  };
 
   const recordMetric = (input: {
     requirementId: string | null;
@@ -415,7 +457,7 @@ function RequirementCenterContent({
     );
   }, [activeCompany.id, aggregate?.id, metricRevision]);
 
-  const runAcceptanceAction = (mode: "request" | "accept" | "revise" | "reopen") => {
+  const runAcceptanceAction = (mode: "request" | "accept" | "revise" | "reopen" | "change") => {
     if (!aggregate) {
       return;
     }
@@ -519,6 +561,78 @@ function RequirementCenterContent({
         }
         toast.warning(stage, "当前主线已回到执行态。");
       }
+      if (mode === "change") {
+        const decisionTicketId = buildRequirementDecisionTicketId({
+          sourceType: "requirement",
+          sourceId: aggregate.id,
+          decisionType: "requirement_change",
+        });
+        const existingDecisionTicket =
+          activeDecisionTickets.find((ticket) => ticket.id === decisionTicketId) ?? null;
+        recordMetric({
+          requirementId: aggregate.id,
+          name: "requirement_change_requested",
+        });
+        upsertDecisionTicketRecord({
+          id: decisionTicketId,
+          companyId: activeCompany.id,
+          sourceType: "requirement",
+          sourceId: aggregate.id,
+          escalationId: null,
+          aggregateId: aggregate.id,
+          workItemId: workItem?.id ?? aggregate.workItemId ?? null,
+          sourceConversationId:
+            aggregate.sourceConversationId ?? workItem?.sourceConversationId ?? null,
+          decisionOwnerActorId:
+            ceo?.agentId ?? aggregate.ownerActorId ?? workItem?.ownerActorId ?? "system:requirement",
+          decisionType: "requirement_change",
+          summary: "请确认这次需求变更。系统会继续沿用当前需求主线，不会自动拆成新需求。",
+          options: [
+            {
+              id: "confirm_change",
+              label: "确认变更并继续",
+              summary: "按新的范围继续推进当前需求。",
+            },
+            {
+              id: "cancel_change",
+              label: "取消这次变更",
+              summary: "维持当前需求范围和执行计划。",
+            },
+          ],
+          requiresHuman: true,
+          status: "pending_human",
+          resolution: null,
+          resolutionOptionId: null,
+          roomId: aggregate.roomId ?? workItem?.roomId ?? null,
+          createdAt: existingDecisionTicket?.createdAt ?? timestamp,
+          updatedAt: timestamp,
+        });
+        applyRequirementTransition({
+          aggregateId: aggregate.id,
+          timestamp,
+          source: "local-command",
+          changes: {
+            status: "waiting_owner",
+            acceptanceStatus: "not_requested",
+            acceptanceNote: "需求变更待确认",
+            stage: "需求变更中",
+            nextAction: "请先在需求房确认变更范围、优先级和受影响任务，再决定是否继续执行。",
+          },
+        });
+        if (workItem) {
+          upsertWorkItemRecord({
+            ...workItem,
+            status: "waiting_owner",
+            displayStage: "需求变更中",
+            stageLabel: "需求变更中",
+            displayNextAction: "请先在需求房确认变更范围、优先级和受影响任务，再决定是否继续执行。",
+            nextAction: "请先在需求房确认变更范围、优先级和受影响任务，再决定是否继续执行。",
+            updatedAt: Math.max(workItem.updatedAt, timestamp),
+            completedAt: null,
+          });
+        }
+        toast.warning("需求变更待确认", "当前主线已进入需求变更确认态，下一棒回到你。");
+      }
     } finally {
       setAcceptanceSubmitting(null);
     }
@@ -526,7 +640,15 @@ function RequirementCenterContent({
 
   const roomPreviewText = room
     ? describeRequirementRoomPreview(room, workItem)
-    : "当前还没有绑定需求房，先由 CEO 或当前负责人继续收敛执行方式。";
+    : aggregate
+      ? "当前主线已经明确，但还没有固化出真实需求房。创建后会把已有派单和成员反馈回灌进来。"
+      : "当前还没有绑定需求房，先由 CEO 或当前负责人继续收敛执行方式。";
+  const collaborationActionLabel =
+    primaryRequirementSurface.roomStatus === "ready"
+      ? "进入需求房"
+      : aggregate
+        ? "创建并进入需求房"
+        : "去协作";
 
   useEffect(() => {
     const openKey = `${activeCompany.id}:${aggregate?.id ?? "none"}`;
@@ -601,6 +723,31 @@ function RequirementCenterContent({
                   </div>
                 </div>
               </div>
+              {openRequirementDecisionTicket ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+                        待你决策
+                      </div>
+                      <div className="mt-2 font-semibold">{openRequirementDecisionTicket.summary}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {openRequirementDecisionTicket.options.map((option) => (
+                        <Button
+                          key={option.id}
+                          variant="outline"
+                          className="border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+                          onClick={() => resolveRequirementDecision(option.id)}
+                          disabled={decisionSubmittingOptionId === option.id}
+                        >
+                          {decisionSubmittingOptionId === option.id ? "处理中..." : option.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -618,15 +765,23 @@ function RequirementCenterContent({
                     navigate(buildRequirementRoomHrefFromRecord(room));
                     return;
                   }
-                  if (requirementSurface.requirementRoomRoute) {
-                    navigate(requirementSurface.requirementRoomRoute);
+                  if (aggregate?.id) {
+                    const ensuredRoom = ensureRequirementRoomForAggregate(aggregate.id);
+                    if (ensuredRoom) {
+                      navigate(buildRequirementRoomHrefFromRecord(ensuredRoom));
+                      return;
+                    }
+                  }
+                  if (ceo?.agentId) {
+                    toast.info("需求房还未就绪", "已为这条主线创建房间失败，先回 CEO 会话继续推进或稍后重试。");
+                    navigate(`/chat/${encodeURIComponent(ceo.agentId)}`);
                     return;
                   }
                   toast.info("当前还没有需求房", "先让 CEO 或负责人继续收敛后再进入多人协作。");
                 }}
               >
                 <Users className="mr-2 h-4 w-4" />
-                去协作
+                {collaborationActionLabel}
               </Button>
               <Button
                 variant="outline"
@@ -1030,6 +1185,13 @@ function RequirementCenterContent({
                   disabled={!canRequestAcceptance || acceptanceSubmitting !== null}
                 >
                   {acceptanceSubmitting === "request" ? "处理中..." : "发起验收"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => runAcceptanceAction("change")}
+                  disabled={!canRequestChange || acceptanceSubmitting !== null}
+                >
+                  {acceptanceSubmitting === "change" ? "处理中..." : "需求变更"}
                 </Button>
                 <Button
                   variant="outline"

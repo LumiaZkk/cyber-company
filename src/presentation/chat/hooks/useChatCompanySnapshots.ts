@@ -9,12 +9,15 @@ type CompanySnapshotState = {
   companyId: string | null;
   companySessionSnapshots: RequirementSessionSnapshot[];
   hasBootstrappedCompanySync: boolean;
+  companySyncStale: boolean;
+  companySyncError: string | null;
 };
 
 type CompanySnapshotAction =
   | { type: "hydrate"; companyId: string | null }
   | { type: "setSnapshots"; value: SetStateAction<RequirementSessionSnapshot[]> }
-  | { type: "setBootstrapped"; value: boolean };
+  | { type: "setBootstrapped"; value: boolean }
+  | { type: "setStale"; value: boolean; error?: string | null };
 
 function createCompanySnapshotState(companyId: string | null): CompanySnapshotState {
   const snapshot = readCompanyRuntimeSnapshot(companyId);
@@ -23,6 +26,8 @@ function createCompanySnapshotState(companyId: string | null): CompanySnapshotSt
     companyId,
     companySessionSnapshots,
     hasBootstrappedCompanySync: companySessionSnapshots.length > 0,
+    companySyncStale: false,
+    companySyncError: null,
   };
 }
 
@@ -48,6 +53,12 @@ function reduceCompanySnapshotState(
         ...state,
         hasBootstrappedCompanySync: action.value,
       };
+    case "setStale":
+      return {
+        ...state,
+        companySyncStale: action.value,
+        companySyncError: action.error ?? null,
+      };
     default:
       return state;
   }
@@ -58,8 +69,11 @@ export function useChatCompanySnapshots(
 ): {
   companySessionSnapshots: RequirementSessionSnapshot[];
   hasBootstrappedCompanySync: boolean;
+  companySyncStale: boolean;
+  companySyncError: string | null;
   setCompanySessionSnapshots: Dispatch<SetStateAction<RequirementSessionSnapshot[]>>;
   setHasBootstrappedCompanySync: (value: boolean) => void;
+  setCompanySyncStale: (value: boolean, error?: string | null) => void;
 } {
   const [state, dispatch] = useReducer(
     reduceCompanySnapshotState,
@@ -91,10 +105,17 @@ export function useChatCompanySnapshots(
     dispatch({ type: "setBootstrapped", value });
   }, []);
 
+  const setCompanySyncStale = useCallback((value: boolean, error?: string | null) => {
+    dispatch({ type: "setStale", value, error });
+  }, []);
+
   return {
     companySessionSnapshots: state.companySessionSnapshots,
     hasBootstrappedCompanySync: state.hasBootstrappedCompanySync,
+    companySyncStale: state.companySyncStale,
+    companySyncError: state.companySyncError,
     setCompanySessionSnapshots,
     setHasBootstrappedCompanySync,
+    setCompanySyncStale,
   };
 }

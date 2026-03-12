@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
   areRequirementRoomChatMessagesEqual,
   buildRequirementRoomRecordSignature,
@@ -22,6 +22,7 @@ import { toast } from "../../../components/system/toast-store";
 import {
   buildVisibleChatMessage,
   CHAT_UI_MESSAGE_LIMIT,
+  dedupeVisibleChatMessages,
   extractTextFromMessage,
   limitChatMessages,
   normalizeMessage,
@@ -29,11 +30,20 @@ import {
   shouldKeepVisibleChatMessage,
 } from "../view-models/messages";
 
+function mergeVisibleDirectMessages(previous: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  return limitChatMessages(
+    dedupeVisibleChatMessages([...previous, ...incoming].map(normalizeMessage))
+      .filter((message) => shouldKeepVisibleChatMessage(message))
+      .map((message) => buildVisibleChatMessage(message)),
+  );
+}
+
 export type ChatSessionRuntimeInput = {
   activeCompany: Company | null;
   agentId: string | null;
   archiveId: string | null;
   activeArchivedRound: RoundRecord | null;
+  authorityBackedState: boolean;
   companyRouteReady: boolean;
   connected: boolean;
   routeCompanyConflictMessage: string | null;
@@ -64,6 +74,7 @@ export type ChatSessionRuntimeInput = {
   pendingGenerationStartedAtRef: MutableRefObject<number | null>;
   setActiveRunId: (value: string | null) => void;
   setLoading: (value: boolean) => void;
+  setSessionSyncStale: (value: boolean, error?: string | null) => void;
   setSessionKey: (value: string | null) => void;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setIsGenerating: (value: boolean) => void;
@@ -87,7 +98,77 @@ export type ChatSessionRuntimeInput = {
 };
 
 export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
+  const lastInitializationSignatureRef = useRef<string | null>(null);
+  const inFlightInitializationSignatureRef = useRef<string | null>(null);
+  const initializationRunRef = useRef(0);
+  const mountedRef = useRef(true);
+  const companyIdentitySignature = useMemo(
+    () =>
+      input.activeCompany
+        ? [
+            input.activeCompany.id,
+            ...input.activeCompany.employees.map(
+              (employee) => `${employee.agentId}:${employee.nickname}:${employee.role}`,
+            ),
+          ].join("|")
+        : "",
+    [input.activeCompany],
+  );
+  const roomSignature = useMemo(
+    () => (input.isGroup ? buildRequirementRoomRecordSignature(input.effectiveRequirementRoom) : null),
+    [input.effectiveRequirementRoom, input.isGroup],
+  );
+  const roomSessionsSignature = useMemo(
+    () =>
+      input.isGroup
+        ? input.requirementRoomSessions
+            .map((session) => `${session.agentId}:${session.sessionKey}`)
+            .sort()
+            .join("|")
+        : "",
+    [input.isGroup, input.requirementRoomSessions],
+  );
+  const roomSnapshotsSignature = useMemo(
+    () =>
+      input.isGroup
+        ? input.effectiveRequirementRoomSnapshots
+            .map((snapshot) => `${snapshot.agentId}:${snapshot.sessionKey}:${snapshot.updatedAt}`)
+            .sort()
+            .join("|")
+        : "",
+    [input.effectiveRequirementRoomSnapshots, input.isGroup],
+  );
+  const roomTargetAgentsSignature = useMemo(
+    () => (input.isGroup ? [...input.requirementRoomTargetAgentIds].sort().join("|") : ""),
+    [input.isGroup, input.requirementRoomTargetAgentIds],
+  );
+
   useEffect(() => {
+    let runId = 0;
+    const initializationSignature = [
+      input.agentId ?? "",
+      input.archiveId ?? "",
+      input.activeArchivedRound?.id ?? "",
+      input.companyRouteReady ? "ready" : "not-ready",
+      input.connected ? "connected" : "disconnected",
+      input.routeCompanyConflictMessage ?? "",
+      input.effectiveGroupSessionKey ?? "",
+      input.effectiveOwnerAgentId ?? "",
+      input.groupTitle,
+      input.groupTopicKey ?? "",
+      input.groupWorkItemId ?? "",
+      input.historyAgentId ?? "",
+      input.isArchiveView ? "archive" : "live",
+      input.isGroup ? "group" : "direct",
+      input.persistedWorkItemStartedAt ?? "",
+      input.providerId,
+      roomSignature ?? "",
+      roomSessionsSignature,
+      roomSnapshotsSignature,
+      roomTargetAgentsSignature,
+      input.targetAgentId ?? "",
+    ].join("|");
+
     async function initChat() {
       if (
         !input.agentId ||
@@ -102,8 +183,22 @@ export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
         }
         return;
       }
+      if (
+        lastInitializationSignatureRef.current === initializationSignature &&
+        input.sessionKey
+      ) {
+        input.setLoading(false);
+        return;
+      }
+      if (inFlightInitializationSignatureRef.current === initializationSignature) {
+        return;
+      }
 
       try {
+        runId = initializationRunRef.current + 1;
+        initializationRunRef.current = runId;
+        inFlightInitializationSignatureRef.current = initializationSignature;
+        lastInitializationSignatureRef.current = initializationSignature;
         const initialization = await initializeChatSession({
           activeCompany: input.activeCompany,
           archiveId: input.archiveId,
@@ -125,7 +220,7 @@ export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
           targetAgentId: input.targetAgentId,
         });
 
-        if (!initialization.sessionKey) {
+        if (!mountedRef.current || initializationRunRef.current !== runId || !initialization.sessionKey) {
           return;
         }
 
@@ -142,7 +237,7 @@ export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
             input.upsertRoomRecord(initialization.roomRecord);
           }
         }
-        if (initialization.roomBindings && initialization.roomBindings.length > 0) {
+        if (!input.authorityBackedState && initialization.roomBindings && initialization.roomBindings.length > 0) {
           input.upsertRoomConversationBindings(initialization.roomBindings);
         }
         if (initialization.messages) {
@@ -154,6 +249,27 @@ export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
               ? previous
               : nextMessages,
           );
+        }
+        if (!input.isGroup && initialization.lateHistoryMessagesPromise) {
+          void initialization.lateHistoryMessagesPromise
+            .then((lateHistoryMessages) => {
+              if (
+                !mountedRef.current ||
+                initializationRunRef.current !== runId ||
+                lateHistoryMessages.length === 0
+              ) {
+                return;
+              }
+              const lateVisibleMessages = sanitizeVisibleChatFlow(lateHistoryMessages);
+              input.setMessages((previous) => {
+                const mergedMessages = mergeVisibleDirectMessages(previous, lateVisibleMessages);
+                return areRequirementRoomChatMessagesEqual(previous, mergedMessages)
+                  ? previous
+                  : mergedMessages;
+              });
+              input.setSessionSyncStale(false, null);
+            })
+            .catch(() => {});
         }
         if (typeof initialization.isGenerating === "boolean") {
           input.restoreGeneratingState(
@@ -169,15 +285,66 @@ export function useChatSessionRuntime(input: ChatSessionRuntimeInput) {
         } else {
           input.restoreGeneratingState(null);
         }
+        input.setSessionSyncStale(false, null);
       } catch (error) {
+        if (!mountedRef.current || initializationRunRef.current !== runId) {
+          return;
+        }
         console.error("Failed to init chat:", error);
+        input.setSessionSyncStale(true, error instanceof Error ? error.message : String(error));
       } finally {
-        input.setLoading(false);
+        if (inFlightInitializationSignatureRef.current === initializationSignature) {
+          inFlightInitializationSignatureRef.current = null;
+        }
+        if (initializationRunRef.current === runId) {
+          input.setLoading(false);
+        }
       }
     }
 
     void initChat();
-  }, [input]);
+    return () => {
+    };
+  }, [
+    input.activeArchivedRound,
+    input.agentId,
+    input.archiveId,
+    input.companyRouteReady,
+    companyIdentitySignature,
+    input.connected,
+    input.effectiveGroupSessionKey,
+    input.effectiveOwnerAgentId,
+    input.groupTitle,
+      input.groupTopicKey,
+      input.groupWorkItemId,
+      input.historyAgentId,
+      input.isArchiveView,
+      input.isGroup,
+      lastInitializationSignatureRef,
+      input.lastSyncedRoomSignatureRef,
+      input.persistedWorkItemStartedAt,
+    input.providerId,
+    roomTargetAgentsSignature,
+    input.restoreGeneratingState,
+    roomSessionsSignature,
+    roomSignature,
+    roomSnapshotsSignature,
+    input.routeCompanyConflictMessage,
+    input.setLoading,
+    input.setMessages,
+    input.setSessionKey,
+    input.setSessionSyncStale,
+    input.targetAgentId,
+    input.upsertRoomConversationBindings,
+    input.upsertRoomRecord,
+  ]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!input.sessionKey || input.isArchiveView) {

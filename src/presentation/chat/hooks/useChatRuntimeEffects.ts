@@ -12,6 +12,7 @@ type UseChatRuntimeEffectsInput = {
   companySyncIntervalMs: number;
   companySessionSnapshotsRef: MutableRefObject<RequirementSessionSnapshot[]>;
   setHasBootstrappedCompanySync: (value: boolean) => void;
+  setCompanySyncStale: (value: boolean, error?: string | null) => void;
   connected: boolean;
   isPageVisible: boolean;
   actionWatches: FocusActionWatch[];
@@ -44,6 +45,7 @@ export function useChatRuntimeEffects(input: UseChatRuntimeEffectsInput) {
     companySessionSnapshotsRef: input.companySessionSnapshotsRef,
     syncCompanyCommunication: input.syncCompanyCommunication,
     setHasBootstrappedCompanySync: input.setHasBootstrappedCompanySync,
+    setCompanySyncStale: input.setCompanySyncStale,
   });
 
   useEffect(() => {

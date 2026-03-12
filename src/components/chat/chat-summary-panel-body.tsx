@@ -1,6 +1,10 @@
+import type { ReactNode } from "react";
 import { ChevronDown, RefreshCcw, Users } from "lucide-react";
+import type { RequirementCollaborationSurface } from "../../application/mission/requirement-collaboration-surface";
+import { RequirementExecutionOverviewCard } from "../../presentation/chat/components/RequirementExecutionOverviewCard";
 import { Button } from "../ui/button";
 import { ExecutionStateBadge } from "../execution-state-badge";
+import { formatRequestDeliveryStateLabel } from "../../application/governance/focus-summary";
 import { resolveExecutionState } from "../../application/mission/execution-state";
 import type { RequirementTeamMember, RequirementTeamView } from "../../application/assignment/requirement-team";
 import { cn, formatTime } from "../../lib/utils";
@@ -38,12 +42,6 @@ type ActiveMission = {
   currentStepLabel: string;
   nextLabel: string;
   planSteps: MissionStep[];
-};
-
-type StageGate = {
-  statusLabel: string;
-  stageConclusion: string;
-  risks: string | null;
 };
 
 type ProgressGroupSummary = {
@@ -119,6 +117,8 @@ type RequestPreview = {
   id: string;
   title: string;
   summary: string;
+  responseSummary?: string;
+  deliveryState?: Parameters<typeof formatRequestDeliveryStateLabel>[0];
 };
 
 type HandoffPreview = {
@@ -142,10 +142,16 @@ type CeoSurface = {
   manualTakeovers: number;
 };
 
+type TimelinePreviewItem = {
+  id: string;
+  title: string;
+  subtitle: string;
+  meta: string;
+};
+
 export type ChatSummaryPanelBodyProps = {
   summaryPanelView: SummaryPanelView;
   activeConversationMission: ActiveMission | null;
-  latestStageGate: StageGate | null;
   isRequirementBootstrapPending: boolean;
   progressGroupSummary: ProgressGroupSummary | null;
   latestProgressDisplay: ProgressEvent | null;
@@ -178,6 +184,7 @@ export type ChatSummaryPanelBodyProps = {
   requestPreview: RequestPreview[];
   requestHealth: RequestHealth;
   ceoSurface: CeoSurface | null;
+  collaborationSurface?: RequirementCollaborationSurface | null;
   orgAdvisorSummary: string | null;
   handoffPreview: HandoffPreview[];
   summaryAlertCount: number;
@@ -223,10 +230,57 @@ function participantToneClass(tone: LifecycleParticipant["tone"]) {
   return "border-slate-200 bg-slate-50/70";
 }
 
+function TimelinePreview({
+  title,
+  description,
+  count,
+  previewItems,
+  children,
+}: {
+  title: string;
+  description: string;
+  count: number;
+  previewItems: TimelinePreviewItem[];
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4">
+      <details className="group" open={false}>
+        <summary className="list-none cursor-pointer">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-900">{title}</div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">{description}</div>
+            </div>
+            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+              <ChevronDown className="h-3.5 w-3.5 transition-transform duration-200 group-open:rotate-180" />
+              {count} 条
+            </span>
+          </div>
+          <div className="mt-3 space-y-2">
+            {previewItems.map((item) => (
+              <div
+                key={item.id}
+                className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium text-slate-900">{item.title}</div>
+                  <div className="text-[11px] text-slate-500">{item.meta}</div>
+                </div>
+                <div className="mt-1 text-xs leading-5 text-slate-500">{item.subtitle}</div>
+              </div>
+            ))}
+          </div>
+        </summary>
+        <div className="mt-4 border-t border-slate-200 pt-4">{children}</div>
+      </details>
+    </section>
+  );
+}
+
 export function ChatSummaryPanelBody({
   summaryPanelView,
   activeConversationMission,
-  latestStageGate,
   isRequirementBootstrapPending,
   progressGroupSummary,
   latestProgressDisplay,
@@ -242,7 +296,6 @@ export function ChatSummaryPanelBody({
   recoveringCommunication,
   requirementTeam,
   teamMemberCards,
-  displayNextBatonLabel,
   displayNextBatonAgentId,
   targetAgentId,
   teamGroupRoute,
@@ -259,6 +312,7 @@ export function ChatSummaryPanelBody({
   requestPreview,
   requestHealth,
   ceoSurface,
+  collaborationSurface = null,
   orgAdvisorSummary,
   handoffPreview,
   summaryAlertCount,
@@ -271,9 +325,157 @@ export function ChatSummaryPanelBody({
   onToggleTechnicalSummary,
   onCopyTakeoverPack,
 }: ChatSummaryPanelBodyProps) {
+  const isRequirementOverviewMode =
+    summaryPanelView === "owner" && Boolean(collaborationSurface);
+
   return (
     <div className="grid gap-4">
-      {summaryPanelView === "owner" ? (
+      {isRequirementOverviewMode ? (
+        <>
+          <section className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">需求全貌</div>
+                <div className="mt-1 text-xs leading-5 text-slate-500">
+                  这里是这条需求的稳定总览。先看目标、阶段和最新有效结论，再回到聊天流处理上下文。
+                </div>
+              </div>
+              <span className={headerStatusBadgeClass}>{effectiveStatusLabel}</span>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">目标</div>
+                <div className="mt-2 text-sm leading-6 text-slate-900">
+                  {collaborationSurface?.overviewSummary.goalSummary}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">当前阶段</div>
+                <div className="mt-2 text-sm font-semibold leading-6 text-slate-900">
+                  {collaborationSurface?.overviewSummary.phaseLabel}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">最新有效结论</div>
+                <div className="mt-2 text-sm leading-6 text-slate-900">
+                  {collaborationSurface?.overviewSummary.latestConclusionSummary ?? "还没有新的有效结论。"}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <RequirementExecutionOverviewCard
+            collaborationSurface={collaborationSurface!}
+            variant="panel"
+          />
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">协作与收口</div>
+                <div className="mt-1 text-xs leading-5 text-slate-500">
+                  这里看当前是谁在并行推进、有没有关键卡点，以及距离关房还差什么。
+                </div>
+              </div>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-600">
+                {collaborationSurface?.executionPlan.doneCount ?? 0}/
+                {collaborationSurface?.executionPlan.totalCount ?? 0} 已完成
+              </span>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">活跃参与者</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {collaborationSurface?.activeParticipants.length ? (
+                    collaborationSurface.activeParticipants.map((participant) => (
+                      <span
+                        key={participant.agentId}
+                        className={cn(
+                          "rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                          participant.isBlocking
+                            ? "border-rose-200 bg-rose-50 text-rose-700"
+                            : participant.isCurrent
+                              ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                              : "border-slate-200 bg-white text-slate-600",
+                        )}
+                      >
+                        {participant.nickname} · {participant.statusLabel}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-slate-500">等待协作成员接入</span>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">关房条件</div>
+                <div className="mt-2 text-sm leading-6 text-slate-900">
+                  {collaborationSurface?.overviewSummary.closureHint}
+                </div>
+                <div className="mt-2 text-xs leading-5 text-slate-500">
+                  {collaborationSurface?.executionPlan.closable
+                    ? "已经满足子任务完成与无阻塞条件，等待 CEO 最终归档。"
+                    : "仍需补齐未完成项、阻塞项或待决策事项后才能关房。"}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {!isRequirementBootstrapPending && detailActions.length > 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-4">
+              <div className="text-sm font-semibold text-slate-900">下一步操作</div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">
+                先看总览，再决定是否需要催推进、解阻或继续同步。
+              </div>
+              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                {detailActions.map((action) => {
+                  const isLoading =
+                    runningFocusActionId === action.id ||
+                    (action.kind === "recover" && recoveringCommunication);
+                  return (
+                    <div
+                      key={action.id}
+                      className={cn(
+                        "rounded-xl border px-3 py-3",
+                        action.tone === "primary"
+                          ? "border-slate-300 bg-slate-50"
+                          : action.tone === "secondary"
+                            ? "border-indigo-200 bg-indigo-50/40"
+                            : "border-slate-200 bg-white",
+                      )}
+                    >
+                      <div className="text-sm font-medium text-slate-900">{action.label}</div>
+                      <div className="mt-1 text-xs leading-5 text-slate-600">{action.description}</div>
+                      <div className="mt-3">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={action.tone === "ghost" ? "outline" : "default"}
+                          disabled={isLoading}
+                          className={cn(
+                            action.tone === "primary" && "bg-slate-900 text-white hover:bg-slate-800",
+                            action.tone === "secondary" && "border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50",
+                          )}
+                          onClick={() => onRunAction(action)}
+                        >
+                          {isLoading ? (
+                            <>
+                              <RefreshCcw className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              {action.kind === "recover" ? "同步中..." : "发送中..."}
+                            </>
+                          ) : (
+                            action.label
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : summaryPanelView === "owner" ? (
         <>
           {activeConversationMission ? (
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -317,22 +519,6 @@ export function ChatSummaryPanelBody({
                   </div>
                 </div>
               </div>
-              {latestStageGate ? (
-                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-amber-950">阶段确认</div>
-                    <span className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-medium text-amber-800">
-                      {latestStageGate.statusLabel}
-                    </span>
-                  </div>
-                  <div className="mt-2 text-xs leading-5 text-slate-500">本阶段结论：{latestStageGate.stageConclusion}</div>
-                  {latestStageGate.risks ? (
-                    <div className="mt-2 rounded-lg border border-rose-100 bg-rose-50/70 px-3 py-2 text-xs leading-5 text-rose-800">
-                      风险与问题：{latestStageGate.risks}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
               {!isRequirementBootstrapPending && progressGroupSummary ? (
                 <div className="mt-3 grid gap-3 md:grid-cols-3">
                   <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 px-4 py-3">
@@ -473,10 +659,22 @@ export function ChatSummaryPanelBody({
           ) : null}
 
           {!isRequirementBootstrapPending && lifecycleSections.length > 0 ? (
-            <section className="rounded-2xl border border-slate-200 bg-white p-4">
-              <div className="text-sm font-semibold text-slate-900">协作生命周期</div>
-              <div className="mt-1 text-xs leading-5 text-slate-500">只看这条需求现在到谁、谁在等、谁已经完成本轮。</div>
-              <div className="mt-4 space-y-4">
+            <TimelinePreview
+              title="协作生命周期"
+              description="默认只看最近几个关键节点，需要时再展开完整生命周期。"
+              count={lifecycleSections.reduce((sum, section) => sum + section.items.length, 0)}
+              previewItems={lifecycleSections
+                .flatMap((section) =>
+                  section.items.map((participant) => ({
+                    id: `${section.id}:${participant.agentId}`,
+                    title: `${participant.nickname} · ${participant.statusLabel}`,
+                    subtitle: `${section.title} · ${participant.stage}`,
+                    meta: formatTime(participant.updatedAt),
+                  })),
+                )
+                .slice(0, 3)}
+            >
+              <div className="space-y-4">
                 {lifecycleSections.map((section) => (
                   <div key={section.id} className="space-y-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -523,12 +721,20 @@ export function ChatSummaryPanelBody({
                   </div>
                 ))}
               </div>
-            </section>
+            </TimelinePreview>
           ) : !isRequirementBootstrapPending && collaborationLifecycle.length > 0 ? (
-            <section className="rounded-2xl border border-slate-200 bg-white p-4">
-              <div className="text-sm font-semibold text-slate-900">协作生命周期</div>
-              <div className="mt-1 text-xs leading-5 text-slate-500">只看这条任务最近怎么流转、谁接住了、谁回了、现在卡在哪。</div>
-              <div className="mt-3 space-y-2">
+            <TimelinePreview
+              title="协作生命周期"
+              description="默认只看最近的关键流转，展开后再看完整历史。"
+              count={collaborationLifecycle.length}
+              previewItems={collaborationLifecycle.slice(0, 3).map((event) => ({
+                id: event.id,
+                title: `${event.actorLabel} · ${event.title}`,
+                subtitle: event.summary,
+                meta: formatTime(event.timestamp),
+              }))}
+            >
+              <div className="space-y-2">
                 {collaborationLifecycle.map((event) => (
                   <div key={event.id} className={cn("rounded-xl border px-3 py-3", cardToneClass(event.tone))}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -550,7 +756,7 @@ export function ChatSummaryPanelBody({
                   </div>
                 ))}
               </div>
-            </section>
+            </TimelinePreview>
           ) : null}
 
           {!isRequirementBootstrapPending && detailActions.length > 0 ? (
@@ -623,14 +829,24 @@ export function ChatSummaryPanelBody({
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
               <div className="rounded-xl border border-white/80 bg-white px-4 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">负责人</div>
-                <div className="mt-2 text-sm font-semibold text-slate-900">{requirementTeam.ownerLabel}</div>
-                <div className="mt-1 text-xs leading-5 text-slate-600">当前 baton：{requirementTeam.batonLabel}</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  协作模式
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {collaborationSurface?.collaborationLabel ?? "多人并行"}
+                </div>
+                <div className="mt-1 text-xs leading-5 text-slate-600">
+                  负责人：{requirementTeam.ownerLabel}
+                </div>
               </div>
               <div className="rounded-xl border border-white/80 bg-white px-4 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">下一棒</div>
-                <div className="mt-2 text-sm font-semibold text-slate-900">{displayNextBatonLabel}</div>
-                <div className="mt-1 text-xs leading-5 text-slate-600">用来判断这条链是不是继续往下走。</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  当前卡点
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {collaborationSurface?.overviewSummary.currentBlocker ?? "暂无明确卡点"}
+                </div>
+                <div className="mt-1 text-xs leading-5 text-slate-600">多人协作默认并行推进，不强调单一接棒。</div>
               </div>
               <div className="rounded-xl border border-white/80 bg-white px-4 py-3">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">当前判断</div>
@@ -693,14 +909,15 @@ export function ChatSummaryPanelBody({
                         ) : null}
                         {member.isCurrent ? (
                           <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">
-                            当前 baton
+                            当前活跃
                           </span>
                         ) : null}
-                        {displayNextBatonAgentId === member.agentId || member.isNext ? (
+                        {!collaborationSurface?.isSingleOwnerClosure &&
+                        (displayNextBatonAgentId === member.agentId || member.isNext) ? (
                           <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">
                             下一棒
                           </span>
-                        ) : null}
+                          ) : null}
                       </div>
                       <div className="mt-1 text-[11px] text-slate-500">
                         {member.role} · 当前环节：{member.stage}
@@ -737,10 +954,18 @@ export function ChatSummaryPanelBody({
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-sm font-semibold text-slate-900">群聊式时间线</div>
-            <div className="mt-1 text-xs leading-5 text-slate-500">这里只保留结论性发言和关键指令，不展示工具调用、JSON 和杂讯。</div>
-            <div className="mt-4 space-y-3">
+          <TimelinePreview
+            title="群聊式时间线"
+            description="默认只看最近几条关键发言，展开后再看完整协作历史。"
+            count={requirementTeam.timeline.length}
+            previewItems={requirementTeam.timeline.slice(0, 3).map((event) => ({
+              id: event.id,
+              title: `${event.agentLabel} · ${event.headline}`,
+              subtitle: event.summary,
+              meta: formatTime(event.timestamp),
+            }))}
+          >
+            <div className="space-y-3">
               {requirementTeam.timeline.map((event) => (
                 <div key={event.id} className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -759,7 +984,7 @@ export function ChatSummaryPanelBody({
                 </div>
               ))}
             </div>
-          </section>
+          </TimelinePreview>
 
           {requirementTeam.artifacts.length > 0 ? (
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -862,8 +1087,15 @@ export function ChatSummaryPanelBody({
                     <div className="mt-3 space-y-2">
                       {requestPreview.slice(0, 3).map((request) => (
                         <div key={request.id} className="rounded-lg border border-sky-200 bg-white/90 px-3 py-3 text-sm text-slate-800">
-                          <div className="font-medium text-slate-900">{request.title}</div>
-                          <div className="mt-1 text-xs leading-5 text-slate-600">{request.summary}</div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-slate-900">{request.title}</div>
+                            <div className="text-[11px] font-medium text-sky-700">
+                              {formatRequestDeliveryStateLabel(request.deliveryState)}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs leading-5 text-slate-600">
+                            {request.responseSummary ?? request.summary}
+                          </div>
                         </div>
                       ))}
                     </div>

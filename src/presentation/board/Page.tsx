@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useBoardPageViewModel } from "../../application/mission/board-view-model";
 import { buildRequirementRoomHrefFromRecord } from "../../application/delegation/room-routing";
@@ -6,8 +6,14 @@ import {
   buildBoardRequirementSurface,
   describeRequirementRoomPreview,
 } from "../../application/mission/board-requirement-surface";
+import { buildPrimaryRequirementSurface } from "../../application/mission/primary-requirement-surface";
+import {
+  resolveBoardPreRequirementDraft,
+  shouldShowBoardPreRequirementDraft,
+} from "../../application/mission/board-pre-requirement";
 import { buildBoardTaskSurface } from "../../application/mission/board-task-surface";
 import { gateway, useGatewayStore } from "../../application/gateway";
+import { trackChatRequirementMetric } from "../../application/telemetry/chat-requirement-metrics";
 import { toast } from "../../components/system/toast-store";
 import { resolveConversationPresentation } from "../../lib/chat-routes";
 import {
@@ -23,7 +29,6 @@ import {
   BoardRoomPanel,
   BoardSessionMonitor,
   BoardTaskBoardSection,
-  BoardTaskSequencePanel,
 } from "./components/BoardSections";
 import { useBoardCommunicationSync } from "./hooks/useBoardCommunicationSync";
 import { useBoardRuntimeState } from "./hooks/useBoardRuntimeState";
@@ -40,6 +45,8 @@ function BoardPageContent({
   activeCompany,
   activeConversationStates,
   activeDispatches,
+  activeRequirementEvidence,
+  activeDecisionTickets,
   activeRequirementAggregates,
   activeRoomRecords,
   activeWorkItems,
@@ -48,6 +55,7 @@ function BoardPageContent({
   replaceDispatchRecords,
   upsertTask,
   updateCompany,
+  ensureRequirementRoomForAggregate,
 }: BoardPageContentProps) {
   const navigate = useNavigate();
   const connected = useGatewayStore((state) => state.connected);
@@ -75,6 +83,7 @@ function BoardPageContent({
   });
   const [showSessions, setShowSessions] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const lastTrackedBoardFallbackRef = useRef<string | null>(null);
   const [dialogConfig, setDialogConfig] = useState<{
     open: boolean;
     type: "nudge" | "delete" | null;
@@ -86,6 +95,37 @@ function BoardPageContent({
     return emp ? emp.nickname : agentId;
   };
   const ceo = activeCompany.employees.find((employee) => employee.metaRole === "ceo") ?? null;
+  const primaryRequirementSurface = useMemo(
+    () =>
+      buildPrimaryRequirementSurface({
+        company: activeCompany,
+        activeConversationStates,
+        activeWorkItems,
+        activeRequirementAggregates,
+        activeRequirementEvidence,
+        activeDecisionTickets,
+        primaryRequirementId,
+        activeRoomRecords,
+        companySessions,
+        companySessionSnapshots,
+        currentTime,
+        ceoAgentId: ceo?.agentId ?? null,
+      }),
+    [
+      activeCompany,
+      activeConversationStates,
+      activeDecisionTickets,
+      activeRequirementAggregates,
+      activeRequirementEvidence,
+      activeRoomRecords,
+      activeWorkItems,
+      companySessionSnapshots,
+      companySessions,
+      currentTime,
+      ceo?.agentId,
+      primaryRequirementId,
+    ],
+  );
   const requirementSurface = useMemo(
     () =>
       buildBoardRequirementSurface({
@@ -165,7 +205,6 @@ function BoardPageContent({
   );
   const {
     trackedTasks,
-    taskSequence,
     activeTasks,
     archivedTaskItems,
     totalSteps,
@@ -178,6 +217,24 @@ function BoardPageContent({
     visibleRequestHealth,
     orderedTaskSections,
   } = boardTaskSurface;
+  const stageStripSteps =
+    currentWorkItem?.steps.length
+      ? currentWorkItem.steps.map((step, index) => ({
+          id: step.id,
+          index,
+          title: step.title,
+          owner: step.assigneeLabel,
+          status: step.status,
+        }))
+      : requirementSyntheticTask?.steps.length
+        ? requirementSyntheticTask.steps.map((step, index) => ({
+            id: `${requirementSyntheticTask.id}:${index}`,
+            index,
+            title: step.text,
+            owner: step.assignee ?? "待分配",
+            status: step.status === "wip" ? "active" : step.status === "done" ? "done" : "pending",
+          }))
+        : [];
 
   useBoardTaskBackfill({
     tasks: trackedTasks,
@@ -228,6 +285,49 @@ function BoardPageContent({
 
   const currentOwnerAgentId =
     currentWorkItem?.ownerActorId ?? requirementOverview?.currentOwnerAgentId ?? null;
+  const preRequirementDraft = useMemo(
+    () =>
+      resolveBoardPreRequirementDraft({
+        activeConversationStates,
+        ceoAgentId: ceo?.agentId ?? null,
+      }),
+    [activeConversationStates, ceo?.agentId],
+  );
+  const showPreRequirementDraft = shouldShowBoardPreRequirementDraft({
+    trackedTaskCount: trackedTasks.length,
+    hasRequirementOverview: Boolean(requirementOverview),
+    hasCurrentWorkItem: Boolean(currentWorkItem),
+    preRequirementDraft,
+  });
+  const showPreRequirementMainline =
+    Boolean(currentWorkItem) && currentWorkItem?.lifecyclePhase === "pre_requirement";
+  const isBoardFallbackView =
+    !requirementOverview &&
+    !currentWorkItem &&
+    fileTasks.length > 0 &&
+    trackedTasks.length > 0;
+
+  useEffect(() => {
+    if (!activeCompany?.id || !isBoardFallbackView) {
+      lastTrackedBoardFallbackRef.current = null;
+      return;
+    }
+    const metricKey = `${activeCompany.id}:${fileTasks.length}:${trackedTasks.length}`;
+    if (lastTrackedBoardFallbackRef.current === metricKey) {
+      return;
+    }
+    lastTrackedBoardFallbackRef.current = metricKey;
+    trackChatRequirementMetric({
+      companyId: activeCompany.id,
+      conversationId: null,
+      requirementId: null,
+      name: "board_fallback_rendered_from_task_board",
+      metadata: {
+        fileTaskCount: fileTasks.length,
+        trackedTaskCount: trackedTasks.length,
+      },
+    });
+  }, [activeCompany?.id, fileTasks.length, isBoardFallbackView, trackedTasks.length]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 lg:p-8 h-full flex flex-col">
@@ -237,7 +337,13 @@ function BoardPageContent({
             ? isStrategicRequirement
               ? `当前默认只看「${requirementDisplayTitle}」这条战略主线，章节接管、超时和历史请求已自动隐藏。`
               : `当前默认只看「${requirementDisplayTitle}」这条主线，历史交接和旧请求已自动隐藏。`
-            : "这里只看任务顺序、当前步骤和子任务进度。成员状态和异常监控请去运营大厅。"
+            : showPreRequirementMainline
+              ? `当前主线「${requirementDisplayTitle}」已经固化为需求房入口，先补充、澄清或确认后再启动真实执行。`
+            : showPreRequirementDraft
+              ? "CEO 已经形成当前目标草案，但系统还没有正式 requirement/work item。先回 CEO 会话确认草案或继续推进，这里会在主线落地后自动切换。"
+            : isBoardFallbackView
+              ? "当前展示 CEO 任务板视图。系统还没有正式 requirement，但已根据 TASK-BOARD.md 还原当前步骤和执行顺序。"
+              : "这里只看任务顺序、当前步骤和子任务进度。成员状态和异常监控请去运营大厅。"
         }
         trackedTasks={trackedTasks.length}
         wipSteps={wipSteps}
@@ -245,20 +351,20 @@ function BoardPageContent({
         totalSteps={totalSteps}
         globalPct={globalPct}
         canOpenCeo={Boolean(ceo)}
-        canOpenRequirementCenter={Boolean(requirementOverview || currentWorkItem)}
+        canOpenRequirementCenter={Boolean(primaryRequirementSurface.aggregateId || requirementOverview || currentWorkItem)}
         onOpenRequirementCenter={() => navigate("/requirement")}
         onOpenOps={() => navigate("/ops")}
         onOpenCeo={() => ceo && navigate(`/chat/${ceo.agentId}`)}
       />
 
       <BoardRequirementCard
-        visible={Boolean(requirementOverview)}
-        title={requirementDisplayTitle}
-        currentStep={requirementDisplayCurrentStep}
-        summary={requirementDisplaySummary}
-        owner={requirementDisplayOwner}
+        visible={Boolean(primaryRequirementSurface.aggregateId || requirementOverview || currentWorkItem)}
+        title={primaryRequirementSurface.title || requirementDisplayTitle}
+        currentStep={primaryRequirementSurface.currentStep || requirementDisplayCurrentStep}
+        summary={primaryRequirementSurface.summary || requirementDisplaySummary}
+        owner={primaryRequirementSurface.ownerLabel || requirementDisplayOwner}
         stage={requirementDisplayStage}
-        nextStep={requirementDisplayNext}
+        nextStep={primaryRequirementSurface.nextBatonLabel || requirementDisplayNext}
         onOpenOwner={
           currentOwnerAgentId
             ? () => navigate(`/chat/${encodeURIComponent(currentOwnerAgentId)}`)
@@ -269,7 +375,7 @@ function BoardPageContent({
       />
 
       <BoardRoomPanel
-        visible={Boolean(currentWorkItem || requirementRoomRecords.length > 0 || requirementRoomRoute)}
+        visible={Boolean(primaryRequirementSurface.aggregateId || currentWorkItem || requirementRoomRecords.length > 0 || requirementRoomRoute)}
         rooms={requirementRoomRecords}
         roomPreview={(room) =>
           describeRequirementRoomPreview(
@@ -280,21 +386,56 @@ function BoardPageContent({
               : null,
           )
         }
-        route={requirementRoomRoute}
         onOpenRoom={(roomId) => {
           const room = requirementRoomRecords.find((item) => item.id === roomId);
           if (room) {
             navigate(buildRequirementRoomHrefFromRecord(room));
           }
         }}
-        onCreateRoom={() => requirementRoomRoute && navigate(requirementRoomRoute)}
+        route={primaryRequirementSurface.aggregateId ? `ensure:${primaryRequirementSurface.aggregateId}` : requirementRoomRoute}
+        onCreateRoom={() => {
+          if (primaryRequirementSurface.aggregateId) {
+            const ensuredRoom = ensureRequirementRoomForAggregate(primaryRequirementSurface.aggregateId);
+            if (ensuredRoom) {
+              navigate(buildRequirementRoomHrefFromRecord(ensuredRoom));
+              return;
+            }
+          }
+          if (requirementRoomRoute) {
+            navigate(requirementRoomRoute);
+          }
+        }}
       />
 
-      <BoardTaskSequencePanel
-        visible={taskSequence.length > 0}
-        title={requirementOverview ? "本次需求的任务顺序" : "当前任务顺序"}
-        items={taskSequence}
-      />
+      {stageStripSteps.length > 0 ? (
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-950">主线阶段</div>
+              <div className="mt-1 text-sm text-slate-500">
+                只保留这一条主线的阶段顺序，不再重复渲染独立的大型任务顺序面板。
+              </div>
+            </div>
+            <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+              当前负责人 {primaryRequirementSurface.ownerLabel}
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 xl:grid-cols-4">
+            {stageStripSteps.map((step) => (
+              <div key={step.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  {String(step.index + 1).padStart(2, "0")}
+                </div>
+                <div className="mt-3 text-sm font-semibold text-slate-950">{step.title}</div>
+                <div className="mt-2 text-xs text-slate-500">{step.owner}</div>
+                <div className="mt-3 inline-flex rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600">
+                  {step.status === "done" ? "已完成" : step.status === "active" ? "进行中" : "待开始"}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <BoardAlertStrip
         visible={visibleTakeoverCount > 0}
@@ -406,6 +547,8 @@ function BoardPageContent({
         setShowArchived={setShowArchived}
         activeRoomRecords={activeRoomRecords}
         activeCompanyEmployees={activeCompany.employees}
+        preRequirementDraft={showPreRequirementDraft ? preRequirementDraft : null}
+        onOpenCeo={ceo ? () => navigate(`/chat/${ceo.agentId}`) : undefined}
         onOpenRoute={(route) => navigate(route)}
       />
 
