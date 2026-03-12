@@ -314,6 +314,11 @@ class AuthorityBackendAdapter implements AgentBackend {
         params as Parameters<typeof authorityClient.transitionRequirement>[0],
       )) as T;
     }
+    if (method === "authority.requirement.promote") {
+      return (await authorityClient.promoteRequirement(
+        params as Parameters<typeof authorityClient.promoteRequirement>[0],
+      )) as T;
+    }
     if (method === "authority.room.append") {
       return (await authorityClient.appendRoom(
         params as Parameters<typeof authorityClient.appendRoom>[0],
@@ -324,9 +329,34 @@ class AuthorityBackendAdapter implements AgentBackend {
         params as Parameters<typeof authorityClient.upsertRoomBindings>[0],
       )) as T;
     }
+    if (method === "authority.room.delete") {
+      return (await authorityClient.deleteRoom(
+        params as Parameters<typeof authorityClient.deleteRoom>[0],
+      )) as T;
+    }
     if (method === "authority.dispatch.create") {
       return (await authorityClient.upsertDispatch(
         params as Parameters<typeof authorityClient.upsertDispatch>[0],
+      )) as T;
+    }
+    if (method === "authority.dispatch.delete") {
+      return (await authorityClient.deleteDispatch(
+        params as Parameters<typeof authorityClient.deleteDispatch>[0],
+      )) as T;
+    }
+    if (method === "authority.artifact.upsert") {
+      return (await authorityClient.upsertArtifact(
+        params as Parameters<typeof authorityClient.upsertArtifact>[0],
+      )) as T;
+    }
+    if (method === "authority.artifact.sync-mirror") {
+      return (await authorityClient.syncArtifactMirrors(
+        params as Parameters<typeof authorityClient.syncArtifactMirrors>[0],
+      )) as T;
+    }
+    if (method === "authority.artifact.delete") {
+      return (await authorityClient.deleteArtifact(
+        params as Parameters<typeof authorityClient.deleteArtifact>[0],
       )) as T;
     }
     if (method === "authority.executor.get") {

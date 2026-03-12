@@ -216,9 +216,21 @@ export type AuthorityRequirementTransitionRequest = {
   source?: RequirementEvidenceEvent["source"];
 };
 
+export type AuthorityRequirementPromoteRequest = {
+  companyId: string;
+  aggregateId: string | null;
+  timestamp?: number;
+  source?: RequirementEvidenceEvent["source"];
+};
+
 export type AuthorityAppendRoomRequest = {
   companyId: string;
   room: RequirementRoomRecord;
+};
+
+export type AuthorityRoomDeleteRequest = {
+  companyId: string;
+  roomId: string;
 };
 
 export type AuthorityRoomBindingsUpsertRequest = {
@@ -229,6 +241,27 @@ export type AuthorityRoomBindingsUpsertRequest = {
 export type AuthorityDispatchUpsertRequest = {
   companyId: string;
   dispatch: DispatchRecord;
+};
+
+export type AuthorityDispatchDeleteRequest = {
+  companyId: string;
+  dispatchId: string;
+};
+
+export type AuthorityArtifactUpsertRequest = {
+  companyId: string;
+  artifact: ArtifactRecord;
+};
+
+export type AuthorityArtifactDeleteRequest = {
+  companyId: string;
+  artifactId: string;
+};
+
+export type AuthorityArtifactMirrorSyncRequest = {
+  companyId: string;
+  artifacts: ArtifactRecord[];
+  mirrorPrefix?: string;
 };
 
 export type AuthorityAppendCompanyEventRequest = {

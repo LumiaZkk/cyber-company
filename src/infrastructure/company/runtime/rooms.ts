@@ -33,6 +33,7 @@ import {
 import { backfillRequirementRoomRecord } from "../../../application/mission/requirement-room-backfill";
 import {
   appendAuthorityRoom,
+  deleteAuthorityRoom,
   upsertAuthorityRoomBindings,
 } from "../../../application/gateway/authority-control";
 import {
@@ -717,12 +718,26 @@ export function buildRoomActions(
       const next = activeRoomRecords.filter((room) => room.id !== roomId);
       const nextBindings = activeRoomBindings.filter((binding) => binding.roomId !== roomId);
       if (authorityBackedState) {
-        set({
-          activeRoomRecords: next,
-          activeRoomBindings: nextBindings,
-        });
-        persistActiveRooms(activeCompany.id, next);
-        persistActiveRoomBindings(activeCompany.id, nextBindings);
+        void deleteAuthorityRoom({
+          companyId: activeCompany.id,
+          roomId,
+        })
+          .then((snapshot) =>
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "room.delete",
+              set,
+              get,
+            }),
+          )
+          .catch((error) =>
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to delete room through authority",
+            }),
+          );
         return;
       }
       const reconciledRequirements = reconcileActiveRequirementState({

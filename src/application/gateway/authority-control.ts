@@ -1,8 +1,14 @@
 import { gateway } from "./index";
 import type {
   AuthorityAppendRoomRequest,
+  AuthorityArtifactDeleteRequest,
+  AuthorityArtifactMirrorSyncRequest,
+  AuthorityArtifactUpsertRequest,
   AuthorityDispatchUpsertRequest,
+  AuthorityDispatchDeleteRequest,
+  AuthorityRequirementPromoteRequest,
   AuthorityRequirementTransitionRequest,
+  AuthorityRoomDeleteRequest,
   AuthorityRoomBindingsUpsertRequest,
   AuthorityBootstrapSnapshot,
   AuthorityCompanyRuntimeSnapshot,
@@ -53,6 +59,10 @@ export function transitionAuthorityRequirement(input: AuthorityRequirementTransi
   return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.requirement.transition", input);
 }
 
+export function promoteAuthorityRequirement(input: AuthorityRequirementPromoteRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.requirement.promote", input);
+}
+
 export function appendAuthorityRoom(input: AuthorityAppendRoomRequest) {
   return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.room.append", input);
 }
@@ -61,8 +71,28 @@ export function upsertAuthorityRoomBindings(input: AuthorityRoomBindingsUpsertRe
   return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.room-bindings.upsert", input);
 }
 
+export function deleteAuthorityRoom(input: AuthorityRoomDeleteRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.room.delete", input);
+}
+
 export function upsertAuthorityDispatch(input: AuthorityDispatchUpsertRequest) {
   return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.dispatch.create", input);
+}
+
+export function deleteAuthorityDispatch(input: AuthorityDispatchDeleteRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.dispatch.delete", input);
+}
+
+export function upsertAuthorityArtifact(input: AuthorityArtifactUpsertRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.artifact.upsert", input);
+}
+
+export function syncAuthorityArtifactMirrors(input: AuthorityArtifactMirrorSyncRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.artifact.sync-mirror", input);
+}
+
+export function deleteAuthorityArtifact(input: AuthorityArtifactDeleteRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.artifact.delete", input);
 }
 
 export function getAuthorityExecutorConfig() {

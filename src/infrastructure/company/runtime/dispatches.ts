@@ -1,4 +1,7 @@
-import { upsertAuthorityDispatch } from "../../../application/gateway/authority-control";
+import {
+  deleteAuthorityDispatch,
+  upsertAuthorityDispatch,
+} from "../../../application/gateway/authority-control";
 import {
   applyAuthorityRuntimeCommandError,
   applyAuthorityRuntimeSnapshotToStore,
@@ -119,12 +122,42 @@ export function buildDispatchActions(
     },
 
     deleteDispatchRecord: (dispatchId) => {
-      const { activeCompany, activeDispatches, activeWorkItems, activeArtifacts, activeRoomRecords } = get();
+      const {
+        activeCompany,
+        authorityBackedState,
+        activeDispatches,
+        activeWorkItems,
+        activeArtifacts,
+        activeRoomRecords,
+      } = get();
       if (!activeCompany) {
         return;
       }
 
       const deletedDispatch = activeDispatches.find((dispatch) => dispatch.id === dispatchId) ?? null;
+      if (authorityBackedState) {
+        void deleteAuthorityDispatch({
+          companyId: activeCompany.id,
+          dispatchId,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "dispatch.delete",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to delete dispatch through authority",
+            });
+          });
+        return;
+      }
       const next = activeDispatches.filter((dispatch) => dispatch.id !== dispatchId);
       const syncedWorkItems = reconcileStoredWorkItems({
         company: activeCompany,

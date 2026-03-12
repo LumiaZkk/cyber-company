@@ -30,7 +30,10 @@ import type {
   RuntimeGet,
   RuntimeSet,
 } from "./types";
-import { transitionAuthorityRequirement } from "../../../application/gateway/authority-control";
+import {
+  promoteAuthorityRequirement,
+  transitionAuthorityRequirement,
+} from "../../../application/gateway/authority-control";
 
 export function emitRequirementCompanyEvent(input: {
   companyId: string;
@@ -155,6 +158,7 @@ export function buildRequirementActions(
     setPrimaryRequirement: (aggregateId) => {
       const {
         activeCompany,
+        authorityBackedState,
         activeRequirementAggregates,
         activeRequirementEvidence,
         primaryRequirementId,
@@ -167,6 +171,31 @@ export function buildRequirementActions(
         aggregateId && activeRequirementAggregates.some((record) => record.id === aggregateId)
           ? aggregateId
           : null;
+      if (authorityBackedState) {
+        void promoteAuthorityRequirement({
+          companyId: activeCompany.id,
+          aggregateId: nextPrimaryRequirementId,
+          timestamp: Date.now(),
+          source: "local-command",
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "requirement.promote",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to promote requirement through authority",
+            });
+          });
+        return;
+      }
       const nextAggregates = sanitizeRequirementAggregateRecords(
         activeRequirementAggregates,
         nextPrimaryRequirementId,

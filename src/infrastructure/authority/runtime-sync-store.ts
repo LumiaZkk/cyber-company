@@ -25,9 +25,15 @@ type AuthorityRuntimeSyncState = {
 
 const DEFAULT_COMMAND_ROUTES = [
   "requirement.transition",
+  "requirement.promote",
   "room.append",
+  "room.delete",
   "room-bindings.upsert",
   "dispatch.create",
+  "dispatch.delete",
+  "artifact.upsert",
+  "artifact.sync-mirror",
+  "artifact.delete",
 ];
 
 export function buildAuthorityRuntimeSignature(snapshot: AuthorityCompanyRuntimeSnapshot) {

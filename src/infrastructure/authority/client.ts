@@ -2,6 +2,9 @@ import type {
   AuthorityActorsResponse,
   AuthorityAppendRoomRequest,
   AuthorityAppendCompanyEventRequest,
+  AuthorityArtifactDeleteRequest,
+  AuthorityArtifactMirrorSyncRequest,
+  AuthorityArtifactUpsertRequest,
   AuthorityBootstrapSnapshot,
   AuthorityChatSendRequest,
   AuthorityChatSendResponse,
@@ -10,6 +13,7 @@ import type {
   AuthorityCompanyRuntimeSnapshot,
   AuthorityCreateCompanyRequest,
   AuthorityCreateCompanyResponse,
+  AuthorityDispatchDeleteRequest,
   AuthorityDispatchUpsertRequest,
   AuthorityEvent,
   AuthorityExecutorConfig,
@@ -17,7 +21,9 @@ import type {
   AuthorityHealthSnapshot,
   AuthorityHireEmployeeRequest,
   AuthorityHireEmployeeResponse,
+  AuthorityRequirementPromoteRequest,
   AuthorityRequirementTransitionRequest,
+  AuthorityRoomDeleteRequest,
   AuthorityRoomBindingsUpsertRequest,
   AuthorityRuntimeSyncRequest,
   AuthoritySessionHistoryResponse,
@@ -221,6 +227,17 @@ export class AuthorityClient {
     );
   }
 
+  async promoteRequirement(body: AuthorityRequirementPromoteRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(
+      this.baseUrl,
+      "/commands/requirement.promote",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
   async appendRoom(body: AuthorityAppendRoomRequest) {
     return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/room.append", {
       method: "POST",
@@ -235,8 +252,43 @@ export class AuthorityClient {
     });
   }
 
+  async deleteRoom(body: AuthorityRoomDeleteRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/room.delete", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   async upsertDispatch(body: AuthorityDispatchUpsertRequest) {
     return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/dispatch.create", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteDispatch(body: AuthorityDispatchDeleteRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/dispatch.delete", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async upsertArtifact(body: AuthorityArtifactUpsertRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/artifact.upsert", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async syncArtifactMirrors(body: AuthorityArtifactMirrorSyncRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/artifact.sync-mirror", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteArtifact(body: AuthorityArtifactDeleteRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/artifact.delete", {
       method: "POST",
       body: JSON.stringify(body),
     });
