@@ -9,12 +9,15 @@ import type {
   ProviderSessionStatus,
 } from "../../infrastructure/gateway/runtime/types";
 import type {
+  DispatchCheckoutState,
   DispatchRecord,
+  DispatchReleaseReason,
   EscalationRecord,
   HandoffRecord,
   RequestRecord,
   SupportRequestRecord,
 } from "../../domain/delegation/types";
+import { normalizeDispatchCheckout } from "../../domain/delegation/dispatch-checkout";
 import type { WorkItemRecord } from "../../domain/mission/types";
 import type { Company } from "../../domain/org/types";
 import { resolveSessionActorId, resolveSessionUpdatedAt } from "../../lib/sessions";
@@ -52,6 +55,21 @@ export type AgentRuntimeEvidence = {
   timestamp: number;
 };
 
+export type AgentSessionExecutionContext = {
+  dispatchId: string;
+  workItemId: string | null;
+  assignment: string;
+  objective: string;
+  checkoutState: Extract<DispatchCheckoutState, "claimed" | "released">;
+  actorId: string | null;
+  sessionKey: string;
+  updatedAt: number;
+  checkedOutAt: number | null;
+  releasedAt: number | null;
+  releaseReason: DispatchReleaseReason | null;
+  source: "dispatch_checkout";
+};
+
 export type AgentSessionRecord = {
   sessionKey: string;
   agentId: string | null;
@@ -64,6 +82,7 @@ export type AgentSessionRecord = {
   lastError: string | null;
   lastTerminalRunState?: Extract<AgentRunState, "completed" | "aborted" | "error"> | null;
   lastTerminalSummary?: string | null;
+  executionContext?: AgentSessionExecutionContext | null;
   source: AgentSessionSource;
 };
 
@@ -166,6 +185,126 @@ function normalizeTimestamp(value: unknown): number | null {
 
 function normalizeNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeExecutionCopy(value: string | null | undefined, fallback: string): string {
+  const normalized = normalizeNonEmptyString(value);
+  return normalized ?? fallback;
+}
+
+function buildExecutionContextFromDispatch(dispatch: DispatchRecord): AgentSessionExecutionContext | null {
+  const checkout = normalizeDispatchCheckout(dispatch);
+  if (checkout.checkoutState === "open" || !checkout.checkoutSessionKey) {
+    return null;
+  }
+  const checkoutState: AgentSessionExecutionContext["checkoutState"] = checkout.checkoutState === "claimed"
+    ? "claimed"
+    : "released";
+
+  return {
+    dispatchId: dispatch.id,
+    workItemId: normalizeNonEmptyString(dispatch.workItemId) ?? null,
+    assignment: normalizeExecutionCopy(dispatch.title, "未命名派单"),
+    objective: normalizeExecutionCopy(dispatch.summary, dispatch.title || "等待执行结果回流。"),
+    checkoutState,
+    actorId: checkout.checkoutActorId ?? null,
+    sessionKey: checkout.checkoutSessionKey,
+    updatedAt: dispatch.updatedAt,
+    checkedOutAt: checkout.checkedOutAt ?? null,
+    releasedAt: checkout.releasedAt ?? null,
+    releaseReason: checkout.releaseReason ?? null,
+    source: "dispatch_checkout",
+  };
+}
+
+function isSameExecutionContext(
+  left: AgentSessionExecutionContext | null | undefined,
+  right: AgentSessionExecutionContext | null | undefined,
+): boolean {
+  if (!left && !right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.dispatchId === right.dispatchId &&
+    left.workItemId === right.workItemId &&
+    left.assignment === right.assignment &&
+    left.objective === right.objective &&
+    left.checkoutState === right.checkoutState &&
+    left.actorId === right.actorId &&
+    left.sessionKey === right.sessionKey &&
+    left.updatedAt === right.updatedAt &&
+    left.checkedOutAt === right.checkedOutAt &&
+    left.releasedAt === right.releasedAt &&
+    left.releaseReason === right.releaseReason &&
+    left.source === right.source
+  );
+}
+
+export function reconcileAgentSessionExecutionContext(input: {
+  sessions: AgentSessionRecord[];
+  dispatches: DispatchRecord[];
+}): AgentSessionRecord[] {
+  const latestContextBySessionKey = new Map<string, AgentSessionExecutionContext>();
+  const observedDispatchSessionKeys = new Set<string>();
+
+  [...input.dispatches]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .forEach((dispatch) => {
+      const checkout = normalizeDispatchCheckout(dispatch);
+      if (checkout.checkoutSessionKey) {
+        observedDispatchSessionKeys.add(checkout.checkoutSessionKey);
+      }
+      const context = buildExecutionContextFromDispatch(dispatch);
+      if (!context || latestContextBySessionKey.has(context.sessionKey)) {
+        return;
+      }
+      latestContextBySessionKey.set(context.sessionKey, context);
+    });
+
+  return [...input.sessions]
+    .map((session) => {
+      const preservedContext = observedDispatchSessionKeys.has(session.sessionKey)
+        ? null
+        : session.executionContext ?? null;
+      const nextContext = latestContextBySessionKey.get(session.sessionKey) ?? preservedContext;
+      if (isSameExecutionContext(session.executionContext ?? null, nextContext)) {
+        return session;
+      }
+      return {
+        ...session,
+        executionContext: nextContext,
+      } satisfies AgentSessionRecord;
+    })
+    .sort((left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0));
+}
+
+function pickLatestRecoveredExecutionContext(
+  sessions: AgentSessionRecord[],
+  predicate?: (context: AgentSessionExecutionContext) => boolean,
+): AgentSessionExecutionContext | null {
+  return (
+    sessions
+      .map((session) => session.executionContext ?? null)
+      .filter((context): context is AgentSessionExecutionContext => Boolean(context))
+      .filter((context) => (predicate ? predicate(context) : true))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null
+  );
+}
+
+function summarizeRecoveredExecutionContext(context: AgentSessionExecutionContext): string {
+  if (context.checkoutState === "claimed") {
+    return `${context.sessionKey} 已恢复执行上下文：${context.assignment}`;
+  }
+  if (context.releaseReason === "blocked") {
+    return `${context.sessionKey} 最近一次以阻塞状态交回：${context.assignment}`;
+  }
+  if (context.releaseReason === "answered") {
+    return `${context.sessionKey} 最近一次已交回结果：${context.assignment}`;
+  }
+  return `${context.sessionKey} 保留了最近一次执行记录：${context.assignment}`;
 }
 
 function normalizeProviderSessionState(value: unknown): ProviderSessionState {
@@ -633,6 +772,7 @@ export function buildAgentSessionRecordsFromSessions(input: {
       lastTerminalSummary:
         previous?.lastTerminalSummary
         ?? (session.abortedLastRun ? "Gateway 标记最近一次执行为 aborted。" : null),
+      executionContext: previous?.executionContext ?? null,
       source: previous?.source ?? "sessions_list",
     };
     bySessionKey.set(session.key, next);
@@ -707,6 +847,7 @@ export function applyProviderSessionStatusToAgentRuntime(input: {
         : previous?.lastError ?? null),
     lastTerminalRunState: terminalState,
     lastTerminalSummary: terminalSummary,
+    executionContext: previous?.executionContext ?? null,
     source: "session_status",
   });
 
@@ -811,6 +952,7 @@ export function applyProviderRuntimeEvent(input: {
         event.runState === "completed" || event.runState === "aborted" || event.runState === "error"
           ? buildTerminalRunSummary(event.runState, sessionKey, event.errorMessage)
           : previousSession?.lastTerminalSummary ?? null,
+      executionContext: previousSession?.executionContext ?? null,
       source: "lifecycle",
     });
   }
@@ -873,6 +1015,7 @@ export function buildAgentRuntimeProjection(input: RuntimeProjectionInput): Agen
 
   return [...agentIds].map((agentId) => {
     const agentSessions = input.sessions.filter((session) => session.agentId === agentId);
+    const latestRecoveredExecutionContext = pickLatestRecoveredExecutionContext(agentSessions);
     const activeRuns = input.runs.filter(
       (run) => run.agentId === agentId && isAgentRunActive(run.state),
     );
@@ -922,6 +1065,12 @@ export function buildAgentRuntimeProjection(input: RuntimeProjectionInput): Agen
         kind: "error",
         summary: degradedSession.lastError,
         timestamp: degradedSession.lastSeenAt ?? Date.now(),
+      });
+    } else if (latestRecoveredExecutionContext) {
+      evidence.push({
+        kind: "session",
+        summary: summarizeRecoveredExecutionContext(latestRecoveredExecutionContext),
+        timestamp: latestRecoveredExecutionContext.updatedAt,
       });
     } else if (latestTerminalSession?.lastTerminalSummary) {
       evidence.push({
@@ -1191,6 +1340,23 @@ export function buildCanonicalAgentStatusProjection(input: {
     const agentSessions = [...(sessionsByAgentId.get(employee.agentId) ?? [])].sort(
       (left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0),
     );
+    const claimedRecoveredExecutionContext = pickLatestRecoveredExecutionContext(
+      agentSessions,
+      (context) => context.checkoutState === "claimed",
+    );
+    const blockedRecoveredExecutionContext = pickLatestRecoveredExecutionContext(
+      agentSessions,
+      (context) => context.checkoutState === "released" && context.releaseReason === "blocked",
+    );
+    const completedRecoveredExecutionContext = pickLatestRecoveredExecutionContext(
+      agentSessions,
+      (context) => context.checkoutState === "released" && context.releaseReason === "answered",
+    );
+    const latestRecoveredExecutionContext =
+      claimedRecoveredExecutionContext
+      ?? blockedRecoveredExecutionContext
+      ?? completedRecoveredExecutionContext
+      ?? pickLatestRecoveredExecutionContext(agentSessions);
     const relevantWorkItems = [...input.activeWorkItems]
       .filter((workItem) => isCurrentWorkItemForAgent(workItem, employee.agentId))
       .sort(
@@ -1203,6 +1369,9 @@ export function buildCanonicalAgentStatusProjection(input: {
       (dispatch) =>
         dispatch.targetActorIds.includes(employee.agentId) &&
         matchesDispatchScope(dispatch, effectiveScope),
+    );
+    const claimedDispatches = agentDispatches.filter(
+      (dispatch) => normalizeDispatchCheckout(dispatch).checkoutState === "claimed",
     );
     const openDispatchCount = agentDispatches.filter((dispatch) => isOpenDispatchStatus(dispatch.status)).length;
     const blockedDispatches = agentDispatches.filter((dispatch) => dispatch.status === "blocked");
@@ -1251,6 +1420,7 @@ export function buildCanonicalAgentStatusProjection(input: {
       relatedRequests[0]?.updatedAt,
       relatedHandoffs[0]?.updatedAt,
       agentSessions[0]?.lastSeenAt,
+      latestRecoveredExecutionContext?.updatedAt,
     ]);
 
     const hasTakeoverRequired =
@@ -1283,6 +1453,7 @@ export function buildCanonicalAgentStatusProjection(input: {
       ...agentDispatches.filter(
         (dispatch) =>
           isOpenDispatchStatus(dispatch.status) &&
+          normalizeDispatchCheckout(dispatch).checkoutState !== "claimed" &&
           !(dispatch.status === "pending" || dispatch.status === "sent"
             ? ageMs(dispatch.updatedAt, now) < INITIAL_ACK_WINDOW_MS
             : false),
@@ -1302,6 +1473,7 @@ export function buildCanonicalAgentStatusProjection(input: {
 
     const completedSignals = [
       primaryWorkItem?.status === "completed" ? primaryWorkItem.updatedAt : null,
+      completedRecoveredExecutionContext?.updatedAt ?? null,
       ...agentDispatches
         .filter((dispatch) => dispatch.status === "answered")
         .map((dispatch) => dispatch.updatedAt),
@@ -1326,6 +1498,7 @@ export function buildCanonicalAgentStatusProjection(input: {
       ...blockedRequests.map((request) => request.updatedAt),
       ...blockedHandoffs.map((handoff) => handoff.updatedAt),
       ...blockedWorkItems.map((workItem) => workItem.updatedAt),
+      blockedRecoveredExecutionContext?.updatedAt ?? 0,
       runtimeState === "degraded" && hasOpenBusinessChain ? runtime?.latestTerminalAt ?? 0 : 0,
       0,
     );
@@ -1334,7 +1507,7 @@ export function buildCanonicalAgentStatusProjection(input: {
     let coordinationState: CoordinationState = "none";
     if (hasExplicitBlocked || hasTakeoverRequired) {
       coordinationState = "explicit_blocked";
-    } else if (runtimeState === "busy") {
+    } else if (runtimeState === "busy" || claimedDispatches.length > 0 || Boolean(claimedRecoveredExecutionContext)) {
       coordinationState = "executing";
     } else if (hasWaitingInput) {
       coordinationState = "waiting_input";
@@ -1369,7 +1542,10 @@ export function buildCanonicalAgentStatusProjection(input: {
 
     const currentAssignment =
       primaryWorkItem?.title ??
+      claimedDispatches[0]?.title ??
+      claimedRecoveredExecutionContext?.assignment ??
       agentDispatches[0]?.title ??
+      latestRecoveredExecutionContext?.assignment ??
       openSupportRequests[0]?.summary ??
       relatedRequests[0]?.title ??
       relatedHandoffs[0]?.title ??
@@ -1379,6 +1555,9 @@ export function buildCanonicalAgentStatusProjection(input: {
       primaryWorkItem?.displayNextAction ??
       primaryWorkItem?.nextAction ??
       primaryWorkItem?.displayStage ??
+      claimedDispatches[0]?.summary ??
+      claimedRecoveredExecutionContext?.objective ??
+      latestRecoveredExecutionContext?.objective ??
       openSupportRequests[0]?.detail ??
       relatedRequests[0]?.responseSummary ??
       relatedRequests[0]?.summary ??
@@ -1391,6 +1570,9 @@ export function buildCanonicalAgentStatusProjection(input: {
     } else if (coordinationState === "explicit_blocked") {
       reason =
         runtime?.latestTerminalSummary ??
+        (blockedRecoveredExecutionContext
+          ? `最近一次恢复上下文显示该链路以阻塞状态交回：${blockedRecoveredExecutionContext.assignment}。`
+          : null) ??
         blockedSupportRequests[0]?.detail ??
         blockedRequests[0]?.responseDetails ??
         blockedHandoffs[0]?.missingItems?.[0] ??
@@ -1401,7 +1583,11 @@ export function buildCanonicalAgentStatusProjection(input: {
       reason =
         runtime?.activeRunIds.length
           ? `${runtime.activeRunIds.length} 条活跃 run 仍在执行，等待交付。`
-          : "runtime 仍在持续执行，等待当前链路回传结果。";
+          : claimedDispatches[0]
+            ? `${claimedDispatches[0].targetActorIds[0] === employee.agentId ? "已认领当前派单" : "当前派单已被认领"}，等待执行结果回流。`
+            : claimedRecoveredExecutionContext
+              ? `执行信号暂时缺失，但已从 ${claimedRecoveredExecutionContext.dispatchId} 恢复当前上下文：${claimedRecoveredExecutionContext.assignment}。`
+            : "runtime 仍在持续执行，等待当前链路回传结果。";
     } else if (coordinationState === "waiting_input") {
       reason =
         primaryWorkItem?.status === "waiting_review"
@@ -1417,7 +1603,9 @@ export function buildCanonicalAgentStatusProjection(input: {
     } else if (coordinationState === "pending_ack") {
       reason = "派单已发出，仍在等待首次确认。";
     } else if (coordinationState === "completed") {
-      reason = "最近一次协作链已完成并闭环。";
+      reason = completedRecoveredExecutionContext
+        ? `最近一次恢复上下文显示该链路已交回结果：${completedRecoveredExecutionContext.assignment}。`
+        : "最近一次协作链已完成并闭环。";
     } else if (runtimeState === "offline") {
       reason = "Provider 明确报告当前节点不可达。";
     } else if (runtimeState === "no_signal") {

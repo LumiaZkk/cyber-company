@@ -33,8 +33,10 @@ export interface Company {
   workflowCapabilityBindings?: WorkflowCapabilityBinding[];
   skillDefinitions?: SkillDefinition[];
   skillRuns?: SkillRunRecord[];
+  automationRuns?: AutomationRunRecord[];
   capabilityRequests?: CapabilityRequestRecord[];
   capabilityIssues?: CapabilityIssueRecord[];
+  capabilityAuditEvents?: CapabilityAuditEventRecord[];
   tasks?: TrackedTask[];
   handoffs?: HandoffRecord[];
   requests?: RequestRecord[];
@@ -57,6 +59,15 @@ export interface CompanySystemMetadata {
     lastError?: string | null;
     updatedAt: number;
   };
+  platformCloseout?: {
+    signature: string;
+    status: "ready" | "in_progress" | "attention";
+    readyCount: number;
+    inProgressCount: number;
+    attentionCount: number;
+    totalCount: number;
+    updatedAt: number;
+  };
 }
 
 export interface CompanyOrgSettings {
@@ -66,6 +77,7 @@ export interface CompanyOrgSettings {
   autonomyPolicy?: CompanyAutonomyPolicy;
   autonomyState?: CompanyAutonomyState;
   collaborationPolicy?: CompanyCollaborationPolicy;
+  workspacePolicy?: CompanyWorkspacePolicy;
 }
 
 export interface CompanyAutonomyPolicy {
@@ -74,6 +86,7 @@ export interface CompanyAutonomyPolicy {
   humanApprovalRequiredForLayoffs?: boolean;
   humanApprovalRequiredForDepartmentCreateRemove?: boolean;
   humanApprovalRequiredForAutomationEnable?: boolean;
+  automationMonthlyBudgetUsd?: number;
   maxAutoHeadcountDelta?: number;
   maxAutoBudgetDelta?: number;
   supportSlaHours?: number;
@@ -109,6 +122,12 @@ export interface CompanyCollaborationPolicy {
   allowDepartmentMembersWithinDepartment?: boolean;
   allowDepartmentMembersToManager?: boolean;
   explicitEdges?: CollaborationEdge[];
+}
+
+export interface CompanyWorkspacePolicy {
+  deliverySource?: "artifact_store";
+  providerMirrorMode?: "fallback" | "disabled";
+  executorWriteTarget?: "agent_workspace" | "delivery_artifacts";
 }
 
 export interface Department {
@@ -150,6 +169,8 @@ export type CompanyWorkspaceAppKind =
 export type CompanyWorkspaceAppStatus = "ready" | "recommended" | "building";
 
 export type CompanyWorkspaceAppSurface = "template" | "embedded";
+export type CompanyWorkspaceAppVisibility = "company" | "leadership" | "private";
+export type CompanyWorkspaceAppShareScope = "company" | "department" | "leadership";
 
 export type CompanyWorkspaceAppTemplate =
   | "reader"
@@ -157,7 +178,8 @@ export type CompanyWorkspaceAppTemplate =
   | "knowledge"
   | "workbench"
   | "review-console"
-  | "dashboard";
+  | "dashboard"
+  | "generic-app";
 
 export interface CompanyWorkspaceAppEmbeddedPermissions {
   resources: "manifest-scoped";
@@ -166,15 +188,31 @@ export interface CompanyWorkspaceAppEmbeddedPermissions {
   actions: "whitelisted" | "none";
 }
 
+export interface CompanyWorkspaceAppImplementation {
+  kind: "preset" | "embedded";
+  preset?: CompanyWorkspaceAppTemplate | null;
+  entry?: string | null;
+}
+
+export interface CompanyWorkspaceAppRuntimeContract {
+  kind: "controlled-host";
+  permissions: CompanyWorkspaceAppEmbeddedPermissions;
+}
+
 export interface CompanyWorkspaceApp {
   id: string;
   slug: string;
   title: string;
   description: string;
+  summary?: string;
   icon: string;
   kind: CompanyWorkspaceAppKind;
   status: CompanyWorkspaceAppStatus;
   ownerAgentId?: string;
+  visibility?: CompanyWorkspaceAppVisibility;
+  shareScope?: CompanyWorkspaceAppShareScope;
+  implementation?: CompanyWorkspaceAppImplementation | null;
+  runtime?: CompanyWorkspaceAppRuntimeContract | null;
   surface?: CompanyWorkspaceAppSurface;
   template?: CompanyWorkspaceAppTemplate;
   manifestArtifactId?: string | null;
@@ -200,6 +238,7 @@ export type SkillDefinitionTrigger = "app_action" | "workflow_step";
 export type SkillRunTrigger = SkillDefinitionTrigger | "manual";
 export type SkillRunStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type SkillRunExecutionMode = "builtin_bridge" | "workspace_script";
+export type AutomationRunStatus = "running" | "succeeded" | "failed" | "cancelled" | "unknown";
 
 export interface SkillDefinition {
   id: string;
@@ -242,6 +281,24 @@ export interface SkillRunRecord {
   errorMessage?: string | null;
   startedAt: number;
   completedAt?: number | null;
+  updatedAt: number;
+}
+
+export interface AutomationRunRecord {
+  id: string;
+  automationId: string;
+  automationName: string;
+  agentId?: string | null;
+  status: AutomationRunStatus;
+  providerStatus?: string | null;
+  message?: string | null;
+  scheduleKind?: string | null;
+  scheduleExpr?: string | null;
+  scheduleEveryMs?: number | null;
+  runAt: number;
+  nextRunAt?: number | null;
+  createdAt: number;
+  observedAt: number;
   updatedAt: number;
 }
 
@@ -301,6 +358,32 @@ export interface CapabilityIssueRecord {
   contextFileName?: string | null;
   contextRunId?: string | null;
   status: CapabilityIssueStatus;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type CapabilityAuditEventKind = "skill" | "request" | "issue" | "run";
+
+export interface CapabilityAuditEventRecord {
+  id: string;
+  kind: CapabilityAuditEventKind;
+  entityId: string;
+  action:
+    | "created"
+    | "status_changed"
+    | "smoke_test_succeeded"
+    | "smoke_test_failed"
+    | "run_succeeded"
+    | "run_failed";
+  summary: string;
+  detail?: string;
+  actorId?: string | null;
+  actorLabel?: string | null;
+  appId?: string | null;
+  skillId?: string | null;
+  requestId?: string | null;
+  issueId?: string | null;
+  runId?: string | null;
   createdAt: number;
   updatedAt: number;
 }

@@ -1,3 +1,4 @@
+import { normalizeDispatchCheckout } from "../../../domain/delegation/dispatch-checkout";
 import type { DispatchRecord } from "./types";
 
 const DISPATCH_LIMIT = 240;
@@ -7,6 +8,7 @@ export function normalizeDispatchRecord(record: DispatchRecord): DispatchRecord 
   const revision = record.revision;
   return {
     ...record,
+    ...normalizeDispatchCheckout(record),
     revision: typeof revision === "number" && Number.isFinite(revision) && revision > 0
       ? Math.floor(revision)
       : 1,

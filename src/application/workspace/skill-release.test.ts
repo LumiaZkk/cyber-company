@@ -85,4 +85,26 @@ describe("buildSkillReleaseReadiness", () => {
     expect(readiness.publishable).toBe(false);
     expect(readiness.checks.find((check) => check.id === "execution-target")?.ok).toBe(false);
   });
+
+  it("accepts a successful workspace script smoke test as execution backing", () => {
+    const readiness = buildSkillReleaseReadiness({
+      skill: {
+        ...skill,
+        id: "custom.workspace-script",
+        entryPath: "scripts/custom-reader-index.py",
+      },
+      skillRuns: [
+        createSkillRun({
+          id: "run-workspace-script",
+          skillId: "custom.workspace-script",
+          executionMode: "workspace_script",
+          executionEntryPath: "scripts/custom-reader-index.py",
+        }),
+      ],
+      workspaceApps: [readerApp],
+    });
+
+    expect(readiness.checks.find((check) => check.id === "execution-target")?.ok).toBe(true);
+    expect(readiness.publishable).toBe(true);
+  });
 });

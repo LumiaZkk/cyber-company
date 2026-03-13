@@ -229,6 +229,52 @@ describe("buildRuntimeInspectorSurface", () => {
     expect(surface?.criticalAgents).toBe(1);
   });
 
+  it("surfaces recovered execution context when runtime signals are missing", () => {
+    const surface = buildRuntimeInspectorSurface({
+      activeCompany: createCompany(),
+      activeWorkItems: [] as WorkItemRecord[],
+      activeDispatches: [] as DispatchRecord[],
+      activeSupportRequests: [] as SupportRequestRecord[],
+      activeEscalations: [] as EscalationRecord[],
+      activeAgentSessions: [
+        createSession({
+          sessionState: "idle",
+          executionContext: {
+            dispatchId: "dispatch-recovered",
+            workItemId: "work-recovered",
+            assignment: "继续完成 execution recovery",
+            objective: "把缺失的运行信号恢复成可解释上下文。",
+            checkoutState: "claimed",
+            actorId: "cto",
+            sessionKey: "agent:cto:main",
+            updatedAt: 160,
+            checkedOutAt: 160,
+            releasedAt: null,
+            releaseReason: null,
+            source: "dispatch_checkout",
+          },
+        }),
+      ],
+      activeAgentRuns: [] as AgentRunRecord[],
+      activeAgentRuntime: [] as AgentRuntimeRecord[],
+      activeAgentStatuses: [],
+      activeAgentStatusHealth: createStatusHealth(),
+    });
+
+    const cto = surface?.agents.find((entry) => entry.agentId === "cto");
+    expect(cto).toMatchObject({
+      activityLabel: "恢复执行中",
+      sceneActivityLabel: "继续完成 execution recovery",
+      currentAssignment: "继续完成 execution recovery",
+    });
+    expect(surface?.replay[0]).toMatchObject({
+      agentId: "cto",
+      modalityLabel: "Session",
+      phaseLabel: "恢复执行",
+      title: "CTO 已恢复执行上下文",
+    });
+  });
+
   it("builds a handling chain so the owner can see who is waiting on whom", () => {
     const surface = buildRuntimeInspectorSurface({
       activeCompany: createCompany(),
@@ -299,6 +345,44 @@ describe("buildRuntimeInspectorSurface", () => {
       agentId: "cto",
       tone: "danger",
     });
+  });
+
+  it("shows claimed dispatches as active execution links", () => {
+    const surface = buildRuntimeInspectorSurface({
+      activeCompany: createCompany(),
+      activeWorkItems: [] as WorkItemRecord[],
+      activeDispatches: [
+        {
+          id: "dispatch-claimed",
+          workItemId: "work-claimed",
+          roomId: "workitem:work-claimed",
+          title: "继续推进 runtime closeout",
+          summary: "把 checkout / locking 收好。",
+          fromActorId: "ceo",
+          targetActorIds: ["cto"],
+          status: "acknowledged",
+          checkoutState: "claimed",
+          checkoutActorId: "cto",
+          checkoutSessionKey: "agent:cto:main",
+          checkedOutAt: 150,
+          createdAt: 100,
+          updatedAt: 150,
+        },
+      ] satisfies DispatchRecord[],
+      activeSupportRequests: [] as SupportRequestRecord[],
+      activeEscalations: [] as EscalationRecord[],
+      activeAgentSessions: [] as AgentSessionRecord[],
+      activeAgentRuns: [] as AgentRunRecord[],
+      activeAgentRuntime: [] as AgentRuntimeRecord[],
+      activeAgentStatuses: [],
+      activeAgentStatusHealth: createStatusHealth(),
+    });
+
+    expect(surface?.chainLinks.find((link) => link.kind === "dispatch")).toMatchObject({
+      stateLabel: "执行中",
+      toAgentId: "cto",
+    });
+    expect(surface?.chainLinks.find((link) => link.kind === "dispatch")?.summary).toContain("已接手");
   });
 
   it("surfaces tool-running and terminal-completed replay events", () => {

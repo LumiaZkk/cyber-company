@@ -82,6 +82,17 @@ function createWorkItem(partial?: Partial<WorkItemRecord>): WorkItemRecord {
 
 const apps: CompanyWorkspaceApp[] = [
   {
+    id: "app:dashboard",
+    slug: "workspace-dashboard",
+    title: "客服队列看板",
+    description: "客服队列看板",
+    icon: "📊",
+    kind: "custom",
+    status: "ready",
+    template: "dashboard",
+    surface: "embedded",
+  },
+  {
     id: "app:consistency",
     slug: "consistency-hub",
     title: "一致性中心",
@@ -120,12 +131,13 @@ const skills: SkillDefinition[] = [
 ];
 
 describe("workflow capability bindings", () => {
-  it("provides default bindings for novel companies", () => {
+  it("provides the generic default bindings without scenario branching", () => {
     const bindings = getCompanyWorkflowCapabilityBindings(createCompany());
     expect(bindings.map((binding) => binding.id)).toEqual([
-      "reader-during-creation",
+      "viewer-before-context-switch",
       "consistency-before-review",
-      "review-before-publish",
+      "review-before-handoff",
+      "dashboard-during-monitoring",
     ]);
   });
 
@@ -147,13 +159,35 @@ describe("workflow capability bindings", () => {
     ]);
   });
 
-  it("provides generic default bindings for non-novel companies", () => {
+  it("reuses the same default bindings for non-novel companies", () => {
     const bindings = getCompanyWorkflowCapabilityBindings(createGenericCompany());
     expect(bindings.map((binding) => binding.id)).toEqual([
-      "viewer-during-delivery",
+      "viewer-before-context-switch",
       "consistency-before-review",
       "review-before-handoff",
+      "dashboard-during-monitoring",
     ]);
+  });
+
+  it("matches monitoring-like work to the dashboard binding", () => {
+    const resolved = resolveWorkflowCapabilityBindings({
+      bindings: getCompanyWorkflowCapabilityBindings(createGenericCompany()),
+      workItem: createWorkItem({
+        title: "跟进客服队列巡检",
+        displayStage: "队列监控",
+        stageLabel: "队列监控",
+        displayNextAction: "先看当前队列状态，再决定是否升级工单。",
+        nextAction: "先看当前队列状态，再决定是否升级工单。",
+      }),
+      apps,
+      skills: [],
+    });
+
+    const dashboard = resolved.find((binding) => binding.id === "dashboard-during-monitoring");
+    expect(dashboard?.required).toBe(false);
+    expect(dashboard?.apps[0]?.template).toBe("dashboard");
+    expect(dashboard?.matchedBy).toContain("stage");
+    expect(dashboard?.matchedBy).toContain("nextAction");
   });
 
   it("matches current work item to the consistency binding and resolves app + skill", () => {
@@ -186,7 +220,7 @@ describe("workflow capability bindings", () => {
       skills: [],
     });
 
-    const review = resolved.find((binding) => binding.id === "review-before-publish");
+    const review = resolved.find((binding) => binding.id === "review-before-handoff");
     expect(review?.missingAppTemplates).toEqual(["review-console"]);
     expect(review?.missingSkillIds).toEqual(["review.precheck"]);
   });

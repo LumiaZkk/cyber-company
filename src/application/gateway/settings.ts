@@ -8,7 +8,11 @@ import {
   listAuthorityOwnedRuntimeSliceLabels,
   listCompatibilityRuntimeSliceLabels,
 } from "../../infrastructure/authority/runtime-slice-ownership";
-import type { CompanyCollaborationPolicy } from "../../domain/org/types";
+import type {
+  CompanyAutonomyPolicy,
+  CompanyCollaborationPolicy,
+  CompanyWorkspacePolicy,
+} from "../../domain/org/types";
 import {
   collectAuthorityGuidance,
   extractAuthorityHealthSnapshot,
@@ -203,10 +207,10 @@ export function useGatewaySettingsQuery() {
       label: "Executor",
       state: executorStatus?.state ?? "blocked",
       summary: executorStatus?.note ?? "下游执行器状态未知。",
-      detail:
-        executorConfig?.openclaw.url ??
-        executorConfig?.lastError ??
-        "尚未检测到可用执行器地址。",
+      detail: [
+        executorConfig?.openclaw.url ?? executorConfig?.lastError ?? "尚未检测到可用执行器地址。",
+        authorityHealth?.executorCapabilities?.notes[0] ?? null,
+      ].filter(Boolean).join(" · "),
       timestamp: executorConfig?.lastConnectedAt ?? null,
     };
 
@@ -304,7 +308,9 @@ export function useGatewaySettingsCommands(input: {
   const [codexRefreshing, setCodexRefreshing] = useState(false);
   const [executorSaving, setExecutorSaving] = useState(false);
   const [orgAutopilotSaving, setOrgAutopilotSaving] = useState(false);
+  const [autonomyPolicySaving, setAutonomyPolicySaving] = useState(false);
   const [collaborationPolicySaving, setCollaborationPolicySaving] = useState(false);
+  const [workspacePolicySaving, setWorkspacePolicySaving] = useState(false);
 
   const reconnectGateway = useCallback(() => {
     connect(url, token);
@@ -647,6 +653,68 @@ export function useGatewaySettingsCommands(input: {
     [collaborationPolicySaving, input.activeCompany, updateCompany],
   );
 
+  const handleUpdateAutonomyPolicy = useCallback(
+    async (autonomyPolicy: CompanyAutonomyPolicy) => {
+      if (!input.activeCompany || autonomyPolicySaving) {
+        return null;
+      }
+
+      setAutonomyPolicySaving(true);
+      try {
+        await updateCompany({
+          orgSettings: {
+            ...(input.activeCompany.orgSettings ?? {}),
+            autonomyPolicy,
+          },
+        });
+        const budgetUsd =
+          typeof autonomyPolicy.automationMonthlyBudgetUsd === "number" &&
+          Number.isFinite(autonomyPolicy.automationMonthlyBudgetUsd) &&
+          autonomyPolicy.automationMonthlyBudgetUsd > 0
+            ? autonomyPolicy.automationMonthlyBudgetUsd
+            : null;
+        return {
+          title: "自动化预算护栏已更新",
+          description: budgetUsd
+            ? `近 30 天自动化预算软上限已设为 $${budgetUsd.toFixed(2)}。超限后会自动升级为人工审批。`
+            : "已关闭自动化预算软上限；后续只保留已有审批策略。",
+        };
+      } finally {
+        setAutonomyPolicySaving(false);
+      }
+    },
+    [autonomyPolicySaving, input.activeCompany, updateCompany],
+  );
+
+  const handleUpdateWorkspacePolicy = useCallback(
+    async (workspacePolicy: CompanyWorkspacePolicy) => {
+      if (!input.activeCompany || workspacePolicySaving) {
+        return null;
+      }
+
+      setWorkspacePolicySaving(true);
+      try {
+        await updateCompany({
+          orgSettings: {
+            ...(input.activeCompany.orgSettings ?? {}),
+            workspacePolicy,
+          },
+        });
+        const mirrorDisabled = workspacePolicy.providerMirrorMode === "disabled";
+        const writeDirectToDelivery = workspacePolicy.executorWriteTarget === "delivery_artifacts";
+        return {
+          title: "工作目录边界已更新",
+          description:
+            `${mirrorDisabled ? "已关闭执行器工作区镜像补位" : "仍保留执行器工作区镜像补位"}，`
+            + `${writeDirectToDelivery ? "执行结果会直接沉淀到交付区。" : "执行阶段仍允许先写执行器工作区。"}`
+        };
+      } finally {
+        setWorkspacePolicySaving(false);
+      }
+    },
+    [input.activeCompany, updateCompany, workspacePolicySaving],
+  );
+
   return {
     switchCompany,
     loadConfig,
@@ -662,7 +730,9 @@ export function useGatewaySettingsCommands(input: {
     handleExecutorConfigSubmit,
     handleExecutorReconnect,
     handleToggleOrgAutopilot,
+    handleUpdateAutonomyPolicy,
     handleUpdateCollaborationPolicy,
+    handleUpdateWorkspacePolicy,
     telegramSaving,
     providerKeySaving,
     addProviderSaving,
@@ -672,7 +742,9 @@ export function useGatewaySettingsCommands(input: {
     codexRefreshing,
     executorSaving,
     orgAutopilotSaving,
+    autonomyPolicySaving,
     collaborationPolicySaving,
+    workspacePolicySaving,
   };
 }
 

@@ -117,12 +117,25 @@ V1 closeout 结论：
 
 `PC-STATE-01` + `PC-STATE-03` + `PC-GOV-03`
   已在 V1 范围 adopt。`docs/v1-phase3-authority-object-boundaries.md` 对应的三刀都已落地：revision baseline、显式决策命令、read-path cleanup、lifecycle/workflow/operator audit 都已经形成闭环。最后一轮又继续把 `RequirementAggregate` 的 no-op reconcile / duplicate evidence / no-op transition 收进统一 material-change 规则，并把 `Board / Lobby / Requirement Center / CEO` 的高信号异常入口纳入 `operator_action_recorded`。
-### 紧随其后的下一步
+### V2 已完成 closeout 的
 
 - `PC-GOV-01`
   已在当前最小 V2 范围 adopt：`layoff approval gate + department change approval gate + automation enable approval gate` 已经打通，approval 已不再只是一次性的确认框，而是 company-level durable governance object。
-- `PC-GOV-02` / `PC-EXEC-01`
-  是更合理的下一轮焦点：在最小 approval foundation 收口后，再继续补预算护栏和自动化 run ledger，而不是把所有高风险动作都继续堆在同一个 `PC-GOV-01` 里。
+- `PC-GOV-02`
+  也已在当前最小 V2 范围 adopt：`automationMonthlyBudgetUsd` 已落地为可配置的 30 天软预算，Automation 页面能直接展示当前 usage 与预算状态，超预算时会自动升级为 approval。
+- `PC-EXEC-01`
+  已在当前最小 V2 范围 adopt：company-level `automationRuns` 已形成 durable run ledger baseline，Automation 页面也已能直接回看最近执行记录；更富的 `usage / result / context snapshot / log ref` 后续拆到新切片。
+- `PC-WS-01`
+  也已在当前最小 V2 范围 adopt：company-level `workspacePolicy` 已落地，Settings 可直接配置“镜像补位 / 执行写入目标”，Workspace 也会直接展示当前工作目录边界；当 `providerMirrorMode=disabled` 时，provider workspace mirror 会真实关闭，工作目录只读取正式产品产物。
+- `PC-EXEC-02`
+  也已在当前最小 V2 范围 adopt：`Dispatch` 已形成 durable checkout / execution locking baseline，系统现在能明确表达“谁已接手、何时接手、何时释放”，并把这套语义同时透到 authority audit、Runtime Inspector 和 Requirement Center。
+- `PC-PROD-01`
+  也已在当前最小 V2 范围 adopt：Dashboard 已新增 trusted cost visibility baseline，产品会直接区分 `公司归因 / 归因估算 / Gateway 汇总 / 成本不可用`，并把 company attribution coverage、未归因会话和缺失定价直接说清楚。
+
+### 紧随其后的下一步
+
+- `PC-PROD-02`
+  这一刀现在也已经在当前最小 V2 范围 adopt：`CEO / Requirement Center / Board / Ops` 已开始共享同一套 activity / inbox 语义，用统一的状态表达“现在发生了什么、该去哪里处理”。如果还要继续沿着 `paperclip` 借鉴线推进，更合理的是开启新的后续切片，而不是把这条已关单的产品支撑线继续挂着。
 
 ### 明确不借的
 
@@ -161,22 +174,22 @@ V1 closeout 结论：
 | `PC-STATE-02` | 状态模型 | command/transaction 风格更新 | 用 command/event 替代浏览器整份 runtime 回灌 | `adopted` | V1 |
 | `PC-STATE-03` | 状态模型 | execution record 与 business record 分层 | 区分主线对象、执行对象、证据对象 | `adopted` | V1 |
 | `PC-GOV-01` | 治理 | approval 对象 | 引入轻量 approval gate | `adopted` | V2 |
-| `PC-GOV-02` | 治理 | budget / usage guardrail | requirement 或 agent 级预算提醒与软限制 | `planned` | V2 |
+| `PC-GOV-02` | 治理 | budget / usage guardrail | requirement 或 agent 级预算提醒与软限制 | `adopted` | V2 |
 | `PC-GOV-03` | 治理 | audit trail | 关键动作保留可追溯轨迹 | `adopted` | V1 |
-| `PC-EXEC-01` | 执行 | heartbeat run records | 自动化/班次执行日志稳定建模 | `planned` | V2 |
-| `PC-EXEC-02` | 执行 | task checkout / execution locking | 对高风险执行对象增加锁与拥有权语义 | `candidate` | V2 |
-| `PC-EXEC-03` | 执行 | persistent task session | 提升 requirement / dispatch 的恢复一致性 | `candidate` | V2 |
-| `PC-WS-01` | 工作区 | execution workspace policy | 明确执行目录、交付目录、镜像目录边界 | `planned` | V2 |
+| `PC-EXEC-01` | 执行 | heartbeat run records | 自动化/班次执行日志稳定建模 | `adopted` | V2 |
+| `PC-EXEC-02` | 执行 | task checkout / execution locking | 对高风险执行对象增加锁与拥有权语义 | `adopted` | V2 |
+| `PC-EXEC-03` | 执行 | persistent task session | 提升 requirement / dispatch 的恢复一致性 | `adopted` | V2 |
+| `PC-WS-01` | 工作区 | execution workspace policy | 明确执行目录、交付目录、镜像目录边界 | `adopted` | V2 |
 | `PC-WS-02` | 工作区 | worktree / isolated workspace thinking | 为复杂项目执行预留更强隔离能力 | `candidate` | Later |
 | `PC-OPS-01` | 运维 | doctor/self-check | 增加 authority 自检与修复入口 | `adopted` | V1 |
 | `PC-OPS-02` | 运维 | startup health / startup banner | 强化 authority 启动信息与异常分型 | `adopted` | V1 |
 | `PC-OPS-03` | 运维 | migrations / backup | 增加 authority 数据迁移与备份恢复路径 | `adopted` | V1 |
 | `PC-OPS-04` | 运维 | local-first onboarding | 提升本地一键跑通和恢复体验 | `adopted` | V1 |
-| `PC-ADAPTER-01` | 执行器抽象 | adapter boundary | 把 executor capability 从 OpenClaw 专属逻辑里抽出来 | `candidate` | V2 |
-| `PC-ADAPTER-02` | 执行器抽象 | environment / capability checks | 执行器接入前做能力与环境检查 | `candidate` | V2 |
+| `PC-ADAPTER-01` | 执行器抽象 | adapter boundary | 把 executor capability 从 OpenClaw 专属逻辑里抽出来 | `adopted` | V2 |
+| `PC-ADAPTER-02` | 执行器抽象 | environment / capability checks | 执行器接入前做能力与环境检查 | `adopted` | V2 |
 | `PC-AUTH-01` | 权限 | user/company membership & permission model | 只在确实需要多用户治理时引入，当前不抢优先级 | `observed` | Later |
-| `PC-PROD-01` | 产品支撑 | costs / usage visibility | 把成本/执行代价做得更可信 | `candidate` | V2 |
-| `PC-PROD-02` | 产品支撑 | activity / inbox semantics | 提升跨视图事件可追踪性 | `candidate` | V2 |
+| `PC-PROD-01` | 产品支撑 | costs / usage visibility | 把成本/执行代价做得更可信 | `adopted` | V2 |
+| `PC-PROD-02` | 产品支撑 | activity / inbox semantics | 提升跨视图事件可追踪性 | `adopted` | V2 |
 
 ## 5. 详细借鉴项
 
@@ -281,7 +294,12 @@ V1 closeout 结论：
   - agent 级软限制
   - automation 使用量异常提示
 - 当前采用情况：
-  - 已进入 V2 计划
+  - 已在当前最小 V2 范围 adopt
+  - 已新增 `automationMonthlyBudgetUsd`，作为 company autonomy policy 下的 30 天自动化预算软上限
+  - `Settings` 已可直接配置这条预算护栏，Automation 页面也能直接显示当前 usage 成本、预算上限和剩余额度
+  - 当 `humanApprovalRequiredForAutomationEnable` 关闭但当前 usage 已超预算时，自动化创建/重新启用仍会自动升级为 approval，而不是直接执行
+  - 当 usage 接近预算上限时，Automation 页面会直接给出 warning，不再只在后台静默判断
+  - requirement 级和 agent 级的更细预算模型，明确留到下一轮治理切片，不继续挂在当前 closeout 范围里
 
 ### `PC-GOV-03` 审计轨迹
 
@@ -320,8 +338,12 @@ V1 closeout 结论：
   - 成功/失败/中断原因
   - requirement 与 automation run 的关联
 - 当前采用情况：
-  - 已进入 V2 计划
-  - 最新 upstream 的 `heartbeat_runs.ts` 已把 `status / usage / result / context snapshot / log ref` 做成一等记录，进一步确认这条借鉴方向正确
+  - 已在当前最小 V2 范围 adopt
+  - company-level `automationRuns` 已落地为 durable run ledger baseline，记录 `automationId / automationName / agentId / status / providerStatus / schedule / runAt / observedAt`
+  - `Automation` 页面已新增“自动化执行台账”，可以直接回看最近一次成功 / 失败 / 运行中状态，而不是只看 cron 当前快照
+  - repeated poll 在无 material change 时不会反复改写 ledger；同一次 run 的状态变化会更新同一条记录，新 run 才会追加新记录
+  - 当前 scope 刻意只收 baseline，不强行伪造 `usage / result / context snapshot / log ref`；这些 richer execution fields 后续拆到新切片
+  - 最新 upstream 的 `heartbeat_runs.ts` 仍然证明这条方向是对的，只是本项目当前先按最小 V2 范围落地
 
 ### `PC-EXEC-02` 执行锁与拥有权
 
@@ -333,7 +355,14 @@ V1 closeout 结论：
   - `Dispatch`
   - 关键 `WorkItem`
 - 当前采用情况：
-  - 候选项，尚未规划到实现阶段
+  - 已在当前最小 V2 范围 adopt
+  - `DispatchRecord` 已补上 `checkoutState / checkoutActorId / checkoutSessionKey / checkedOutAt / releasedAt / releaseReason`
+  - 事件投影、local store merge、authority audit 现在都共享同一套 checkout 语义，不再只靠 `acknowledged / consumedAt / consumerSessionKey` 猜测“谁接手了执行权”
+  - `report_*` 事件链路已修正为记录真正接单方的 session，而不是原派单发起人的 session
+  - `Runtime Inspector` 的 dispatch chain link 已能直接显示“待接手 / 执行中 / 阻塞交回”
+  - `Requirement Center` 的协作区也开始直接展示房间派单里“几条执行中 / 几条待接手 / 当前执行权”
+  - `buildCanonicalAgentStatusProjection()` 已把 claimed dispatch 视为真实执行信号，不再把它继续算成泛泛的 waiting peer
+  - 当前 scope 刻意只收 `Dispatch` 的 durable execution locking baseline；`WorkItem` 级更强 checkout/session 恢复拆到 `PC-EXEC-03`
 
 ### `PC-EXEC-03` 持续执行会话恢复
 
@@ -344,7 +373,12 @@ V1 closeout 结论：
 - 对应到本项目：
   - requirement / dispatch / room 的恢复一致性
 - 当前采用情况：
-  - 候选项
+  - 已在当前最小 V2 范围 adopt
+  - `AgentSessionRecord` 已补 durable `executionContext`，用于保留最近一次被恢复的执行上下文
+  - authority runtime repair、runtime snapshot 计算和本地 session writer 现在都共享同一套 session recovery 逻辑，不再只修正 errored session，还会把 dispatch checkout 语义恢复到 session 上
+  - `buildCanonicalAgentStatusProjection()` 现在会把 recovered session context 当成可信的执行 fallback：即使 `dispatch` 投影暂时为空，只要 session 里还有 claimed/released 的恢复上下文，主线仍能解释“当前在执行什么 / 最近是怎么收口的 / 是否以阻塞状态交回”
+  - `Runtime Inspector` 已补“恢复执行中”和 session replay 语义：没有活跃 run 时，也能直接看到“已恢复执行上下文 / 恢复阻塞 / 恢复记录”
+  - 当前 scope 刻意只收 session recovery baseline；更强的 run-context snapshot / provider-native task recovery 仍拆到后续执行器切片
 
 ### `PC-WS-01` 工作区策略
 
@@ -358,7 +392,11 @@ V1 closeout 结论：
   - workspace 交付区
   - executor 工作目录
 - 当前采用情况：
-  - 已进入 V2 计划
+  - 已在当前最小 V2 范围 adopt
+  - company-level `workspacePolicy` 已落到 `Company.orgSettings`
+  - Settings 里可以直接配置“关闭执行器工作区镜像补位”和“执行结果直接沉淀到交付区”
+  - Workspace 页面会直接展示“产品产物优先 / 镜像补位 / 执行写入目标”的当前边界
+  - `providerMirrorMode=disabled` 时，`useWorkspaceViewModel()` 会真实关闭 provider workspace mirroring，工作目录只读取正式产品产物
 
 ### `PC-WS-02` 隔离式工作区
 
@@ -449,7 +487,14 @@ V1 closeout 结论：
   - executor capability model
   - authority bridge contract
 - 当前采用情况：
-  - 候选项，V2 更合适
+  - 已在当前最小 V2 范围 adopt
+  - authority `/health` 与 `/bootstrap` 已新增 durable `executorCapabilities` 快照，不再只给前端一份静态的 “authority 总是支持这些能力” 假设
+  - capability boundary 当前先收最有漂移风险的 executor 差异：`session_status`
+  - authority 端已经把 `session_status` 的真实状态统一归纳为 `supported / unsupported / unknown`，并作为下游 OpenClaw 差异的权威来源
+  - authority adapter `probeCapabilities()` 不再使用写死的 static manifest，而是会根据 authority health 里的 executor capability snapshot 动态生成 `BackendCapabilities`
+  - `Connect` 页面上的“执行器能力快照”现在会直接跟随这份动态 manifest 变化：一旦 authority 确认下游不支持 `session_status`，页面会明确显示“运行态修复将退回 lifecycle/chat 驱动的降级模式”
+  - `Settings` 的执行后端面板和 Doctor baseline 也已直接显示 executor capability snapshot，不再只说“Authority 接了 OpenClaw”
+  - 当前 scope 刻意只收 executor capability boundary baseline，不强行提前抽全面多 adapter 体系；`environment / onboarding` 进一步检查拆到 `PC-ADAPTER-02`
 
 ### `PC-ADAPTER-02` 执行器环境检查
 
@@ -462,7 +507,16 @@ V1 closeout 结论：
   - provider model availability
   - file mirror/path capability
 - 当前采用情况：
-  - 候选项
+  - 已在当前最小 V2 范围 adopt
+  - authority health / bootstrap 已新增结构化 `executorReadiness` 检查列表，不再只给一个粗粒度的 executor state
+  - 当前最小 scope 先覆盖五类真实接入前判断：
+    - 执行器连接
+    - 鉴权令牌
+    - `session_status` 运行态探针
+    - `process runtime` 进程观测
+    - agent files mirror / workspace entry 路径
+  - `Connect` 与 `Settings` 现在都会直接展示同一组 executor readiness checks，用户接入前就能看到“哪里没准备好 / 为什么现在是 degraded / 哪些能力不可用”
+  - 当前 scope 刻意先收 authority-backed OpenClaw readiness baseline，不强行把 provider model catalog readiness 一起做成跨 provider 探针；更细的模型可用性/计费可信度拆到 `PC-PROD-01`
 
 ### `PC-AUTH-01` 多用户权限模型
 
@@ -485,7 +539,20 @@ V1 closeout 结论：
   - dashboard 成本可信度
   - requirement 级别成本归因
 - 当前采用情况：
-  - 候选项
+  - 已在当前最小 V2 范围 adopt
+  - `Dashboard` 已新增显式“成本可信度”视图，不再只给一段模糊的成本口径说明
+  - 系统现在会明确区分四种状态：
+    - `公司归因`
+    - `归因估算`
+    - `Gateway 汇总`
+    - `成本不可用`
+  - company usage attribution 已显式计算 `eligible sessions / unattributed sessions / coverage ratio`
+  - 当前成本卡片会直接告诉用户：
+    - 这笔成本是不是已经可信地归因到当前公司
+    - 目前覆盖了多少公司会话
+    - 还有多少会话没有进入当前账单
+    - 是否存在缺失定价导致的估算偏差
+  - 当前 scope 刻意先收 dashboard trusted-cost baseline，不强行把 requirement 级成本归因一起做完；更细的 requirement-level attribution 与模型可用性分层留给后续产品支撑切片
 
 ### `PC-PROD-02` 跨视图活动语义
 
@@ -496,7 +563,10 @@ V1 closeout 结论：
 - 对应到本项目：
   - CEO 首页、Requirement Center、Ops、Board 之间的事件链路
 - 当前采用情况：
-  - 候选项
+  - 已在当前最小 V2 范围 adopt
+  - 已新增共享 `buildActivityInboxSummary()` 语义模型和 `ActivityInboxStrip` 共享摘要组件
+  - `CEO 首页`、`Requirement Center`、`Board`、`Lobby/Ops` 已开始复用同一套 `clear / watch / action_required` 状态，而不是各自写一套“先看什么 / 去哪里处理”的提示
+  - 这一刀当前刻意只收跨页面 activity / inbox baseline，不强行提前做完整 global inbox；更重的统一事件中心和历史归档拆到后续产品支撑切片
 
 ## 6. 当前方案已采用和已纳入计划的部分
 
@@ -520,10 +590,13 @@ V1 closeout 结论：
 | `PC-OPS-03` | `adopted` | 已新增 `authority:backup`、`authority:backups`、`authority:migrate`、`authority:rehearse` 和 `authority:restore` CLI，并补齐 `authority:migrate -- --plan`；真实环境里已跑通 `backup -> backups -> doctor -> preflight -> migrate --plan -> restore --plan -> rehearse` 主链，migration / restore decision loop 已在 V1 范围闭环 | `docs/v1-stability-roadmap.md` |
 | `PC-OPS-04` | `adopted` | 本地接入/自检/启动前检查链路已经在真实环境完成 smoke：`authority:doctor` 为 `ready`、`authority:preflight` 为 `ready`、`authority:backup`/`authority:backups` 已闭合，Settings / Connect 也已回推 `schema version / integrity / backup` 结论 | `docs/v1-stability-roadmap.md` |
 | `PC-GOV-01` | `adopted` | company-level `ApprovalRecord` 已落地，当前已打通 `employee_fire`、`department_change` 与 `automation_enable` 三条 approval gate，`Lobby` 可批准后继续执行原动作或恢复自动化启用 | `docs/cyber-company-evolution-direction.md` |
-| `PC-GOV-02` | `planned` | 已纳入 V2 预算护栏 | `docs/cyber-company-evolution-direction.md` |
-| `PC-WS-01` | `planned` | 已纳入 V2 workspace policy | `docs/cyber-company-evolution-direction.md` |
-| `PC-EXEC-01` | `planned` | 已纳入 V2 自动化执行记录 | `docs/cyber-company-evolution-direction.md` |
-| `PC-ADAPTER-01` | `candidate` | 已明确提出 capability boundary，但暂不进入 V1 实现 | `docs/cyber-company-evolution-direction.md` |
+| `PC-GOV-02` | `adopted` | `automationMonthlyBudgetUsd` 已落地为可配置的 30 天自动化预算软上限，Automation 页面可直接展示预算状态，超预算时自动化启用会自动升级为 approval | `docs/cyber-company-evolution-direction.md` |
+| `PC-WS-01` | `adopted` | company-level `workspacePolicy` 已落地，Settings 可配置，Workspace 可见且 `providerMirrorMode=disabled` 会真实关闭 mirror fallback | `docs/cyber-company-evolution-direction.md` |
+| `PC-EXEC-01` | `adopted` | company-level `automationRuns` 已形成 durable run ledger baseline，Automation 页面可直接回看最近执行记录 | `docs/cyber-company-evolution-direction.md` |
+| `PC-ADAPTER-01` | `adopted` | authority `/health` 与 authority adapter 已共享动态 executor capability snapshot；`Connect / Settings` 能直接看见 `session_status` 是否原生可用，不再依赖写死的 OpenClaw 专属假设 | `docs/cyber-company-evolution-direction.md` |
+| `PC-ADAPTER-02` | `adopted` | authority health / bootstrap 已共享结构化 `executorReadiness` 检查；`Connect / Settings` 会直接展示执行器连接、鉴权、runtime probe、process runtime 与 agent files mirror 的 readiness 结果 | `docs/cyber-company-evolution-direction.md` |
+| `PC-PROD-01` | `adopted` | Dashboard 已新增显式成本可信度视图，并把 company attribution coverage / unattributed sessions / missing pricing 变成一眼可见的 operator 信息 | `docs/cyber-company-evolution-direction.md` |
+| `PC-PROD-02` | `adopted` | `CEO / Requirement Center / Board / Lobby` 已共享 activity / inbox baseline，用户能用同一套 `需拍板 / 需介入 / 持续关注 / 当前清晰` 语义理解现在该去哪里处理 | `docs/cyber-company-evolution-direction.md` |
 
 ## 7. 当前明确不借鉴为主线的部分
 
@@ -636,6 +709,15 @@ V1 closeout 结论：
 | 2026-03-13 | Phase 5 layoff approval gate | `PC-GOV-01` | 新增 company-level `ApprovalRecord` durable object、authority `approval.request / approval.resolve` 命令，以及 `Lobby` 待审批面板；当 `humanApprovalRequiredForLayoffs` 打开时，离职动作先生成 approval，批准后才继续下发离职流程 | 让 approval 第一次成为产品级治理对象，而不是一次性的前端确认框；同时把最危险的组织动作先纳入一个明确、可追踪、可反悔的 gate | `PC-GOV-01` 已进入当前唯一 active 切片，下一步继续扩到更多高风险动作 |
 | 2026-03-13 | Phase 5 department change approval gate | `PC-GOV-01` | 把同一套 approval gate 扩到 `department_change`：当 `humanApprovalRequiredForDepartmentCreateRemove` 打开时，新增/归档部门不会直接写入，而是先形成 approval record，并在 `Lobby` 批准后继续执行部门配置落盘 | 让 approval 不再只有单条 layoff 样板，而是开始覆盖第二类高风险组织动作；同时复用同一套 durable object、authority command 和产品审批面板，验证这条治理对象线具备扩展性 | `PC-GOV-01` 继续保持当前唯一 active，下一步再扩到 restore / automation enable 等更高风险动作 |
 | 2026-03-13 | Phase 5 automation enable approval gate | `PC-GOV-01` | 把同一套 approval gate 扩到 `automation_enable`：当 `humanApprovalRequiredForAutomationEnable` 打开时，新建自动化和重新启用自动化不会直接执行，而是先生成 approval record，并在 `Lobby` 批准后继续执行 cron 创建或恢复启用 | 让 approval 从“组织动作安全阀”扩到“自动化放权安全阀”，证明 durable approval object 能跨组织与自动化两个产品面复用 | `PC-GOV-01` 已达到当前最小 V2 关单范围，后续更高风险动作拆到新切片而不是继续把原项挂着 |
+| 2026-03-13 | Phase 6 automation budget soft guardrail | `PC-GOV-02` | 新增 `automationMonthlyBudgetUsd` company policy、Automation 页预算状态卡片，以及“超预算时自动升级为 approval”的软护栏逻辑；Settings 也已提供预算阈值配置入口 | 让 budget / usage guardrail 不再只停留在规划，而是先在“自动化启用”这条真实放权链路上落成可见、可配、可触发的安全阀 | `PC-GOV-02` 已达到当前最小 V2 关单范围，后续更细的 requirement/agent 预算模型拆到新切片 |
+| 2026-03-13 | Phase 7 automation run ledger baseline | `PC-EXEC-01` | 新增 company-level `automationRuns` durable run ledger baseline，并让 Automation 页面直接展示最近执行记录；同一次 run 的状态变化会更新同一条记录，新 run 才追加新记录 | 让自动化不再只有 cron 当前快照，而是开始拥有可回看、可持久化的执行基线 | `PC-EXEC-01` 已在当前最小 V2 范围达到关单标准，后续 richer execution context 拆到新切片 |
+| 2026-03-13 | Phase 8 workspace policy baseline | `PC-WS-01` | 新增 company-level `workspacePolicy`，Settings 可直接配置镜像补位和执行写入目标，Workspace 会直接展示当前边界；当 `providerMirrorMode=disabled` 时，provider workspace mirror 会真实关闭 | 让“执行目录 / 交付目录 / 镜像目录边界”不再只靠文案，而是有 durable policy、可见 UI 和真实运行时行为 | `PC-WS-01` 已在当前最小 V2 范围达到关单标准，后续更细的 per-agent / per-requirement workspace policy 拆到新切片 |
+| 2026-03-13 | Phase 9 execution locking baseline | `PC-EXEC-02` | 为 `Dispatch` 新增 durable checkout 字段，并让 event projection、authority audit、Requirement Center、Runtime Inspector、canonical agent status 共享同一套“待接手 / 执行中 / 已释放”语义 | 让高价值执行对象第一次具备明确的执行拥有权，而不是只从 `acknowledged / consumedAt` 反推“可能有人接手了” | `PC-EXEC-02` 已在当前最小 V2 范围达到关单标准，后续更强的 work-item/session recovery 拆到 `PC-EXEC-03` |
+| 2026-03-13 | Phase 10 persistent session recovery baseline | `PC-EXEC-03` | 为 `AgentSessionRecord` 新增 durable `executionContext`，并让 authority runtime repair、canonical agent status、Runtime Inspector 共同消费这条恢复语义 | 让恢复后不再只剩 dispatch 文本历史，而是能继续解释“当前正在执行什么 / 最近如何交回 / 是否以阻塞状态交回” | `PC-EXEC-03` 已在当前最小 V2 范围达到关单标准，后续更强的 run-context snapshot / provider-native task recovery 拆到执行器切片 |
+| 2026-03-13 | Phase 11 dynamic executor capability boundary | `PC-ADAPTER-01` | authority `/health` 与 `/bootstrap` 已新增 `executorCapabilities` 快照，authority adapter 会据此动态生成 `BackendCapabilities`，Connect / Settings 也开始直接显示 `session_status` 的真实能力边界 | 让 executor 差异第一次由 authority boundary 吸收，而不是继续散落在 OpenClaw 专属假设、静态 manifest 和产品页面文案里 | `PC-ADAPTER-01` 已在当前最小 V2 范围达到关单标准，后续更进一步的环境检查拆到 `PC-ADAPTER-02` |
+| 2026-03-13 | Phase 12 executor readiness baseline | `PC-ADAPTER-02` | authority health / bootstrap 已新增结构化 `executorReadiness` 检查，Connect / Settings 会直接显示执行器连接、鉴权、`session_status`、`process runtime` 和 agent files mirror 的 readiness 结果 | 让接入前检查从“只有 capability 快照”推进到“能直接回答哪里没准备好、为什么现在不可用、当前会退回哪种降级路径” | `PC-ADAPTER-02` 已在当前最小 V2 范围达到关单标准，后续更细的模型/成本可用性探针拆到 `PC-PROD-01` |
+| 2026-03-13 | Phase 13 trusted cost visibility baseline | `PC-PROD-01` | 新增 Dashboard 成本可信度视图，并把 company attribution 的 coverage / unattributed sessions / missing pricing 统一成 `公司归因 / 归因估算 / Gateway 汇总 / 成本不可用` 四种状态 | 让 operator 不再只看到一个成本数字，而是能直接知道这笔钱到底有多可信、当前是在公司归因口径还是 Gateway 回退口径 | `PC-PROD-01` 已在当前最小 V2 范围达到关单标准，更细的 requirement 级成本归因拆到后续产品支撑切片 |
+| 2026-03-13 | Phase 14 cross-view activity semantics baseline | `PC-PROD-02` | 新增共享 `activity / inbox` 语义模型与 `ActivityInboxStrip`，并让 `CEO / Requirement Center / Board / Lobby` 复用同一套“需拍板 / 需介入 / 持续关注 / 当前清晰”的产品表达 | 让跨页面事件链路不再各说各话，用户能更稳定地理解“现在发生了什么、应该去哪一页处理” | `PC-PROD-02` 已在当前最小 V2 范围达到关单标准，更重的 global inbox / archive / routing 拆到后续产品支撑切片 |
 
 ## 10. 判断标准
 

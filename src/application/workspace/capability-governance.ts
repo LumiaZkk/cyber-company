@@ -230,7 +230,7 @@ function buildRelatedLabels(appId?: string | null, skillId?: string | null, look
     labels.push(`App · ${lookup?.appLabelById?.get(appId) ?? appId}`);
   }
   if (skillId) {
-    labels.push(`Skill · ${lookup?.skillLabelById?.get(skillId) ?? skillId}`);
+    labels.push(`能力 · ${lookup?.skillLabelById?.get(skillId) ?? skillId}`);
   }
   return labels;
 }

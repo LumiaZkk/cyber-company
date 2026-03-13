@@ -48,6 +48,9 @@ export function buildProviderManifest(input: {
   if (archiveStrategy === "product-archives") {
     notes.push("后端不提供归档接口，系统将使用产品侧轮次归档。");
   }
+  if (!input.capabilities.sessionStatus && input.capabilities.runtimeObservability) {
+    notes.push("后端不提供 session_status，运行态修复将退回 lifecycle/chat 驱动的降级模式。");
+  }
 
   return {
     providerId: input.providerId,

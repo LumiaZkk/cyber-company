@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useLobbyPageCommands, useLobbyPageViewModel } from "../../application/lobby";
+import { buildActivityInboxSummary } from "../../application/governance/activity-inbox";
 import { appendOperatorActionAuditEvent } from "../../application/governance/operator-action-audit";
 import { useCanonicalRuntimeSummary } from "../../application/runtime-summary";
 import { Badge } from "../../components/ui/badge";
@@ -18,6 +19,7 @@ import {
 import { LobbyTeamActivitySection } from "./components/LobbyTeamActivitySection";
 import { useLobbyPageState } from "./hooks/useLobbyPageState";
 import { CanonicalRuntimeSummaryCard } from "../shared/CanonicalRuntimeSummaryCard";
+import { ActivityInboxStrip } from "../shared/ActivityInboxStrip";
 
 type CompanyLobbyPageContentProps = Omit<
   ReturnType<typeof useLobbyPageViewModel>,
@@ -171,6 +173,7 @@ function CompanyLobbyPageContent({
     },
     ceoAgentId: ceoEmployee?.agentId ?? null,
   });
+  const pendingApprovals = (activeCompany.approvals ?? []).filter((approval) => approval.status === "pending");
 
   const getPresenceBadge = (status: string) => {
     if (status === "running") {
@@ -204,7 +207,15 @@ function CompanyLobbyPageContent({
       </Badge>
     );
   };
-  const pendingApprovals = (activeCompany.approvals ?? []).filter((approval) => approval.status === "pending");
+  const activityInboxSummary = buildActivityInboxSummary({
+    scopeLabel: primaryWorkItem ? "当前主线" : "当前公司",
+    blockerCount: blockedCount,
+    requestCount: visibleRequestHealth.active,
+    handoffCount: visiblePendingHandoffs,
+    escalationCount: visibleSlaAlerts.length + ceoSurface.openEscalations,
+    pendingHumanDecisionCount: ceoSurface.pendingHumanDecisions + ceoSurface.pendingApprovals,
+    manualTakeoverCount: visibleManualCount,
+  });
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto p-4 md:p-6 lg:p-8">
@@ -322,6 +333,8 @@ function CompanyLobbyPageContent({
         description="监控、排障和关注队列统一从 `/runtime` 复用，运营大厅只保留执行摘要和动作入口。"
         compact
       />
+
+      <ActivityInboxStrip summary={activityInboxSummary} title="统一活动摘要" />
 
       <LobbyActionStrip
         title={primaryWorkItem ? "本次需求的卡点与下一步" : "先处理这些异常与下一步"}

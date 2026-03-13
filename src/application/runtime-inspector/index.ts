@@ -19,6 +19,7 @@ import { backend } from "../gateway";
 import { inferDepartmentKind } from "../org/department-autonomy";
 import type { WorkItemRecord } from "../../domain/mission/types";
 import type { Company, EmployeeRef } from "../../domain/org/types";
+import { describeDispatchCheckout } from "../../domain/delegation/dispatch-checkout";
 import { useAuthorityRuntimeSyncStore } from "../../infrastructure/authority/runtime-sync-store";
 import { useCompanyRuntimeStore } from "../../infrastructure/company/runtime/store";
 import { selectRuntimeInspectorState } from "../../infrastructure/company/runtime/selectors";
@@ -366,6 +367,12 @@ function resolveActivityLabel(input: {
   if (input.coordinationState === "explicit_blocked") {
     return "排障中";
   }
+  if (
+    input.coordinationState === "executing" &&
+    (input.runtimeState === "idle" || input.runtimeState === "no_signal" || input.runtimeState === "degraded")
+  ) {
+    return "恢复执行中";
+  }
   if (input.runtimeState === "offline") {
     return "离线";
   }
@@ -415,7 +422,10 @@ function resolveSceneActivityLabel(input: {
   runtimeState: AgentRuntimeAvailability;
   currentAssignment: string;
 }): string {
-  if (input.runtimeState === "busy" && input.currentAssignment.trim().length > 0) {
+  if (
+    (input.runtimeState === "busy" || input.activityLabel === "恢复执行中") &&
+    input.currentAssignment.trim().length > 0
+  ) {
     return input.currentAssignment;
   }
   return input.activityLabel;
@@ -584,6 +594,11 @@ function buildTimelineEvent(agent: RuntimeInspectorAgentSurface): RuntimeInspect
 
 function buildReplayEvent(agent: RuntimeInspectorAgentSurface): RuntimeInspectorReplayEvent | null {
   const activeRun = agent.runs[0] ?? null;
+  const recoveredExecutionContext =
+    agent.sessions
+      .map((session) => session.executionContext ?? null)
+      .filter((context): context is NonNullable<typeof agent.sessions[number]["executionContext"]> => Boolean(context))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null;
   const latestTerminalSession =
     agent.sessions.find((session) => session.lastTerminalRunState && session.lastTerminalSummary) ?? null;
   const recentEvidence = agent.runtimeEvidence[0] ?? null;
@@ -605,6 +620,20 @@ function buildReplayEvent(agent: RuntimeInspectorAgentSurface): RuntimeInspector
       tone: "info",
       phaseLabel: activeRun.state === "streaming" ? "流式执行" : "执行中",
       modalityLabel: hasTool ? "Tool" : hasAssistant ? "Model" : "Run",
+    };
+  }
+
+  if (recoveredExecutionContext?.checkoutState === "claimed") {
+    return {
+      id: `${agent.agentId}:replay:recovered:${recoveredExecutionContext.dispatchId}`,
+      agentId: agent.agentId,
+      nickname: agent.nickname,
+      title: `${agent.nickname} 已恢复执行上下文`,
+      summary: recoveredExecutionContext.objective,
+      timestamp: recoveredExecutionContext.updatedAt,
+      tone: agent.runtimeState === "degraded" ? "warning" : "info",
+      phaseLabel: "恢复执行",
+      modalityLabel: "Session",
     };
   }
 
@@ -635,6 +664,27 @@ function buildReplayEvent(agent: RuntimeInspectorAgentSurface): RuntimeInspector
             ? "中止"
             : "失败",
       modalityLabel: "Terminal",
+    };
+  }
+
+  if (recoveredExecutionContext) {
+    const isBlocked = recoveredExecutionContext.releaseReason === "blocked";
+    const isAnswered = recoveredExecutionContext.releaseReason === "answered";
+    return {
+      id: `${agent.agentId}:replay:context:${recoveredExecutionContext.dispatchId}`,
+      agentId: agent.agentId,
+      nickname: agent.nickname,
+      title:
+        isBlocked
+          ? `${agent.nickname} 保留了一次阻塞交回记录`
+          : isAnswered
+            ? `${agent.nickname} 保留了一次交付收口记录`
+            : `${agent.nickname} 保留了最近一次执行记录`,
+      summary: recoveredExecutionContext.objective,
+      timestamp: recoveredExecutionContext.updatedAt,
+      tone: isBlocked ? "danger" : isAnswered ? "success" : "info",
+      phaseLabel: isBlocked ? "恢复阻塞" : isAnswered ? "恢复记录" : "恢复上下文",
+      modalityLabel: "Session",
     };
   }
 
@@ -884,28 +934,22 @@ function buildRuntimeChainLinks(input: {
       if (dispatch.status === "answered" || dispatch.status === "superseded") {
         return;
       }
+      const checkout = describeDispatchCheckout({
+        dispatch,
+        resolveActorLabel: (actorId) => resolveActorLabel(actorId, employeeByActorId),
+      });
       dispatch.targetActorIds.forEach((targetActorId) => {
         pushLink({
           id: `dispatch:${dispatch.id}:${targetActorId}`,
           kind: "dispatch",
           kindLabel: "Dispatch",
-          stateLabel:
-            dispatch.status === "blocked"
-              ? "阻塞"
-              : dispatch.status === "acknowledged"
-                ? "已接单"
-                : "待确认",
-          tone:
-            dispatch.status === "blocked"
-              ? "danger"
-              : dispatch.status === "acknowledged"
-                ? "info"
-                : "warning",
+          stateLabel: checkout.stateLabel,
+          tone: checkout.tone === "danger" ? "danger" : checkout.tone === "warning" ? "warning" : "info",
           fromAgentId: dispatch.fromActorId ?? null,
           fromLabel: resolveActorLabel(dispatch.fromActorId, employeeByActorId),
           toAgentId: targetActorId,
           toLabel: resolveActorLabel(targetActorId, employeeByActorId),
-          summary: dispatch.title || dispatch.summary,
+          summary: checkout.detail,
           updatedAt: dispatch.updatedAt,
           focusAgentId: targetActorId,
         });

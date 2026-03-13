@@ -1,4 +1,5 @@
 import type { DispatchRecord } from "../../domain/delegation/types";
+import { buildDispatchCheckoutUpdate, buildActorMainSessionKey } from "../../domain/delegation/dispatch-checkout";
 import type { ChatEventPayload } from "../gateway";
 
 export function parseChatEventPayload(payload: unknown): ChatEventPayload | null {
@@ -65,5 +66,13 @@ export function resolveDispatchReplyUpdates(input: {
     status: index === 0 ? "answered" : "superseded",
     responseMessageId: index === 0 ? input.responseMessageId : dispatch.responseMessageId,
     updatedAt: Math.max(dispatch.updatedAt, input.timestamp),
+    ...buildDispatchCheckoutUpdate({
+      existing: dispatch,
+      nextStatus: index === 0 ? "answered" : "superseded",
+      timestamp: input.timestamp,
+      actorId: index === 0 ? input.actorId : null,
+      sessionKey: index === 0 ? buildActorMainSessionKey(input.actorId) : null,
+      targetActorIds: dispatch.targetActorIds,
+    }),
   }));
 }

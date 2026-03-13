@@ -27,6 +27,7 @@ export type CeoControlSurfaceSnapshot = {
   manualTakeovers: number;
   openEscalations: number;
   pendingHumanDecisions: number;
+  pendingApprovals: number;
   topActions: CeoActionItem[];
 };
 
@@ -43,6 +44,7 @@ export function buildCeoControlSurface(input: {
   const supportRequests = (input.activeSupportRequests ?? company.supportRequests ?? []).filter(
     isSupportRequestActive,
   );
+  const pendingApprovals = (company.approvals ?? []).filter((approval) => approval.status === "pending").length;
   const escalations = (input.activeEscalations ?? company.escalations ?? []).filter(
     (item) => item.status === "open" || item.status === "acknowledged",
   );
@@ -103,6 +105,7 @@ export function buildCeoControlSurface(input: {
     manualTakeovers,
     openEscalations: escalations.length,
     pendingHumanDecisions: decisionTickets.filter((item) => item.requiresHuman).length,
+    pendingApprovals,
     topActions,
   };
 }

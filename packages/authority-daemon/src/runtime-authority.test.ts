@@ -89,6 +89,10 @@ describe("runtime-authority", () => {
         status: "answered",
         deliveryState: "answered",
         targetActorIds: ["cto"],
+        checkoutState: "released",
+        checkoutActorId: "cto",
+        checkoutSessionKey: "agent:cto:main",
+        releaseReason: "answered",
       },
     ]);
   });
@@ -135,7 +139,62 @@ describe("runtime-authority", () => {
       abortedLastRun: false,
       lastError: null,
       lastTerminalRunState: "completed",
+      executionContext: {
+        dispatchId: "dispatch:cto",
+        checkoutState: "released",
+        releaseReason: "answered",
+      },
       source: "fallback",
+    });
+  });
+
+  it("rebuilds claimed execution context onto sessions even when runtime is otherwise idle", () => {
+    const repaired = repairAgentSessionsFromDispatches({
+      sessions: [
+        {
+          sessionKey: "agent:cto:main",
+          agentId: "cto",
+          providerId: "openclaw",
+          sessionState: "idle",
+          lastSeenAt: 180,
+          lastStatusSyncAt: 180,
+          lastMessageAt: 180,
+          abortedLastRun: false,
+          lastError: null,
+          source: "session_status",
+        },
+      ],
+      runs: [],
+      dispatches: [
+        {
+          id: "dispatch-claimed",
+          workItemId: "work-claimed",
+          revision: 1,
+          roomId: "workitem:claimed",
+          title: "继续实现恢复基线",
+          summary: "把 session 恢复上下文写回 authority runtime。",
+          fromActorId: "ceo",
+          targetActorIds: ["cto"],
+          status: "acknowledged",
+          checkoutState: "claimed",
+          checkoutActorId: "cto",
+          checkoutSessionKey: "agent:cto:main",
+          checkedOutAt: 170,
+          createdAt: 150,
+          updatedAt: 170,
+        },
+      ],
+    });
+
+    expect(repaired[0]).toMatchObject({
+      sessionState: "idle",
+      executionContext: {
+        dispatchId: "dispatch-claimed",
+        assignment: "继续实现恢复基线",
+        objective: "把 session 恢复上下文写回 authority runtime。",
+        checkoutState: "claimed",
+        actorId: "cto",
+      },
     });
   });
 });

@@ -14,6 +14,7 @@ import {
   shouldShowBoardPreRequirementDraft,
 } from "../../application/mission/board-pre-requirement";
 import { useGatewayStore } from "../../application/gateway";
+import { buildActivityInboxSummary } from "../../application/governance/activity-inbox";
 import { appendOperatorActionAuditEvent } from "../../application/governance/operator-action-audit";
 import { trackChatRequirementMetric } from "../../application/telemetry/chat-requirement-metrics";
 import { resolveConversationPresentation } from "../../lib/chat-routes";
@@ -32,6 +33,7 @@ import { useBoardCommunicationSync } from "./hooks/useBoardCommunicationSync";
 import { useBoardRuntimeState } from "./hooks/useBoardRuntimeState";
 import { useBoardTaskBackfill } from "./hooks/useBoardTaskBackfill";
 import { CanonicalRuntimeSummaryCard } from "../shared/CanonicalRuntimeSummaryCard";
+import { ActivityInboxStrip } from "../shared/ActivityInboxStrip";
 
 type BoardPageContentProps = Omit<
   ReturnType<typeof useBoardPageViewModel>,
@@ -208,6 +210,13 @@ function BoardPageContent({
     visibleRequestHealth,
     orderedTaskSections,
   } = boardTaskSurface;
+  const activityInboxSummary = buildActivityInboxSummary({
+    scopeLabel: requirementOverview ? "当前主线" : "当前公司",
+    requestCount: visibleRequestHealth.active,
+    handoffCount: visiblePendingHandoffs.length,
+    escalationCount: visibleSlaAlerts.length,
+    manualTakeoverCount: visibleTakeoverCount,
+  });
   const stageStripSteps =
     currentWorkItem?.steps.length
       ? currentWorkItem.steps.map((step, index) => ({
@@ -405,6 +414,8 @@ function BoardPageContent({
           </div>
         </section>
       ) : null}
+
+      <ActivityInboxStrip summary={activityInboxSummary} title="统一活动摘要" />
 
       <BoardAlertStrip
         visible={visibleTakeoverCount > 0}

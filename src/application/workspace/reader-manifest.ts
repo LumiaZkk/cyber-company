@@ -167,7 +167,9 @@ export function resolveWorkspaceReaderManifest(input: {
     artifacts: input.artifacts,
     files: input.files,
   });
-  return manifest.resources && manifest.resources.length > 0 ? toReaderManifest(manifest) : null;
+  return manifest && manifest.resources && manifest.resources.length > 0
+    ? toReaderManifest(manifest)
+    : null;
 }
 
 export function applyWorkspaceReaderManifest(

@@ -75,6 +75,22 @@ export type AuthorityExecutorConfigPatch = {
   reconnect?: boolean;
 };
 
+export type AuthorityExecutorCapabilityState = "unknown" | "supported" | "unsupported";
+
+export type AuthorityExecutorCapabilitySnapshot = {
+  sessionStatus: AuthorityExecutorCapabilityState;
+  processRuntime: AuthorityExecutorCapabilityState;
+  notes: string[];
+};
+
+export type AuthorityExecutorReadinessCheck = {
+  id: "connection" | "auth" | "session-status" | "process-runtime" | "agent-files";
+  label: string;
+  state: "ready" | "degraded" | "blocked";
+  summary: string;
+  detail?: string | null;
+};
+
 export type AuthorityGatewayConfigSnapshot = {
   path: string;
   exists: boolean;
@@ -113,6 +129,8 @@ export type AuthorityBootstrapSnapshot = {
   runtime: AuthorityCompanyRuntimeSnapshot | null;
   executor: AuthorityExecutorStatus;
   executorConfig: AuthorityExecutorConfig;
+  executorCapabilities: AuthorityExecutorCapabilitySnapshot;
+  executorReadiness: AuthorityExecutorReadinessCheck[];
   authority: {
     url: string;
     dbPath: string;
@@ -124,6 +142,8 @@ export type AuthorityHealthSnapshot = {
   ok: true;
   executor: AuthorityExecutorStatus;
   executorConfig: AuthorityExecutorConfig;
+  executorCapabilities: AuthorityExecutorCapabilitySnapshot;
+  executorReadiness: AuthorityExecutorReadinessCheck[];
   authority: {
     dbPath: string;
     connected: true;

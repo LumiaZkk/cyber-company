@@ -209,8 +209,8 @@ V1 的阶段不允许长期停留在 `stabilizing`。
    - 哪些写入必须经过 authority command
 2. `PC-GOV-03`
    继续把 operator action / requirement workflow audit 的收尾规则补齐，避免对象边界做稳以后审计线反而断档。
-3. `PC-GOV-02` + `PC-EXEC-01`
-   轻量 approval gate 的最小 foundation 已经完成，下一轮更值得做的是预算护栏与自动化 run ledger。像 `runtime restore approval` 这种更高风险但当前还没有成熟产品面的动作，应该拆成新的治理切片，而不是继续把 `PC-GOV-01` 挂着不关。
+3. 新切片而不是回挂旧项
+   轻量 approval gate、自动化预算软护栏、automation run ledger baseline、workspace policy、execution locking、execution session recovery、dynamic executor capability boundary、executor readiness baseline、trusted cost visibility，以及跨页面 activity / inbox baseline 现在都已经完成；如果下一轮还沿着 `paperclip` 借鉴线继续推进，应该直接开启新的后续切片。像 `runtime restore approval`、更重的 global inbox / archive / routing，或者更细的 requirement-level cost attribution，都应该作为新切片进入，而不是继续把已经关单的项挂回 active。
 
 在这三个动作都没落地前，不建议把精力切去：
 

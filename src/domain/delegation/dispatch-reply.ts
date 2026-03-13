@@ -1,4 +1,5 @@
 import type { DispatchRecord } from "./types";
+import { describeDispatchCheckout } from "./dispatch-checkout";
 import type { WorkItemRecord } from "../mission/types";
 
 function isDispatchOpenStatus(status: DispatchRecord["status"]): boolean {
@@ -80,9 +81,10 @@ export function deriveWorkItemFlowFromDispatches(
   }
 
   if (isDispatchOpenStatus(latestDispatch.status)) {
+    const checkout = describeDispatchCheckout({ dispatch: latestDispatch });
     const openSummary =
       latestDispatch.status === "acknowledged"
-        ? `${targetLabel} 已接单，等待回复。`
+        ? checkout.detail
         : latestDispatch.deliveryState === "unknown"
           ? `${targetLabel} 的派单投递仍未确认，先等待回执或直接结果。`
           : latestDispatch.deliveryState === "pending"
@@ -99,12 +101,13 @@ export function deriveWorkItemFlowFromDispatches(
   }
 
   if (latestDispatch.status === "answered") {
+    const checkout = describeDispatchCheckout({ dispatch: latestDispatch });
     return {
       status: workItem.completedAt ? "completed" : "waiting_owner",
       batonActorId: workItem.ownerActorId ?? null,
       batonLabel: workItem.ownerLabel || "负责人",
       nextAction: "负责人收口并决定下一步。",
-      summary: `${targetLabel} 已回传结果，等待负责人收口。`,
+      summary: checkout.detail,
       updatedAt: Math.max(workItem.updatedAt, latestDispatch.updatedAt),
     };
   }

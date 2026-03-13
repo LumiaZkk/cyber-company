@@ -90,6 +90,12 @@ V1 closeout 后已经开始进入下一阶段：
 
 - `PC-GOV-01`
   已在当前最小 V2 范围达到关单标准。approval gate 已经不是单条样板，而是三条真实 gate：当 `humanApprovalRequiredForLayoffs` 打开时，离职动作会先形成 company-level durable approval record；当 `humanApprovalRequiredForDepartmentCreateRemove` 打开时，新增/归档部门也会先形成 approval record；当 `humanApprovalRequiredForAutomationEnable` 打开时，新建或重新启用自动化也会先形成 approval record。三者都会在 `Lobby` 里等待批准/拒绝，并在批准后继续执行原动作。
+- `PC-GOV-02`
+  也已经在当前最小 V2 范围达到关单标准。自动化预算软护栏不再只在文档里：`automationMonthlyBudgetUsd` 已成为 company autonomy policy 的一部分，Settings 可直接配置近 30 天预算阈值，Automation 页面可直接显示当前 usage / budget 状态，而当 usage 已超预算时，自动化创建或重新启用会自动升级为 approval。
+- `PC-EXEC-01`
+  现在也已经在当前最小 V2 范围达到关单标准。company-level `automationRuns` 已经形成 durable run ledger baseline，Automation 页面可以直接回看最近一次成功 / 失败 / 运行中状态；同一次 run 的状态变化会更新同一条记录，新 run 才追加新记录。更富的 `usage / result / context snapshot / log ref` 后续拆到新切片。
+- `PC-WS-01`
+  现在也已经在当前最小 V2 范围达到关单标准。company-level `workspacePolicy` 已经落地，Settings 可以直接配置“镜像补位 / 执行写入目标”，Workspace 也会直接展示当前“产品产物优先 / 镜像补位 / 执行写入目标”的边界；当 `providerMirrorMode=disabled` 时，provider workspace mirroring 会真实关闭，工作目录只读取正式产品产物。
 
 后续推进约束也明确一下：
 
@@ -110,9 +116,26 @@ V1 closeout 后已经开始进入下一阶段：
 - 刚完成关单的：
   - `PC-GOV-01`
   也就是轻量 approval gate。现在已经不是“下一步建议”，而是已经落了三条真实动作：`employee_fire`、`department_change` 和 `automation_enable` 都会先进入 authority approval，再由 `Lobby` 做人工批准/拒绝并继续执行。
+  - `PC-GOV-02`
+  也就是 budget / usage guardrail 的第一刀。现在已经不是“以后再做预算”，而是已经落了一个真实链路：自动化 30 天软预算可配置、可见、可触发，超预算时会自动升级为 approval。
+  - `PC-EXEC-01`
+  也就是 automation run ledger 的第一刀。现在已经不是“页面临时显示 lastRunAtMs”，而是已经落了 company-level durable `automationRuns`，Automation 页面可以直接回看最近执行记录。
+  - `PC-WS-01`
+  也就是 workspace policy 的第一刀。现在已经不是“以后再收工作目录边界”，而是已经落了 company-level durable `workspacePolicy`、Settings 配置入口、Workspace 边界可见摘要，以及真实的 mirror fallback 开关。
+  - `PC-EXEC-02`
+  也就是 execution locking 的第一刀。现在已经不是“看 dispatch status 猜有没有人接手”，而是已经落了 `Dispatch` 的 durable checkout baseline，产品里也能直接看到“谁已接手 / 何时释放”的执行拥有权。
+  - `PC-EXEC-03`
+  也就是 persistent task session 的第一刀。现在已经不是“恢复后只剩 dispatch 文本历史”，而是已经落了 session 级 durable `executionContext`，authority runtime repair、canonical agent status 和 Runtime Inspector 都能继续解释“当前在执行什么 / 最近如何交回 / 是否以阻塞状态交回”。
+  - `PC-ADAPTER-01`
+  也就是 executor capability boundary 的第一刀。现在已经不是“Authority 默认就和 OpenClaw 一样什么都支持”，而是 authority `/health` 和 authority adapter 已共享动态 `executorCapabilities` 快照；一旦 authority 确认下游不支持 `session_status`，Connect 的能力快照和 Settings 的执行后端面板都会直接看到降级边界。
+  - `PC-ADAPTER-02`
+  也就是 executor readiness 的第一刀。现在已经不是“看到一个 capability 快照，剩下靠人猜”，而是 authority health / bootstrap 已共享结构化 `executorReadiness` 检查，Connect 和 Settings 会直接告诉你执行器连接、鉴权、`session_status`、`process runtime` 和 agent files mirror 目前分别处于什么状态。
+  - `PC-PROD-01`
+  也就是 trusted cost visibility 的第一刀。现在已经不是“报表里放一个成本数字，再靠脚注解释口径”，而是 Dashboard 会直接区分 `公司归因 / 归因估算 / Gateway 汇总 / 成本不可用`，把 company attribution coverage、未归因会话和缺失定价直接说清楚。
+  - `PC-PROD-02`
+  也已经在当前最小 V2 范围达到关单标准：`CEO / Requirement Center / Board / Ops` 已开始共享同一套 activity / inbox 语义，用统一的状态表达“现在发生了什么、该去哪里处理”。
 - 紧随其后的下一步：
-  - `PC-GOV-02` / `PC-EXEC-01`
-  也就是在最小 approval foundation 已经收口后，继续把预算护栏和自动化 run ledger 做成下一轮稳态能力。更高风险但目前还没有成熟产品面的动作，例如 `runtime restore`，应该拆成下一轮独立切片，而不是继续把 `PC-GOV-01` 挂着不关。
+  - 当前已经没有新的 `active` 顶层 `paperclip` 借鉴项；如果继续推进，更适合新开后续切片，而不是把已经关单的产品支撑线重新挂回去。
 - 明确不借的：
   - issue-first 前台叙事
   - 通用 agent company OS 产品表面
@@ -570,6 +593,7 @@ V1 closeout 后已经开始进入下一阶段：
 - workspace policy：执行目录、交付目录、镜像目录分离
 - authority health / doctor / backup
 - 执行器能力模型，为未来非 OpenClaw runtime 预留边界
+- trusted cost visibility，让 operator 直接判断当前成本数字是否可信
 
 成功指标建议：
 

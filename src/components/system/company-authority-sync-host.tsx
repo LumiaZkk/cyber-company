@@ -60,6 +60,13 @@ export function CompanyAuthoritySyncHost() {
   const inFlightRef = useRef(false);
   const pullInFlightRef = useRef(false);
   const authorityHydratedRef = useRef(false);
+  const lastSyncWarningRef = useRef<{
+    push: string | null;
+    pull: string | null;
+  }>({
+    push: null,
+    pull: null,
+  });
 
   useEffect(() => {
     if (!connected) {
@@ -92,6 +99,7 @@ export function CompanyAuthoritySyncHost() {
       inFlightRef.current = true;
       void syncAuthorityCompanyRuntime(snapshot)
         .then((saved) => {
+          lastSyncWarningRef.current.push = null;
           applyAuthorityRuntimeSnapshotToStore({
             operation: "push",
             snapshot: saved,
@@ -100,7 +108,11 @@ export function CompanyAuthoritySyncHost() {
           });
         })
         .catch((error) => {
-          console.warn("Failed to sync runtime snapshot to authority", error);
+          const message = error instanceof Error ? error.message : String(error);
+          if (lastSyncWarningRef.current.push !== message) {
+            console.warn("Failed to sync runtime snapshot to authority", error);
+            lastSyncWarningRef.current.push = message;
+          }
           recordAuthorityRuntimeSyncError("push", error);
         })
         .finally(() => {
@@ -119,6 +131,7 @@ export function CompanyAuthoritySyncHost() {
       pullInFlightRef.current = true;
       void getAuthorityCompanyRuntime(activeCompany.id)
         .then((snapshot) => {
+          lastSyncWarningRef.current.pull = null;
           const applied = applyAuthorityRuntimeSnapshotToStore({
             operation: "pull",
             snapshot,
@@ -130,7 +143,11 @@ export function CompanyAuthoritySyncHost() {
           }
         })
         .catch((error) => {
-          console.warn("Failed to refresh runtime snapshot from authority", error);
+          const message = error instanceof Error ? error.message : String(error);
+          if (lastSyncWarningRef.current.pull !== message) {
+            console.warn("Failed to refresh runtime snapshot from authority", error);
+            lastSyncWarningRef.current.pull = message;
+          }
           recordAuthorityRuntimeSyncError("pull", error);
         })
         .finally(() => {

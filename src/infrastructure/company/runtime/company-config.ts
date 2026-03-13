@@ -85,6 +85,7 @@ export function buildCompanyConfigActions(
   | "upsertSkillRun"
   | "upsertCapabilityRequest"
   | "upsertCapabilityIssue"
+  | "upsertCapabilityAuditEvent"
 > {
   return {
     loadConfig: async () => {
@@ -414,6 +415,18 @@ export function buildCompanyConfigActions(
         return;
       }
       await get().updateCompany({ capabilityIssues: nextIssues });
+    },
+
+    upsertCapabilityAuditEvent: async (event) => {
+      const { activeCompany } = get();
+      if (!activeCompany) {
+        return;
+      }
+      const nextEvents = upsertTimestampedRecord(activeCompany.capabilityAuditEvents ?? [], event);
+      if (!nextEvents) {
+        return;
+      }
+      await get().updateCompany({ capabilityAuditEvents: nextEvents });
     },
   };
 }

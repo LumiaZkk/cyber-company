@@ -3,6 +3,11 @@ import { requestAuthorityApproval } from "../gateway/authority-control";
 import type { ApprovalRecord } from "../../domain/governance/types";
 import type { Company } from "../../domain/org/types";
 import { readCompanyRuntimeState } from "../../infrastructure/company/runtime/selectors";
+import {
+  AUTOMATION_BUDGET_WINDOW_DAYS,
+  evaluateAutomationBudgetGuardrail,
+  type AutomationBudgetGuardrail,
+} from "./budget-guardrail";
 
 export type AutomationScheduleInput =
   | {
@@ -26,28 +31,38 @@ export type AutomationApprovalResult =
   | {
       mode: "executed";
       approval: null;
+      guardrail: AutomationBudgetGuardrail;
     }
   | {
       mode: "approval_requested";
       approval: ApprovalRecord;
+      guardrail: AutomationBudgetGuardrail;
     };
 
-function buildAutomationSummary(input: AutomationApprovalInput) {
+function buildAutomationSummary(
+  input: AutomationApprovalInput,
+  guardrail: AutomationBudgetGuardrail,
+) {
+  const budgetSuffix = guardrail.status === "over_budget" ? "（超预算）" : "";
   if (input.existingJobId) {
-    return `审批启用自动化 ${input.name}`;
+    return `审批启用自动化 ${input.name}${budgetSuffix}`;
   }
-  return `审批创建自动化 ${input.name}`;
+  return `审批创建自动化 ${input.name}${budgetSuffix}`;
 }
 
-function buildAutomationDetail(input: AutomationApprovalInput) {
+function buildAutomationDetail(
+  input: AutomationApprovalInput,
+  guardrail: AutomationBudgetGuardrail,
+) {
+  const guardrailDetail = guardrail.status === "inactive" ? "" : ` ${guardrail.detail}`;
   const scheduleLabel =
     input.schedule.kind === "cron"
       ? `Cron: ${input.schedule.expr}`
       : `间隔: ${input.schedule.everyMs}ms`;
   if (input.existingJobId) {
-    return `准备重新启用自动化「${input.name}」。${scheduleLabel}。审批通过后才会恢复执行。`;
+    return `准备重新启用自动化「${input.name}」。${scheduleLabel}。审批通过后才会恢复执行。${guardrailDetail}`;
   }
-  return `准备创建并启用自动化「${input.name}」。${scheduleLabel}。审批通过后才会开始执行。`;
+  return `准备创建并启用自动化「${input.name}」。${scheduleLabel}。审批通过后才会开始执行。${guardrailDetail}`;
 }
 
 function buildCronJobPayload(input: AutomationApprovalInput) {
@@ -121,18 +136,30 @@ export async function requestAutomationEnableApproval(input: {
   company: Company;
   automation: AutomationApprovalInput;
   skipApproval?: boolean;
+  usageCost?: number | null;
 }): Promise<AutomationApprovalResult> {
+  const usageCost =
+    input.usageCost ??
+    (await gateway
+      .getUsageCost({ days: AUTOMATION_BUDGET_WINDOW_DAYS })
+      .then((summary) => summary?.totals?.totalCost ?? null)
+      .catch(() => null));
+  const guardrail = evaluateAutomationBudgetGuardrail({
+    company: input.company,
+    usageCost,
+  });
   const needsApproval =
     !input.skipApproval &&
-    input.company.orgSettings?.autonomyPolicy?.humanApprovalRequiredForAutomationEnable !== false;
+    (input.company.orgSettings?.autonomyPolicy?.humanApprovalRequiredForAutomationEnable !== false ||
+      guardrail.shouldEscalateToApproval);
 
   if (needsApproval) {
     const result = await requestAuthorityApproval({
       companyId: input.company.id,
       scope: "automation",
       actionType: "automation_enable",
-      summary: buildAutomationSummary(input.automation),
-      detail: buildAutomationDetail(input.automation),
+      summary: buildAutomationSummary(input.automation, guardrail),
+      detail: buildAutomationDetail(input.automation, guardrail),
       requestedByActorId: "operator:local-user",
       requestedByLabel: "当前操作者",
       targetActorId: input.automation.agentId,
@@ -141,12 +168,19 @@ export async function requestAutomationEnableApproval(input: {
         mode: input.automation.existingJobId ? "enable" : "create",
         jobId: input.automation.existingJobId ?? null,
         job: buildCronJobPayload(input.automation),
+        guardrail: {
+          status: guardrail.status,
+          budgetUsd: guardrail.budgetUsd,
+          currentUsageCost: guardrail.currentUsageCost,
+          windowDays: guardrail.windowDays,
+        },
       },
     });
     await readCompanyRuntimeState().loadConfig();
     return {
       mode: "approval_requested",
       approval: result.approval,
+      guardrail,
     };
   }
 
@@ -154,6 +188,7 @@ export async function requestAutomationEnableApproval(input: {
   return {
     mode: "executed",
     approval: null,
+    guardrail,
   };
 }
 

@@ -71,7 +71,7 @@ describe("capability-governance", () => {
     expect(board.lanes[0]?.items[0]?.summary).toBe("新请求");
     expect(board.lanes[2]?.items[0]?.relatedLabels).toEqual([
       "App · 小说阅读器",
-      "Skill · 重建阅读索引",
+      "能力 · 重建阅读索引",
     ]);
   });
 

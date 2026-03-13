@@ -322,7 +322,7 @@ export async function runWorkspaceSkill(
   if (!canExecuteSkill(input.skill, triggerType)) {
     const errorMessage = input.skill
       ? triggerType === "manual"
-        ? `${input.skill.title} 当前状态为 ${SKILL_STATUS_LABEL[input.skill.status]}，不能继续跑 smoke test。`
+        ? `${input.skill.title} 当前状态为 ${SKILL_STATUS_LABEL[input.skill.status]}，不能继续跑能力验证。`
         : `${input.skill.title} 当前状态为 ${SKILL_STATUS_LABEL[input.skill.status]}，尚未进入可用状态。`
       : `当前 AppManifest 声明了 ${input.skillId}，但公司里还没有对应能力定义。`;
     const issueDraft = buildUnavailableIssueDraft({
@@ -362,7 +362,7 @@ export async function runWorkspaceSkill(
     }
     return {
       status: "blocked",
-      title: triggerType === "manual" ? "Smoke test 当前不能执行" : "能力当前还不能运行",
+      title: triggerType === "manual" ? "能力验证当前不能执行" : "能力当前还不能运行",
       detail: shouldAutoReportIssue ? "问题已经自动登记到 CTO 技术中台。" : errorMessage,
       runId,
       issueDraft,
@@ -507,7 +507,7 @@ export async function runWorkspaceSkill(
     }
     return {
       status: "failed",
-      title: triggerType === "manual" ? "Smoke test 未通过" : "能力执行失败",
+      title: triggerType === "manual" ? "能力验证未通过" : "能力执行失败",
       detail: shouldAutoReportIssue ? "问题已经自动登记到 CTO 技术中台。" : message,
       runId,
       issueDraft,

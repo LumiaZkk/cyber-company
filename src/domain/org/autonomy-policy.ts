@@ -4,6 +4,7 @@ import type {
   CompanyCollaborationPolicy,
   CompanyDepartmentAutonomyCounter,
   CompanyOrgSettings,
+  CompanyWorkspacePolicy,
 } from "./types";
 
 export const DEFAULT_AUTONOMY_POLICY: Required<CompanyAutonomyPolicy> = {
@@ -12,6 +13,7 @@ export const DEFAULT_AUTONOMY_POLICY: Required<CompanyAutonomyPolicy> = {
   humanApprovalRequiredForLayoffs: true,
   humanApprovalRequiredForDepartmentCreateRemove: true,
   humanApprovalRequiredForAutomationEnable: true,
+  automationMonthlyBudgetUsd: 0,
   maxAutoHeadcountDelta: 1,
   maxAutoBudgetDelta: 1,
   supportSlaHours: 6,
@@ -26,6 +28,12 @@ export const DEFAULT_COLLABORATION_POLICY: Required<CompanyCollaborationPolicy> 
   allowDepartmentMembersWithinDepartment: true,
   allowDepartmentMembersToManager: true,
   explicitEdges: [],
+};
+
+export const DEFAULT_WORKSPACE_POLICY: Required<CompanyWorkspacePolicy> = {
+  deliverySource: "artifact_store",
+  providerMirrorMode: "fallback",
+  executorWriteTarget: "agent_workspace",
 };
 
 function normalizeDepartmentCounters(
@@ -69,6 +77,10 @@ export function buildDefaultOrgSettings(
         orgSettings?.collaborationPolicy?.globalDispatchMetaRoles ??
         DEFAULT_COLLABORATION_POLICY.globalDispatchMetaRoles,
       explicitEdges: orgSettings?.collaborationPolicy?.explicitEdges ?? [],
+    },
+    workspacePolicy: {
+      ...DEFAULT_WORKSPACE_POLICY,
+      ...(orgSettings?.workspacePolicy ?? {}),
     },
   };
 }

@@ -32,6 +32,12 @@ function dispatchMaterialChanged(existing: DispatchRecord, next: DispatchRecord)
     (existing.latestEventId ?? null) !== (next.latestEventId ?? null) ||
     (existing.consumedAt ?? null) !== (next.consumedAt ?? null) ||
     (existing.consumerSessionKey ?? null) !== (next.consumerSessionKey ?? null) ||
+    (existing.checkoutState ?? null) !== (next.checkoutState ?? null) ||
+    (existing.checkoutActorId ?? null) !== (next.checkoutActorId ?? null) ||
+    (existing.checkoutSessionKey ?? null) !== (next.checkoutSessionKey ?? null) ||
+    (existing.checkedOutAt ?? null) !== (next.checkedOutAt ?? null) ||
+    (existing.releasedAt ?? null) !== (next.releasedAt ?? null) ||
+    (existing.releaseReason ?? null) !== (next.releaseReason ?? null) ||
     (existing.syncSource ?? null) !== (next.syncSource ?? null)
   );
 }

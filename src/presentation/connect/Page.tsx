@@ -133,6 +133,8 @@ function ConnectForm({
         ];
   const authorityProbeGuidance =
     authorityProbe.status === "ready" ? buildAuthorityGuidanceItems(authorityProbe.health, 3) : [];
+  const authorityExecutorReadiness =
+    authorityProbe.status === "ready" ? authorityProbe.health.executorReadiness ?? [] : [];
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -267,67 +269,89 @@ function ConnectForm({
             ) : null}
 
             {authorityProbeState ? (
-              <ConnectionDiagnosisSummary
-                variant="onboarding"
-                state={authorityProbeState}
-                title={
-                  authorityProbe.status === "ready"
-                    ? "Authority 控制面探测"
-                    : "Authority 控制面暂不可达"
-                }
-                summary={
-                  authorityProbe.status === "ready"
-                    ? authorityStorageState === "ready" && authorityProbe.health.executor.state === "ready"
-                      ? "控制面已经响应，数据库、备份目录和执行器状态都已通过当前检查。"
-                      : authorityProbeGuidance[0]?.summary ??
-                        authorityProbe.health.authority.doctor.issues[0] ??
-                        authorityProbe.health.authority.preflight.warnings[0] ??
-                        authorityProbe.health.authority.preflight.issues[0] ??
-                        authorityProbe.health.executor.note
-                    : "还没探测到可用的 Authority 控制面，请先确认本地 daemon 是否已启动。"
-                }
-                detail={
-                  authorityProbe.status === "ready"
-                    ? authorityProbeGuidance[0]?.command
-                      ? `${authorityProbe.health.authority.dbPath} · ${
-                          authorityProbeGuidance[0].title
-                        } · 推荐动作 ${authorityProbeGuidance[0].command}`
-                      : `${authorityProbe.health.authority.dbPath} · schema v${
-                          authorityProbe.health.authority.doctor.schemaVersion ?? "?"
-                        } · integrity ${authorityProbe.health.authority.doctor.integrityStatus} · 备份 ${authorityProbe.health.authority.doctor.backupCount} 份 · 最新备份 ${
-                          authorityProbe.health.authority.doctor.latestBackupAt
-                            ? formatTime(authorityProbe.health.authority.doctor.latestBackupAt)
-                            : "尚无"
-                        }`
-                    : authorityProbe.error
-                }
-                steps={authorityProbeSteps}
-                layers={
-                  authorityProbe.status === "ready"
-                    ? [
-                        {
-                          id: "authority",
-                          label: "Authority",
-                          state: authorityStorageState ?? "degraded",
-                          summary:
-                            authorityProbe.health.authority.preflight.warnings[0] ??
-                            authorityProbe.health.authority.preflight.issues[0] ??
-                            `schema v${authorityProbe.health.authority.preflight.schemaVersion ?? "?"} · ` +
-                            `integrity ${authorityProbe.health.authority.preflight.integrityStatus} · ` +
-                            (authorityProbe.health.authority.preflight.dbExists
-                              ? "本地 authority SQLite 已存在。"
-                              : "首次启动将自动初始化 authority SQLite。"),
-                        },
-                        {
-                          id: "executor",
-                          label: "Executor",
-                          state: authorityProbe.health.executor.state,
-                          summary: authorityProbe.health.executor.note,
-                        },
-                      ]
-                    : undefined
-                }
-              />
+              <div className="space-y-3">
+                <ConnectionDiagnosisSummary
+                  variant="onboarding"
+                  state={authorityProbeState}
+                  title={
+                    authorityProbe.status === "ready"
+                      ? "Authority 控制面探测"
+                      : "Authority 控制面暂不可达"
+                  }
+                  summary={
+                    authorityProbe.status === "ready"
+                      ? authorityStorageState === "ready" && authorityProbe.health.executor.state === "ready"
+                        ? "控制面已经响应，数据库、备份目录和执行器状态都已通过当前检查。"
+                        : authorityProbeGuidance[0]?.summary ??
+                          authorityProbe.health.authority.doctor.issues[0] ??
+                          authorityProbe.health.authority.preflight.warnings[0] ??
+                          authorityProbe.health.authority.preflight.issues[0] ??
+                          authorityProbe.health.executor.note
+                      : "还没探测到可用的 Authority 控制面，请先确认本地 daemon 是否已启动。"
+                  }
+                  detail={
+                    authorityProbe.status === "ready"
+                      ? authorityProbeGuidance[0]?.command
+                        ? `${authorityProbe.health.authority.dbPath} · ${
+                            authorityProbeGuidance[0].title
+                          } · 推荐动作 ${authorityProbeGuidance[0].command}`
+                        : `${authorityProbe.health.authority.dbPath} · schema v${
+                            authorityProbe.health.authority.doctor.schemaVersion ?? "?"
+                          } · integrity ${authorityProbe.health.authority.doctor.integrityStatus} · 备份 ${authorityProbe.health.authority.doctor.backupCount} 份 · 最新备份 ${
+                            authorityProbe.health.authority.doctor.latestBackupAt
+                              ? formatTime(authorityProbe.health.authority.doctor.latestBackupAt)
+                              : "尚无"
+                          }`
+                      : authorityProbe.error
+                  }
+                  steps={authorityProbeSteps}
+                  layers={
+                    authorityProbe.status === "ready"
+                      ? [
+                          {
+                            id: "authority",
+                            label: "Authority",
+                            state: authorityStorageState ?? "degraded",
+                            summary:
+                              authorityProbe.health.authority.preflight.warnings[0] ??
+                              authorityProbe.health.authority.preflight.issues[0] ??
+                              `schema v${authorityProbe.health.authority.preflight.schemaVersion ?? "?"} · ` +
+                              `integrity ${authorityProbe.health.authority.preflight.integrityStatus} · ` +
+                              (authorityProbe.health.authority.preflight.dbExists
+                                ? "本地 authority SQLite 已存在。"
+                                : "首次启动将自动初始化 authority SQLite。"),
+                          },
+                          {
+                            id: "executor",
+                            label: "Executor",
+                            state: authorityProbe.health.executor.state,
+                            summary: authorityProbe.health.executor.note,
+                          },
+                        ]
+                      : undefined
+                  }
+                />
+
+                {authorityProbe.status === "ready" && authorityExecutorReadiness.length > 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                    <div className="text-xs font-semibold text-slate-900">执行器环境检查</div>
+                    <div className="mt-2 space-y-2">
+                      {authorityExecutorReadiness.map((check) => (
+                        <div key={check.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-medium text-slate-900">{check.label}</div>
+                            <span className="text-[11px] text-slate-500">{check.state}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-slate-600">{check.summary}</div>
+                          {check.detail ? (
+                            <div className="mt-1 text-[11px] text-slate-500">{check.detail}</div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
 
             <button

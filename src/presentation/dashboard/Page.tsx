@@ -29,9 +29,36 @@ export function DashboardPresentationPage() {
     totalCostStr,
     totalTokensStr,
     usageFootnote,
-    usageScopeNote,
+    usageTrust,
     utilization,
   } = surface;
+
+  const usageTrustStyles = {
+    trusted_company: {
+      container: "border-emerald-200 bg-emerald-50/70 text-emerald-950",
+      badge: "border-emerald-200 bg-emerald-100 text-emerald-800",
+      metric: "text-emerald-900",
+      detail: "text-emerald-900/80",
+    },
+    estimated_company: {
+      container: "border-amber-200 bg-amber-50/70 text-amber-950",
+      badge: "border-amber-200 bg-amber-100 text-amber-800",
+      metric: "text-amber-900",
+      detail: "text-amber-900/80",
+    },
+    gateway_fallback: {
+      container: "border-slate-200 bg-slate-50/80 text-slate-900",
+      badge: "border-slate-200 bg-white text-slate-700",
+      metric: "text-slate-900",
+      detail: "text-slate-700",
+    },
+    unavailable: {
+      container: "border-rose-200 bg-rose-50/80 text-rose-950",
+      badge: "border-rose-200 bg-rose-100 text-rose-800",
+      metric: "text-rose-900",
+      detail: "text-rose-900/80",
+    },
+  }[usageTrust.state];
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 lg:p-8 h-full flex flex-col">
@@ -63,9 +90,28 @@ export function DashboardPresentationPage() {
         <div className="text-sm text-muted-foreground animate-pulse mb-4">正在汇聚系统参数...</div>
       )}
 
-      <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-950">
-        <div className="font-medium">成本口径说明</div>
-        <div className="mt-1 text-xs leading-5 text-amber-900/80">{usageScopeNote}</div>
+      <div className={`rounded-xl border px-4 py-4 ${usageTrustStyles.container}`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="font-medium">成本可信度</div>
+              <Badge variant="outline" className={usageTrustStyles.badge}>
+                {usageTrust.badgeLabel}
+              </Badge>
+            </div>
+            <div className="mt-2 text-sm font-medium leading-6">{usageTrust.title}</div>
+            <div className="mt-1 text-sm leading-6">{usageTrust.summary}</div>
+            <div className={`mt-2 text-xs leading-5 ${usageTrustStyles.detail}`}>{usageTrust.detail}</div>
+          </div>
+          <div className="grid min-w-[220px] grid-cols-3 gap-3">
+            {usageTrust.metrics.map((metric) => (
+              <div key={metric.label} className="rounded-lg border border-white/70 bg-white/70 px-3 py-2 shadow-sm">
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{metric.label}</div>
+                <div className={`mt-1 text-sm font-semibold ${usageTrustStyles.metric}`}>{metric.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       <ExecutiveSummaryStrip

@@ -1,5 +1,5 @@
 import type { SkillDefinition, SkillRunRecord } from "../../domain/org/types";
-import { hasRegisteredSkillExecutionAdapter } from "./skill-executor";
+import { getRegisteredSkillExecutionAdapter } from "./skill-executor";
 
 export type SkillReleaseCheck = {
   id: string;
@@ -33,6 +33,7 @@ export function buildSkillReleaseReadiness(input: {
   }>;
 }): SkillReleaseReadiness {
   const latestSuccessfulSmokeTestRun = findLatestSuccessfulSmokeTestRun(input.skill, input.skillRuns);
+  const registeredAdapter = getRegisteredSkillExecutionAdapter(input.skill.entryPath);
   const linkedApps = (input.skill.appIds ?? [])
     .map((appId) => input.workspaceApps.find((app) => app.id === appId) ?? null)
     .filter((app): app is { id: string; title: string } => Boolean(app));
@@ -49,11 +50,13 @@ export function buildSkillReleaseReadiness(input: {
     },
     {
       id: "execution-target",
-      label: "平台适配器",
-      ok: hasRegisteredSkillExecutionAdapter(input.skill),
-      detail: hasRegisteredSkillExecutionAdapter(input.skill)
-        ? `已为 ${input.skill.entryPath} 注册平台适配器`
-        : "当前依赖真实 workspace script；如果脚本缺失，发布后会直接失败。",
+      label: "执行承载",
+      ok: Boolean(registeredAdapter) || latestSuccessfulSmokeTestRun?.executionMode === "workspace_script",
+      detail: registeredAdapter
+        ? `${registeredAdapter.title} 已承载 ${input.skill.entryPath}`
+        : latestSuccessfulSmokeTestRun?.executionMode === "workspace_script"
+          ? `最近一次成功验证来自真实工作区脚本（${latestSuccessfulSmokeTestRun.executionEntryPath ?? input.skill.entryPath}）`
+          : "当前既没有平台适配器，也没有成功的工作区脚本验证；发布后会直接失败。",
     },
     {
       id: "outputs",
@@ -90,22 +93,22 @@ export function buildSkillReleaseReadiness(input: {
     },
     {
       id: "smoke-test-plan",
-      label: "Smoke test 说明",
+      label: "能力验证说明",
       ok: (input.skill.smokeTest?.trim().length ?? 0) > 0,
       detail:
         input.skill.smokeTest?.trim().length
           ? input.skill.smokeTest!
-          : "还没有说明这条 skill 的最小验证方式。",
+          : "还没有说明这条能力的最小验证方式。",
     },
     {
       id: "smoke-test-run",
-      label: "最近一次 smoke test",
+      label: "最近一次能力验证",
       ok: Boolean(latestSuccessfulSmokeTestRun),
       detail: latestSuccessfulSmokeTestRun
         ? `最近一次成功验证：${new Date(latestSuccessfulSmokeTestRun.updatedAt).toLocaleString("zh-CN", {
             hour12: false,
           })}`
-        : "还没有成功的 manual smoke test 记录。",
+        : "还没有成功的能力验证记录。",
     },
   ];
 

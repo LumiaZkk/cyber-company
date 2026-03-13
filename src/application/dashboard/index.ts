@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { mapAgentRuntimeAvailabilityToLegacyStatus } from "../agent-runtime";
 import { resolveCompanyKnowledge } from "../artifact/shared-knowledge";
 import { attributeUsageSessionsToCompany } from "../company/usage-attribution";
+import { buildCompanyUsageTrustSummary } from "../company/usage-trust";
 import { gateway, type AgentListEntry, type CostUsageSummary, type GatewaySessionRow } from "../gateway";
 import {
   buildEmployeeOperationalInsights,
@@ -23,6 +24,8 @@ type AttributedUsage = {
     group: number;
     ad_hoc: number;
   };
+  unattributedSessionCount: number;
+  coverageRatio: number | null;
   excludedBeforeCompanyCreation: number;
   excludedExternalGroupMembers: number;
 };
@@ -112,6 +115,8 @@ export function useDashboardViewModel() {
               sessionCount: attribution.sessions.length,
               updatedAt: sessionsUsageRes.value.updatedAt,
               countsByKind: attribution.countsByKind,
+              unattributedSessionCount: attribution.unattributedSessionCount,
+              coverageRatio: attribution.coverageRatio,
               excludedBeforeCompanyCreation: attribution.excludedBeforeCompanyCreation,
               excludedExternalGroupMembers: attribution.excludedExternalGroupMembers,
             });
@@ -194,8 +199,16 @@ export function useDashboardViewModel() {
     const displayedTotals = companyUsage?.totals ?? usage?.totals ?? null;
     const displayedUpdatedAt =
       companyUsage?.updatedAt ?? usage?.updatedAt ?? lastUsageRefreshAt ?? null;
-    const gatewayCostStr = usage ? usage.totals.totalCost.toFixed(4) : "--";
     const missingCostEntries = displayedTotals?.missingCostEntries ?? 0;
+    const usageTrust = buildCompanyUsageTrustSummary({
+      companyName: activeCompany.name,
+      usageDays,
+      gatewayUsageStatus: usageStatus,
+      gatewayUsageError: usageError,
+      companyUsageStatus,
+      companyUsageError,
+      companyUsage,
+    });
 
     const totalTokensStr = displayedTotals
       ? (displayedTotals.totalTokens / 1_000_000).toFixed(2)
@@ -213,11 +226,6 @@ export function useDashboardViewModel() {
         : usageStatus === "error"
           ? `未能读取 usage 数据：${usageError || "未知错误"}`
           : "网关暂未返回 usage 数据";
-    const usageScopeNote = showingCompanyUsage
-      ? `当前卡片已按「${activeCompany.name}」的 ${companyUsage?.sessionCount ?? 0} 个会话归因（${companyUsage?.countsByKind.main ?? 0} 主会话 / ${companyUsage?.countsByKind.group ?? 0} 群聊 / ${companyUsage?.countsByKind.ad_hoc ?? 0} 临时会话）；网关同期汇总估算为 $ ${gatewayCostStr}。`
-      : companyUsageStatus === "error"
-        ? `公司级成本归因暂时失败，当前回退为 Gateway 最近 ${usageDays} 天汇总。${companyUsageError ? `错误：${companyUsageError}` : ""}`
-        : `当前展示的是 Gateway 最近 ${usageDays} 天的汇总估算，不是「${activeCompany.name}」的独占账单。`;
     const tokenCardLabel = showingCompanyUsage
       ? `${activeCompany.name} 近 ${usageDays} 天归因吞吐`
       : `网关近 ${usageDays} 天吞吐`;
@@ -263,7 +271,6 @@ export function useDashboardViewModel() {
       connected,
       costCardLabel,
       employeeInsights,
-      gatewayCostStr,
       loading,
       outcomeReport,
       retrospective,
@@ -272,7 +279,7 @@ export function useDashboardViewModel() {
       totalCostStr,
       totalTokensStr,
       usageFootnote,
-      usageScopeNote,
+      usageTrust,
       utilization,
     };
   }, [

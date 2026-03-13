@@ -19,11 +19,14 @@ import type {
 } from "../../../application/gateway/settings";
 import type { AuthorityHealthSnapshot } from "../../../infrastructure/authority/contract";
 import { buildCollaborationContextSnapshot } from "../../../application/company/collaboration-context";
+import { buildWorkspacePolicySummary } from "../../../application/workspace/workspace-policy";
 import { buildAuthorityGuidanceItems } from "../../../application/gateway/authority-health";
 import { buildDefaultOrgSettings } from "../../../domain/org/autonomy-policy";
 import type {
+  CompanyAutonomyPolicy,
   CollaborationEdge,
   CompanyCollaborationPolicy,
+  CompanyWorkspacePolicy,
   Department,
   EmployeeRef,
 } from "../../../domain/org/types";
@@ -69,6 +72,10 @@ function formatDepartmentLabel(
 ) {
   const lead = employeesById.get(department.leadAgentId);
   return `${department.name}${lead ? ` · ${lead.nickname}` : ""}`;
+}
+
+function formatUsd(value: number) {
+  return `$${value.toFixed(2)}`;
 }
 
 function describeCollaborationEdge(
@@ -421,7 +428,9 @@ export function SettingsGatewayCompanySection(props: {
   companyCount: number;
   orgAutopilotEnabled: boolean;
   orgAutopilotSaving: boolean;
+  autonomyPolicySaving: boolean;
   collaborationPolicySaving: boolean;
+  workspacePolicySaving: boolean;
   switchCompany: (id: string) => void;
   loadConfig: () => Promise<unknown>;
   reconnectGateway: () => void;
@@ -430,6 +439,8 @@ export function SettingsGatewayCompanySection(props: {
   handleUpdateCollaborationPolicy: (
     collaborationPolicy: CompanyCollaborationPolicy,
   ) => Promise<{ title: string; description: string } | null>;
+  setAutomationBudgetDialogOpen: (open: boolean) => void;
+  setWorkspacePolicyDialogOpen: (open: boolean) => void;
   runCommand: RunCommand;
 }) {
   const {
@@ -441,13 +452,17 @@ export function SettingsGatewayCompanySection(props: {
     companyCount,
     orgAutopilotEnabled,
     orgAutopilotSaving,
+    autonomyPolicySaving,
     collaborationPolicySaving,
+    workspacePolicySaving,
     switchCompany,
     loadConfig,
     reconnectGateway,
     disconnectGateway,
     handleToggleOrgAutopilot,
     handleUpdateCollaborationPolicy,
+    setAutomationBudgetDialogOpen,
+    setWorkspacePolicyDialogOpen,
     runCommand,
   } = props;
 
@@ -455,7 +470,20 @@ export function SettingsGatewayCompanySection(props: {
     () => (activeCompany ? buildDefaultOrgSettings(activeCompany.orgSettings) : null),
     [activeCompany],
   );
+  const autonomyPolicy = orgSettings?.autonomyPolicy ?? null;
   const collaborationPolicy = orgSettings?.collaborationPolicy ?? null;
+  const workspacePolicy = orgSettings?.workspacePolicy ?? null;
+  const workspacePolicySummary = useMemo(
+    () =>
+      workspacePolicy
+        ? buildWorkspacePolicySummary({
+            deliverySource: workspacePolicy.deliverySource ?? "artifact_store",
+            providerMirrorMode: workspacePolicy.providerMirrorMode ?? "fallback",
+            executorWriteTarget: workspacePolicy.executorWriteTarget ?? "agent_workspace",
+          })
+        : null,
+    [workspacePolicy],
+  );
   const employeeOptions = useMemo(
     () =>
       (activeCompany?.employees ?? [])
@@ -534,6 +562,12 @@ export function SettingsGatewayCompanySection(props: {
       () => handleUpdateCollaborationPolicy(nextPolicy),
       "协作策略更新失败",
     );
+  const automationBudgetUsd =
+    typeof autonomyPolicy?.automationMonthlyBudgetUsd === "number" &&
+    Number.isFinite(autonomyPolicy.automationMonthlyBudgetUsd) &&
+    autonomyPolicy.automationMonthlyBudgetUsd > 0
+      ? autonomyPolicy.automationMonthlyBudgetUsd
+      : null;
 
   const explicitEdges = collaborationPolicy?.explicitEdges ?? [];
 
@@ -684,6 +718,88 @@ export function SettingsGatewayCompanySection(props: {
                       : orgAutopilotEnabled
                         ? "关闭自动调整"
                         : "开启自动调整"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {activeCompany && autonomyPolicy && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50/40 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">自动化预算护栏</div>
+                  <div className="mt-1 text-xs leading-5 text-slate-600">
+                    为近 30 天 usage 成本设置软上限。超过阈值后，新的自动化启用会自动升级为人工审批。
+                  </div>
+                  <div className="mt-2 text-[11px] leading-5 text-slate-500">
+                    当前策略：
+                    {automationBudgetUsd
+                      ? ` 近 30 天预算上限 ${formatUsd(automationBudgetUsd)}`
+                      : " 未配置预算上限，仅保留已有审批策略"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className={
+                      automationBudgetUsd
+                        ? "border-rose-200 bg-white text-rose-700"
+                        : "border-slate-200 bg-white text-slate-500"
+                    }
+                  >
+                    {automationBudgetUsd ? "软预算已启用" : "未配置预算"}
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    onClick={() => setAutomationBudgetDialogOpen(true)}
+                    disabled={autonomyPolicySaving}
+                  >
+                    {autonomyPolicySaving ? "保存中..." : "调整预算护栏"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {activeCompany && workspacePolicy && workspacePolicySummary && (
+            <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">工作目录边界</div>
+                  <div className="mt-1 text-xs leading-5 text-slate-600">
+                    固定“正式交付看哪里、执行器镜像是否补位、执行结果先落哪里”的公司级工作目录策略。
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] leading-5 text-slate-500">
+                    <Badge variant="secondary">{workspacePolicySummary.deliveryLabel}</Badge>
+                    <Badge variant="outline">{workspacePolicySummary.mirrorLabel}</Badge>
+                    <Badge variant="outline">{workspacePolicySummary.executionLabel}</Badge>
+                  </div>
+                  <div className="mt-2 text-[11px] leading-5 text-slate-500">
+                    {workspacePolicySummary.deliveryDescription}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-5 text-slate-500">
+                    {workspacePolicySummary.mirrorDescription}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-5 text-slate-500">
+                    {workspacePolicySummary.executionDescription}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className={
+                      workspacePolicySummary.mirrorEnabled
+                        ? "border-violet-200 bg-white text-violet-700"
+                        : "border-slate-200 bg-white text-slate-500"
+                    }
+                  >
+                    {workspacePolicySummary.mirrorEnabled ? "镜像补位开启" : "镜像补位关闭"}
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    onClick={() => setWorkspacePolicyDialogOpen(true)}
+                    disabled={workspacePolicySaving}
+                  >
+                    {workspacePolicySaving ? "保存中..." : "调整工作目录边界"}
                   </Button>
                 </div>
               </div>
@@ -961,6 +1077,7 @@ export function SettingsGatewayCompanySection(props: {
 export function SettingsProvidersChannelsSection(props: {
   executorStatus: GatewaySettingsQueryResult["executorStatus"];
   executorConfig: GatewaySettingsQueryResult["executorConfig"];
+  authorityHealth: GatewaySettingsQueryResult["authorityHealth"];
   configSnapshot: GatewayConfigSnapshot | null;
   codexModels: GatewaySettingsQueryResult["codexModels"];
   providerConfigs: Record<string, GatewayProviderConfig>;
@@ -989,6 +1106,7 @@ export function SettingsProvidersChannelsSection(props: {
   const {
     executorStatus,
     executorConfig,
+    authorityHealth,
     configSnapshot,
     codexModels,
     providerConfigs,
@@ -1062,6 +1180,34 @@ export function SettingsProvidersChannelsSection(props: {
                 <div className="mt-1 text-[11px] text-slate-500">
                   {executorStatus?.note || executorConfig?.lastError || "Authority 将浏览器请求统一代理到下游 OpenClaw。"}
                 </div>
+                {authorityHealth?.executorCapabilities ? (
+                  <div className="mt-1 text-[11px] text-slate-500">
+                    能力快照：session_status {authorityHealth.executorCapabilities.sessionStatus} · process runtime{" "}
+                    {authorityHealth.executorCapabilities.processRuntime}
+                  </div>
+                ) : null}
+                {authorityHealth?.executorCapabilities?.notes[0] ? (
+                  <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] text-slate-700">
+                    {authorityHealth.executorCapabilities.notes[0]}
+                  </div>
+                ) : null}
+                {authorityHealth?.executorReadiness?.length ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="text-[11px] font-medium text-slate-700">执行器环境检查</div>
+                    {authorityHealth.executorReadiness.map((check) => (
+                      <div key={check.id} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[11px] font-medium text-slate-800">{check.label}</div>
+                          <div className="text-[11px] text-slate-500">{check.state}</div>
+                        </div>
+                        <div className="mt-1 text-[11px] text-slate-600">{check.summary}</div>
+                        {check.detail ? (
+                          <div className="mt-1 text-[11px] text-slate-500">{check.detail}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {executorConfig?.lastError ? (
                   <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
                     最近错误：{executorConfig.lastError}
@@ -1363,6 +1509,13 @@ export function SettingsAdvancedSection(props: {
 export function SettingsDialogs(props: {
   executorDialogOpen: boolean;
   setExecutorDialogOpen: (open: boolean) => void;
+  automationBudgetDialogOpen: boolean;
+  setAutomationBudgetDialogOpen: (open: boolean) => void;
+  workspacePolicyDialogOpen: boolean;
+  setWorkspacePolicyDialogOpen: (open: boolean) => void;
+  activeCompany: GatewaySettingsQueryResult["activeCompany"];
+  autonomyPolicySaving: boolean;
+  workspacePolicySaving: boolean;
   executorConfig: GatewaySettingsQueryResult["executorConfig"];
   telegramDialogOpen: boolean;
   setTelegramDialogOpen: (open: boolean) => void;
@@ -1377,6 +1530,12 @@ export function SettingsDialogs(props: {
   providerKeySaving: boolean;
   addProviderSaving: boolean;
   handleExecutorConfigSubmit: (values: Record<string, string>) => Promise<{ title: string; description: string } | null>;
+  handleUpdateAutonomyPolicy: (
+    autonomyPolicy: CompanyAutonomyPolicy,
+  ) => Promise<{ title: string; description: string } | null>;
+  handleUpdateWorkspacePolicy: (
+    workspacePolicy: CompanyWorkspacePolicy,
+  ) => Promise<{ title: string; description: string } | null>;
   handleTelegramSubmit: (values: Record<string, string>) => Promise<{ title: string; description: string } | null>;
   onProviderKeySubmit: (provider: string | null, values: Record<string, string>) => Promise<{ title: string; description: string } | null>;
   handleAddProviderSubmit: (values: Record<string, string>) => Promise<{ title: string; description: string } | null>;
@@ -1385,6 +1544,13 @@ export function SettingsDialogs(props: {
   const {
     executorDialogOpen,
     setExecutorDialogOpen,
+    automationBudgetDialogOpen,
+    setAutomationBudgetDialogOpen,
+    workspacePolicyDialogOpen,
+    setWorkspacePolicyDialogOpen,
+    activeCompany,
+    autonomyPolicySaving,
+    workspacePolicySaving,
     executorConfig,
     telegramDialogOpen,
     setTelegramDialogOpen,
@@ -1399,6 +1565,8 @@ export function SettingsDialogs(props: {
     providerKeySaving,
     addProviderSaving,
     handleExecutorConfigSubmit,
+    handleUpdateAutonomyPolicy,
+    handleUpdateWorkspacePolicy,
     handleTelegramSubmit,
     onProviderKeySubmit,
     handleAddProviderSubmit,
@@ -1407,6 +1575,99 @@ export function SettingsDialogs(props: {
 
   return (
     <>
+      <ActionFormDialog
+        open={workspacePolicyDialogOpen}
+        onOpenChange={setWorkspacePolicyDialogOpen}
+        title="调整工作目录边界"
+        description="工作目录默认以正式产品产物为真相源。这里控制执行器工作区镜像是否只做补位，以及执行结果先写工作区还是直接写交付区。"
+        confirmLabel="保存工作目录边界"
+        busy={workspacePolicySaving}
+        fields={[
+          {
+            name: "disableProviderMirror",
+            label: "关闭执行器工作区镜像补位（工作目录只读正式产物）",
+            type: "checkbox",
+            defaultValue:
+              activeCompany?.orgSettings?.workspacePolicy?.providerMirrorMode === "disabled" ? "true" : "false",
+          },
+          {
+            name: "writeDirectlyToDeliveryArtifacts",
+            label: "执行结果直接沉淀到交付区，不先写执行器工作区",
+            type: "checkbox",
+            defaultValue:
+              activeCompany?.orgSettings?.workspacePolicy?.executorWriteTarget === "delivery_artifacts"
+                ? "true"
+                : "false",
+          },
+        ]}
+        onSubmit={async (values) => {
+          if (!activeCompany) {
+            return;
+          }
+          const result = await runCommand(
+            () =>
+              handleUpdateWorkspacePolicy({
+                ...(activeCompany.orgSettings?.workspacePolicy ?? {}),
+                deliverySource: "artifact_store",
+                providerMirrorMode: values.disableProviderMirror === "true" ? "disabled" : "fallback",
+                executorWriteTarget:
+                  values.writeDirectlyToDeliveryArtifacts === "true"
+                    ? "delivery_artifacts"
+                    : "agent_workspace",
+              }),
+            "工作目录边界更新失败",
+          );
+          if (result) {
+            setWorkspacePolicyDialogOpen(false);
+          }
+        }}
+      />
+
+      <ActionFormDialog
+        open={automationBudgetDialogOpen}
+        onOpenChange={setAutomationBudgetDialogOpen}
+        title="调整自动化预算护栏"
+        description="设置近 30 天 usage 成本的软上限。留空或填 0 表示关闭这条软护栏，只保留已有审批策略。"
+        confirmLabel="保存预算护栏"
+        busy={autonomyPolicySaving}
+        fields={[
+          {
+            name: "automationMonthlyBudgetUsd",
+            label: "近 30 天预算上限 (USD)",
+            type: "text",
+            required: false,
+            defaultValue:
+              typeof activeCompany?.orgSettings?.autonomyPolicy?.automationMonthlyBudgetUsd === "number" &&
+              Number.isFinite(activeCompany.orgSettings.autonomyPolicy.automationMonthlyBudgetUsd) &&
+              activeCompany.orgSettings.autonomyPolicy.automationMonthlyBudgetUsd > 0
+                ? String(activeCompany.orgSettings.autonomyPolicy.automationMonthlyBudgetUsd)
+                : "",
+            placeholder: "例如: 25",
+          },
+        ]}
+        onSubmit={async (values) => {
+          if (!activeCompany) {
+            return;
+          }
+          const rawValue = values.automationMonthlyBudgetUsd?.trim() ?? "";
+          const parsedBudget = rawValue.length === 0 ? 0 : Number(rawValue);
+          if (!Number.isFinite(parsedBudget) || parsedBudget < 0) {
+            throw new Error("请输入大于等于 0 的预算金额。");
+          }
+          const result = await runCommand(
+            () =>
+              handleUpdateAutonomyPolicy({
+                ...(activeCompany.orgSettings?.autonomyPolicy ?? {}),
+                automationMonthlyBudgetUsd: parsedBudget,
+              }),
+            "自动化预算护栏更新失败",
+          );
+          if (result) {
+            setAutomationBudgetDialogOpen(false);
+          }
+        }}
+      />
+
       <ActionFormDialog
         open={executorDialogOpen}
         onOpenChange={setExecutorDialogOpen}

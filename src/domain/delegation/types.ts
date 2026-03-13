@@ -17,6 +17,9 @@ export type DispatchDeliveryState =
   | "consumed"
   | "failed";
 
+export type DispatchCheckoutState = "open" | "claimed" | "released";
+export type DispatchReleaseReason = "answered" | "blocked" | "superseded";
+
 export type RoomVisibility = "public" | "system" | "debug";
 
 export type RoomMessageSource =
@@ -59,6 +62,12 @@ export interface DispatchRecord {
   latestEventId?: string;
   consumedAt?: number | null;
   consumerSessionKey?: string | null;
+  checkoutState?: DispatchCheckoutState;
+  checkoutActorId?: string | null;
+  checkoutSessionKey?: string | null;
+  checkedOutAt?: number | null;
+  releasedAt?: number | null;
+  releaseReason?: DispatchReleaseReason | null;
   syncSource?: "event" | "history";
   createdAt: number;
   updatedAt: number;

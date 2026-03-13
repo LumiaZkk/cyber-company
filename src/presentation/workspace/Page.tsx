@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useArtifactApp } from "../../application/artifact";
 import {
   applyWorkspaceAppManifest,
+  buildCapabilityPlatformCloseoutSnapshot,
+  buildCapabilityPlatformCloseoutSummary,
   buildSkillReleaseReadiness,
   buildWorkspaceAppManifestDraft,
   buildWorkspaceReaderIndex,
@@ -15,10 +17,12 @@ import {
   loadWorkspaceReaderSnapshot,
   pickDefaultWorkspaceFile,
   recordWorkspaceFileVisit,
+  readWorkspaceAppManifestRegistrationMeta,
   resolveWorkspaceEmbeddedAppRuntime,
   resolveWorkspaceSkillExecutionFromScriptRun,
   resolveWorkflowCapabilityBindings,
   runWorkspaceSkill,
+  isCapabilityPlatformCloseoutSnapshotEqual,
   saveWorkspaceEmbeddedAppSnapshot,
   saveWorkspaceReaderSnapshot,
   useWorkspaceFileContent,
@@ -34,8 +38,8 @@ import {
 } from "../../application/workspace";
 import {
   buildRecommendedWorkspaceApps,
-  isNovelCompany,
   publishWorkspaceApp,
+  registerWorkspaceApp,
   resolveWorkspaceAppSurface,
   resolveWorkspaceAppTemplate,
 } from "../../application/company/workspace-apps";
@@ -158,6 +162,7 @@ export function WorkspacePresentationPage() {
   const {
     upsertCapabilityIssue,
     upsertCapabilityRequest,
+    upsertCapabilityAuditEvent,
     retryCompanyProvisioning,
     upsertSkillDefinition,
     upsertSkillRun,
@@ -181,6 +186,7 @@ export function WorkspacePresentationPage() {
     shouldSyncProviderWorkspace,
     supplementaryFiles,
     toolingFiles,
+    workspacePolicySummary,
     workspaceAppManifestsById,
     workspaceApps,
     workspaceAppsAreExplicit,
@@ -285,7 +291,38 @@ export function WorkspacePresentationPage() {
   const skillRuns = activeCompany?.skillRuns ?? [];
   const capabilityRequests = activeCompany?.capabilityRequests ?? [];
   const capabilityIssues = activeCompany?.capabilityIssues ?? [];
+  const capabilityAuditEvents = activeCompany?.capabilityAuditEvents ?? [];
   const executorProvisioning = activeCompany?.system?.executorProvisioning ?? null;
+  const registerableAppManifestCandidates = useMemo(() => {
+    const boundManifestIds = new Set(
+      workspaceApps.map((app) => app.manifestArtifactId).filter((value): value is string => Boolean(value)),
+    );
+    return workspaceFiles
+      .filter((file) => file.artifactId && file.tags.includes("tech.app-manifest"))
+      .filter((file) => !boundManifestIds.has(file.artifactId!))
+      .map((file) => {
+        const meta = readWorkspaceAppManifestRegistrationMeta(file.content ?? file.previewText ?? "");
+        if (!meta?.appSlug && !meta?.title) {
+          return null;
+        }
+        return {
+          artifactId: file.artifactId!,
+          fileName: file.name,
+          title: meta.title ?? file.name.replace(/^workspace-app-manifest\./, "").replace(/\.json$/i, ""),
+          slug:
+            meta.appSlug
+            ?? file.name
+              .replace(/^workspace-app-manifest\./, "")
+              .replace(/\.json$/i, "")
+              .trim()
+              .toLowerCase(),
+          appId: meta.appId,
+          sourceLabel: meta.sourceLabel ?? null,
+        };
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+  }, [workspaceApps, workspaceFiles]);
+  const primaryRegisterableAppManifest = registerableAppManifestCandidates[0] ?? null;
   const workflowCapabilityBindingCatalog = useMemo(
     () => getCompanyWorkflowCapabilityBindings(activeCompany),
     [activeCompany],
@@ -303,6 +340,62 @@ export function WorkspacePresentationPage() {
         skills: skillDefinitions,
       }),
     [activeWorkspaceWorkItem, skillDefinitions, workflowCapabilityBindingCatalog, workspaceApps],
+  );
+  const closeoutSummary = useMemo(
+    () =>
+      buildCapabilityPlatformCloseoutSummary({
+        workspaceApps,
+        workspaceFiles,
+        skillDefinitions,
+        skillRuns,
+        capabilityRequests,
+        capabilityIssues,
+        capabilityAuditEvents,
+        executorProvisioning,
+      }),
+    [
+      capabilityAuditEvents,
+      capabilityIssues,
+      capabilityRequests,
+      executorProvisioning,
+      skillDefinitions,
+      skillRuns,
+      workspaceApps,
+      workspaceFiles,
+    ],
+  );
+  const closeoutUpdatedAt = useMemo(
+    () =>
+      Math.max(
+        activeCompany?.createdAt ?? 0,
+        executorProvisioning?.updatedAt ?? 0,
+        ...workspaceFiles.map((file) => file.updatedAtMs ?? 0),
+        ...skillDefinitions.map((skill) => skill.updatedAt),
+        ...skillRuns.map((run) => run.updatedAt),
+        ...capabilityRequests.map((request) => request.updatedAt),
+        ...capabilityIssues.map((issue) => issue.updatedAt),
+        ...capabilityAuditEvents.map((event) => event.updatedAt),
+      ),
+    [
+      activeCompany?.createdAt,
+      capabilityAuditEvents,
+      capabilityIssues,
+      capabilityRequests,
+      executorProvisioning?.updatedAt,
+      skillDefinitions,
+      skillRuns,
+      workspaceFiles,
+    ],
+  );
+  const closeoutSnapshot = useMemo(
+    () =>
+      activeCompany
+        ? buildCapabilityPlatformCloseoutSnapshot({
+            summary: closeoutSummary,
+            updatedAt: closeoutUpdatedAt,
+          })
+        : null,
+    [activeCompany, closeoutSummary, closeoutUpdatedAt],
   );
 
   useEffect(() => {
@@ -331,6 +424,24 @@ export function WorkspacePresentationPage() {
       setSelectedFileKey(selectedEmbeddedRuntime.selectedFileKey);
     }
   }, [embeddedAppSnapshot, selectedAppUsesEmbeddedHost, selectedEmbeddedRuntime, selectedFileKey]);
+
+  useEffect(() => {
+    if (!activeCompany) {
+      return;
+    }
+    if (!closeoutSnapshot) {
+      return;
+    }
+    if (isCapabilityPlatformCloseoutSnapshotEqual(activeCompany.system?.platformCloseout ?? null, closeoutSnapshot)) {
+      return;
+    }
+    void updateCompany({
+      system: {
+        ...(activeCompany.system ?? {}),
+        platformCloseout: closeoutSnapshot,
+      },
+    });
+  }, [activeCompany, closeoutSnapshot, updateCompany]);
 
   if (!activeCompany) {
     return <div className="p-8 text-center text-muted-foreground">未选择正在运营的公司组织</div>;
@@ -416,35 +527,37 @@ export function WorkspacePresentationPage() {
   };
 
   const publishTemplateApp = async (
-    template: "reader" | "consistency" | "review-console",
+    template: "reader" | "consistency" | "review-console" | "dashboard",
   ) => {
-    const novelCompany = isNovelCompany(activeCompany);
     const nextApps = publishWorkspaceApp(activeCompany, {
       template,
       title:
         template === "reader"
-          ? novelCompany
-            ? "小说阅读器"
-            : "内容查看器"
-          : template === "consistency" && !novelCompany
+          ? "内容查看器"
+          : template === "consistency"
             ? "规则与校验"
-            : undefined,
+            : template === "dashboard"
+              ? "工作目录仪表盘"
+              : undefined,
       description:
         template === "reader"
-          ? novelCompany
-            ? "围绕当前公司的章节、设定、审校结果和版本切换提供统一阅读入口。"
-            : "围绕当前公司的主体内容、参考资料、报告和版本切换提供统一查看入口。"
-          : template === "consistency" && !novelCompany
+          ? "围绕当前公司的主体内容、参考资料、报告和版本切换提供统一查看入口。"
+          : template === "consistency"
             ? "围绕关键参考资料、规则和状态流转管理当前公司的真相源与校验入口。"
           : template === "review-console"
-            ? novelCompany
-              ? "把章节状态、终审结论和发布前检查结果收进同一个控制台。"
-              : "把对象状态、验收结论和交付前检查结果收进同一个控制台。"
+            ? "把对象状态、验收结论和交付前检查结果收进同一个控制台。"
+            : template === "dashboard"
+              ? "把状态数据、异常样本和关键结果聚合成受控仪表盘。"
             : undefined,
-      surface: template === "review-console" ? "embedded" : undefined,
-      embeddedHostKey: template === "review-console" ? "review-console" : undefined,
-      embeddedPermissions:
+      surface: template === "review-console" || template === "dashboard" ? "embedded" : undefined,
+      embeddedHostKey:
         template === "review-console"
+          ? "review-console"
+          : template === "dashboard"
+            ? "dashboard"
+            : undefined,
+      embeddedPermissions:
+        template === "review-console" || template === "dashboard"
           ? {
               resources: "manifest-scoped",
               appState: "readwrite",
@@ -461,16 +574,69 @@ export function WorkspacePresentationPage() {
     }
     toast.success(
       template === "reader"
-        ? novelCompany
-          ? "已发布阅读器入口"
-          : "已发布内容查看器"
+        ? "已发布内容查看 App"
         : template === "consistency"
-          ? novelCompany
-            ? "已发布一致性中心"
-            : "已发布规则与校验"
-          : "已发布审阅控制台",
+            ? "已发布规则与校验 App"
+            : template === "dashboard"
+              ? "已发布工作目录仪表盘"
+              : "已发布审阅与预检 App",
       "当前模板 App 已经正式挂到这家公司里，后续可以继续沿着这个入口迭代。",
     );
+  };
+
+  const registerExistingAppFromManifest = async (artifactId?: string) => {
+    const candidate =
+      (artifactId
+        ? registerableAppManifestCandidates.find((item) => item.artifactId === artifactId) ?? null
+        : primaryRegisterableAppManifest)
+      ?? null;
+    if (!candidate) {
+      toast.error("当前没有可注册的 AppManifest", "先让 CTO 产出显式 manifest，再把它注册成正式公司应用。");
+      return;
+    }
+    const nextApps = registerWorkspaceApp(activeCompany, {
+      id: candidate.appId ?? `app:${candidate.slug}`,
+      slug: candidate.slug,
+      title: candidate.title,
+      description: `由 ${candidate.fileName} 注册的公司内 App，后续继续通过 manifest 和受控宿主迭代。`,
+      summary: candidate.sourceLabel
+        ? `${candidate.sourceLabel} 提供的显式 App 契约。`
+        : "由显式 AppManifest 注册的公司内 App。",
+      status: "ready",
+      ownerAgentId: ctoEmployee?.agentId,
+      visibility: "company",
+      shareScope: "company",
+      surface: "embedded",
+      template: "generic-app",
+      manifestArtifactId: candidate.artifactId,
+      embeddedHostKey: "generic-app",
+      implementation: {
+        kind: "embedded",
+        preset: null,
+        entry: null,
+      },
+      runtime: {
+        kind: "controlled-host",
+        permissions: {
+          resources: "manifest-scoped",
+          appState: "readwrite",
+          companyWrites: "none",
+          actions: "whitelisted",
+        },
+      },
+      embeddedPermissions: {
+        resources: "manifest-scoped",
+        appState: "readwrite",
+        companyWrites: "none",
+        actions: "whitelisted",
+      },
+    });
+    await writeWorkspaceApps(nextApps);
+    const nextApp = nextApps.find((app) => app.manifestArtifactId === candidate.artifactId) ?? null;
+    if (nextApp) {
+      setSelectedAppId(nextApp.id);
+    }
+    toast.success("已注册公司内 App", `${candidate.title} 已通过显式 manifest 挂载到当前公司。`);
   };
 
   const generateAppManifestDraft = async (targetApp: CompanyWorkspaceApp = selectedApp) => {
@@ -520,6 +686,11 @@ export function WorkspacePresentationPage() {
     );
   };
 
+  const generateAppManifestDraftById = async (appId?: string) => {
+    const targetApp = appId ? workspaceApps.find((app) => app.id === appId) ?? selectedApp : selectedApp;
+    await generateAppManifestDraft(targetApp);
+  };
+
   const upsertSkillDraft = async (tool: WorkspaceWorkbenchTool) => {
     if (!ctoEmployee) {
       toast.error("当前公司没有 CTO 节点", "至少需要一个 CTO 节点来承接能力草稿。");
@@ -544,6 +715,20 @@ export function WorkspacePresentationPage() {
       manifestActionIds: seed.manifestActionIds,
       appIds: app ? [app.id] : undefined,
       createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:skill:${seed.id}:created:${now}`,
+      kind: "skill",
+      entityId: seed.id,
+      action: "created",
+      summary: `${seed.title} 已登记为能力草稿`,
+      detail: `${seed.title} 已进入 CTO 技术中台 backlog，等待继续验证和发布。`,
+      actorId: ctoEmployee.agentId,
+      actorLabel: ctoEmployee.nickname ?? ctoEmployee.agentId,
+      appId: app?.id ?? null,
+      skillId: seed.id,
+      createdAt: now,
       updatedAt: now,
     });
     toast.success("已登记能力草稿", `${seed.title} 已进入 CTO 技术中台 backlog。`);
@@ -585,6 +770,25 @@ export function WorkspacePresentationPage() {
       contextFileName: context?.fileName ?? null,
       contextRunId: context?.runId ?? null,
       status: "open",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:request:${seed.id}:created:${now}`,
+      kind: "request",
+      entityId: `capability-request:${activeCompany.id}:${seed.id}:${now}`,
+      action: "created",
+      summary: `${summaryPrefix} 已登记补齐 ${seed.title} 的能力需求`,
+      detail: `${businessLead?.nickname ?? activeWorkspaceWorkItem?.displayOwnerLabel ?? "业务负责人"} 已把这条需求正式交给 CTO 技术中台。`,
+      actorId: businessLead?.agentId ?? activeWorkspaceWorkItem?.ownerActorId ?? null,
+      actorLabel:
+        businessLead?.nickname ??
+        activeWorkspaceWorkItem?.displayOwnerLabel ??
+        activeWorkspaceWorkItem?.ownerLabel ??
+        "业务负责人",
+      appId: relatedApp?.id ?? null,
+      skillId: seed.id,
+      requestId: `capability-request:${activeCompany.id}:${seed.id}:${now}`,
       createdAt: now,
       updatedAt: now,
     });
@@ -632,6 +836,29 @@ export function WorkspacePresentationPage() {
       createdAt: now,
       updatedAt: now,
     });
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:issue:${input?.skillId ?? input?.appId ?? "workspace"}:created:${now}`,
+      kind: "issue",
+      entityId: `capability-issue:${activeCompany.id}:${input?.skillId ?? input?.appId ?? "workspace"}:${now}`,
+      action: "created",
+      summary:
+        input?.summary ??
+        `${selectedApp?.title ?? "当前公司应用"} 已登记能力问题`,
+      detail:
+        input?.detail ??
+        `${businessLead?.nickname ?? activeWorkspaceWorkItem?.displayOwnerLabel ?? "业务负责人"} 已把问题正式提交给 CTO 技术中台。`,
+      actorId: businessLead?.agentId ?? activeWorkspaceWorkItem?.ownerActorId ?? null,
+      actorLabel:
+        businessLead?.nickname ??
+        activeWorkspaceWorkItem?.displayOwnerLabel ??
+        activeWorkspaceWorkItem?.ownerLabel ??
+        "业务负责人",
+      appId: input?.appId ?? selectedApp?.id ?? null,
+      skillId: input?.skillId ?? null,
+      issueId: `capability-issue:${activeCompany.id}:${input?.skillId ?? input?.appId ?? "workspace"}:${now}`,
+      createdAt: now,
+      updatedAt: now,
+    });
     toast.success("已登记能力问题", "问题已经交给 CTO 技术中台继续跟进。");
   };
 
@@ -650,7 +877,7 @@ export function WorkspacePresentationPage() {
         const missingLabels = readiness.checks.filter((check) => !check.ok).map((check) => check.label);
         toast.error(
           "还不能发布为可用",
-          `先补齐：${missingLabels.join("、")}。至少要有一次成功 smoke test 才能正式发布。`,
+          `先补齐：${missingLabels.join("、")}。至少要有一次成功能力验证才能正式发布。`,
         );
         return;
       }
@@ -659,6 +886,21 @@ export function WorkspacePresentationPage() {
       ...skill,
       status,
       updatedAt: Date.now(),
+    });
+    const now = Date.now();
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:skill:${skill.id}:status:${now}`,
+      kind: "skill",
+      entityId: skill.id,
+      action: "status_changed",
+      summary: `${skill.title} 已切换为${status === "ready" ? "可用" : status === "degraded" ? "降级" : status === "draft" ? "草稿" : "停用"}`,
+      detail: `${skill.title} 的平台状态已更新，后续运行与依赖关系会按新状态生效。`,
+      actorId: ctoEmployee?.agentId ?? null,
+      actorLabel: ctoEmployee?.nickname ?? ctoEmployee?.agentId ?? "CTO",
+      appId: skill.appIds?.[0] ?? null,
+      skillId: skill.id,
+      createdAt: now,
+      updatedAt: now,
     });
     if (status === "ready") {
       toast.success("能力已发布为可用", `${skill.title} 现在可以被 App 和流程节点正式依赖。`);
@@ -677,7 +919,7 @@ export function WorkspacePresentationPage() {
       ?? selectedApp
       ?? null;
     if ((skill.appIds?.length ?? 0) > 0 && !triggerApp) {
-      toast.error("当前还不能跑 smoke test", "这条能力依赖关联 App，但当前公司里还没有对应入口。");
+      toast.error("当前还不能跑能力验证", "这条能力依赖关联 App，但当前公司里还没有对应入口。");
       return;
     }
     const now = Date.now();
@@ -696,7 +938,7 @@ export function WorkspacePresentationPage() {
         ownerLabel: ctoEmployee?.nickname ?? ctoEmployee?.agentId ?? "CTO",
         triggerType: "manual",
         triggerActionId: `smoke-test:${skill.id}`,
-        triggerLabel: "CTO 工具工坊 smoke test",
+        triggerLabel: "CTO 工具工坊能力验证",
         now,
       },
       {
@@ -773,15 +1015,45 @@ export function WorkspacePresentationPage() {
     );
 
     if (result.status === "succeeded") {
+      await upsertCapabilityAuditEvent({
+        id: `capability-audit:${activeCompany.id}:run:${result.runId}:smoke-success:${now}`,
+        kind: "run",
+        entityId: result.runId,
+        action: "smoke_test_succeeded",
+        summary: `${skill.title} 能力验证已通过`,
+        detail: result.detail,
+        actorId: ctoEmployee?.agentId ?? null,
+        actorLabel: ctoEmployee?.nickname ?? ctoEmployee?.agentId ?? "CTO",
+        appId: triggerApp?.id ?? null,
+        skillId: skill.id,
+        runId: result.runId,
+        createdAt: now,
+        updatedAt: now,
+      });
       const successDetail =
         result.executionMode === "workspace_script"
-          ? `${result.detail} smoke test 直接运行了 ${result.executionEntryPath ?? "CTO 工作区脚本"}。`
+          ? `${result.detail} 这次能力验证直接运行了 ${result.executionEntryPath ?? "CTO 工作区脚本"}。`
           : workspaceScriptFallbackMessage
             ? `${result.detail} 当前未直接跑到工作区脚本（${workspaceScriptFallbackMessage}），已自动回退到平台桥接。`
             : result.detail;
-      toast.success("Smoke test 已通过", successDetail);
+      toast.success("能力验证已通过", successDetail);
       return;
     }
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:run:${result.runId}:smoke-fail:${now}`,
+      kind: "run",
+      entityId: result.runId,
+      action: "smoke_test_failed",
+      summary: `${skill.title} 能力验证未通过`,
+      detail: result.detail,
+      actorId: ctoEmployee?.agentId ?? null,
+      actorLabel: ctoEmployee?.nickname ?? ctoEmployee?.agentId ?? "CTO",
+      appId: triggerApp?.id ?? null,
+      skillId: skill.id,
+      runId: result.runId,
+      createdAt: now,
+      updatedAt: now,
+    });
     toast.error(result.title, result.detail);
   };
 
@@ -790,10 +1062,26 @@ export function WorkspacePresentationPage() {
     if (!request) {
       return;
     }
+    const now = Date.now();
     await upsertCapabilityRequest({
       ...request,
       status,
-      updatedAt: Date.now(),
+      updatedAt: now,
+    });
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:request:${request.id}:status:${now}`,
+      kind: "request",
+      entityId: request.id,
+      action: "status_changed",
+      summary: `${request.summary} 已进入 ${status}`,
+      detail: `${request.summary} 的治理状态已经更新。`,
+      actorId: ctoEmployee?.agentId ?? null,
+      actorLabel: ctoEmployee?.nickname ?? ctoEmployee?.agentId ?? "CTO",
+      appId: request.appId ?? null,
+      skillId: request.skillId ?? null,
+      requestId: request.id,
+      createdAt: now,
+      updatedAt: now,
     });
   };
 
@@ -802,10 +1090,26 @@ export function WorkspacePresentationPage() {
     if (!issue) {
       return;
     }
+    const now = Date.now();
     await upsertCapabilityIssue({
       ...issue,
       status,
-      updatedAt: Date.now(),
+      updatedAt: now,
+    });
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:issue:${issue.id}:status:${now}`,
+      kind: "issue",
+      entityId: issue.id,
+      action: "status_changed",
+      summary: `${issue.summary} 已进入 ${status}`,
+      detail: `${issue.summary} 的治理状态已经更新。`,
+      actorId: ctoEmployee?.agentId ?? null,
+      actorLabel: ctoEmployee?.nickname ?? ctoEmployee?.agentId ?? "CTO",
+      appId: issue.appId ?? null,
+      skillId: issue.skillId ?? null,
+      issueId: issue.id,
+      createdAt: now,
+      updatedAt: now,
     });
   };
 
@@ -927,6 +1231,21 @@ export function WorkspacePresentationPage() {
     );
 
     if (result.status === "succeeded") {
+      await upsertCapabilityAuditEvent({
+        id: `capability-audit:${activeCompany.id}:run:${result.runId}:run-success:${now}`,
+        kind: "run",
+        entityId: result.runId,
+        action: "run_succeeded",
+        summary: `${triggerApp?.title ?? "工作目录"} 已成功触发 ${skill?.title ?? skillId}`,
+        detail: result.detail,
+        actorId: requestedByActorId,
+        actorLabel: requestedByLabel ?? "业务负责人",
+        appId: triggerApp?.id ?? null,
+        skillId: skill?.id ?? skillId,
+        runId: result.runId,
+        createdAt: now,
+        updatedAt: now,
+      });
       const successDetail =
         result.executionMode === "workspace_script"
           ? `${result.detail} 这次直接运行了 ${result.executionEntryPath ?? "CTO 工作区脚本"}。`
@@ -936,6 +1255,21 @@ export function WorkspacePresentationPage() {
       toast.success(result.title, successDetail);
       return;
     }
+    await upsertCapabilityAuditEvent({
+      id: `capability-audit:${activeCompany.id}:run:${result.runId}:run-fail:${now}`,
+      kind: "run",
+      entityId: result.runId,
+      action: "run_failed",
+      summary: `${triggerApp?.title ?? "工作目录"} 触发 ${skill?.title ?? skillId} 失败`,
+      detail: result.detail,
+      actorId: requestedByActorId,
+      actorLabel: requestedByLabel ?? "业务负责人",
+      appId: triggerApp?.id ?? null,
+      skillId: skill?.id ?? skillId,
+      runId: result.runId,
+      createdAt: now,
+      updatedAt: now,
+    });
     toast.error(result.title, result.detail);
   };
 
@@ -959,6 +1293,7 @@ export function WorkspacePresentationPage() {
           navigate(`/chat/${encodeURIComponent(ctoEmployee.agentId)}`);
         }
         return;
+      case "request_capability":
       case "workbench_request":
         if (isWorkbenchTool(action.target)) {
           const activeSectionLabel =
@@ -973,6 +1308,15 @@ export function WorkspacePresentationPage() {
           });
         }
         return;
+      case "open_resource": {
+        const targetFile =
+          workspaceFiles.find((file) => file.artifactId === action.target || file.key === action.target)
+          ?? null;
+        if (targetFile) {
+          setSelectedFileKey(targetFile.key);
+        }
+        return;
+      }
       case "report_issue": {
         const activeSectionLabel =
           selectedAppUsesEmbeddedHost && selectedEmbeddedSectionSlot && selectedAppManifest
@@ -1010,6 +1354,7 @@ export function WorkspacePresentationPage() {
         });
         return;
       }
+      case "trigger_capability":
       case "trigger_skill":
         await triggerSkillFromManifest(action.target, selectedApp.id, action.id);
         return;
@@ -1092,6 +1437,7 @@ export function WorkspacePresentationPage() {
       artifactBackedWorkspaceCount={artifactBackedWorkspaceCount}
       mirroredOnlyWorkspaceCount={mirroredOnlyWorkspaceCount}
       shouldSyncProviderWorkspace={shouldSyncProviderWorkspace}
+      workspacePolicySummary={workspacePolicySummary}
       chapterFiles={chapterFiles}
       canonFiles={canonFiles}
       reviewFiles={reviewFiles}
@@ -1112,6 +1458,8 @@ export function WorkspacePresentationPage() {
       skillRuns={skillRuns}
       capabilityRequests={capabilityRequests}
       capabilityIssues={capabilityIssues}
+      capabilityAuditEvents={capabilityAuditEvents}
+      manifestRegistrationCandidateCount={registerableAppManifestCandidates.length}
       ctoLabel={ctoEmployee ? agentLabelById.get(ctoEmployee.agentId) ?? ctoEmployee.agentId : null}
       businessLeadLabel={businessLead?.nickname ?? activeWorkspaceWorkItem?.displayOwnerLabel ?? null}
       publishedAppTemplates={publishedAppTemplates}
@@ -1133,7 +1481,8 @@ export function WorkspacePresentationPage() {
       }}
       onOpenCtoWorkbench={openCtoWorkbench}
       onPublishTemplateApp={publishTemplateApp}
-      onGenerateAppManifestDraft={generateAppManifestDraft}
+      onRegisterExistingApp={registerExistingAppFromManifest}
+      onGenerateAppManifestDraft={generateAppManifestDraftById}
       onCreateSkillDraft={upsertSkillDraft}
       onCreateCapabilityRequest={createCapabilityRequestDraft}
       onCreateCapabilityIssue={createCapabilityIssueDraft}

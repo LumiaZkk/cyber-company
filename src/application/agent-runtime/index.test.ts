@@ -9,6 +9,7 @@ import {
   normalizeProviderProcessList,
   normalizeProviderProcessRecord,
   normalizeProviderSessionStatus,
+  reconcileAgentSessionExecutionContext,
 } from "./index";
 import type { DispatchRecord } from "../../domain/delegation/types";
 import type { Company } from "../../domain/org/types";
@@ -413,6 +414,140 @@ describe("agent runtime projection", () => {
       coordinationState: "waiting_peer",
       interventionState: "overdue",
     });
+  });
+
+  it("treats a claimed dispatch as active execution even without a live runtime ping", () => {
+    const statuses = buildCanonicalAgentStatusProjection({
+      company: createCompany(),
+      activeWorkItems: [],
+      activeDispatches: [
+        {
+          id: "dispatch-claimed",
+          workItemId: "work-claimed",
+          roomId: "workitem:work-claimed",
+          title: "继续完成 runtime closeout",
+          fromActorId: "ceo",
+          targetActorIds: ["cto"],
+          summary: "先把 execution locking 收口。",
+          status: "acknowledged",
+          checkoutState: "claimed",
+          checkoutActorId: "cto",
+          checkoutSessionKey: "agent:cto:main",
+          checkedOutAt: 150,
+          createdAt: 100,
+          updatedAt: 150,
+        },
+      ] satisfies DispatchRecord[],
+      activeSupportRequests: [],
+      activeEscalations: [],
+      activeAgentRuntime: [],
+      now: 200,
+    });
+
+    const cto = statuses.find((status) => status.agentId === "cto");
+    expect(cto).toMatchObject({
+      runtimeState: "no_signal",
+      coordinationState: "executing",
+      currentAssignment: "继续完成 runtime closeout",
+    });
+    expect(cto?.currentObjective).toContain("execution locking");
+  });
+
+  it("recovers execution context onto agent sessions from dispatch checkout history", () => {
+    const sessions = reconcileAgentSessionExecutionContext({
+      sessions: [
+        {
+          sessionKey: "agent:cto:main",
+          agentId: "cto",
+          providerId: "openclaw",
+          sessionState: "idle",
+          lastSeenAt: 300,
+          lastStatusSyncAt: 300,
+          lastMessageAt: 300,
+          abortedLastRun: false,
+          lastError: null,
+          source: "session_status",
+        },
+      ],
+      dispatches: [
+        {
+          id: "dispatch-recover-1",
+          workItemId: "work-recover-1",
+          roomId: "workitem:work-recover-1",
+          title: "继续收口恢复链路",
+          fromActorId: "ceo",
+          targetActorIds: ["cto"],
+          summary: "先把 session 恢复上下文打通。",
+          status: "acknowledged",
+          checkoutState: "claimed",
+          checkoutActorId: "cto",
+          checkoutSessionKey: "agent:cto:main",
+          checkedOutAt: 280,
+          createdAt: 200,
+          updatedAt: 280,
+        },
+      ] satisfies DispatchRecord[],
+    });
+
+    expect(sessions[0]?.executionContext).toMatchObject({
+      dispatchId: "dispatch-recover-1",
+      workItemId: "work-recover-1",
+      assignment: "继续收口恢复链路",
+      objective: "先把 session 恢复上下文打通。",
+      checkoutState: "claimed",
+      actorId: "cto",
+      sessionKey: "agent:cto:main",
+      source: "dispatch_checkout",
+    });
+  });
+
+  it("keeps execution visible from recovered session context even when dispatch projection is empty", () => {
+    const statuses = buildCanonicalAgentStatusProjection({
+      company: createCompany(),
+      activeWorkItems: [],
+      activeDispatches: [],
+      activeSupportRequests: [],
+      activeEscalations: [],
+      activeAgentRuntime: [],
+      activeAgentSessions: [
+        {
+          sessionKey: "agent:cto:main",
+          agentId: "cto",
+          providerId: "openclaw",
+          sessionState: "idle",
+          lastSeenAt: 400,
+          lastStatusSyncAt: 400,
+          lastMessageAt: 400,
+          abortedLastRun: false,
+          lastError: null,
+          executionContext: {
+            dispatchId: "dispatch-recover-2",
+            workItemId: "work-recover-2",
+            assignment: "继续完成 session recovery",
+            objective: "补齐 inspector 的恢复呈现。",
+            checkoutState: "claimed",
+            actorId: "cto",
+            sessionKey: "agent:cto:main",
+            updatedAt: 390,
+            checkedOutAt: 390,
+            releasedAt: null,
+            releaseReason: null,
+            source: "dispatch_checkout",
+          },
+          source: "fallback",
+        },
+      ],
+      now: 450,
+    });
+
+    const cto = statuses.find((status) => status.agentId === "cto");
+    expect(cto).toMatchObject({
+      runtimeState: "no_signal",
+      coordinationState: "executing",
+      currentAssignment: "继续完成 session recovery",
+      currentObjective: "补齐 inspector 的恢复呈现。",
+    });
+    expect(cto?.reason).toContain("恢复当前上下文");
   });
 
   it("keeps only the current owner in intervention when stale blocked history exists", () => {

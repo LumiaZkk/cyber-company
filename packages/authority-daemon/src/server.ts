@@ -8,6 +8,7 @@ import {
   buildManagedExecutorFiles,
   buildManagedExecutorFilesForCompany,
   listDesiredManagedExecutorAgents,
+  resolveManagedExecutorProvisioningState,
   planManagedExecutorReconcile,
 } from "./company-executor-sync";
 import { CompanyOpsEngine } from "./company-ops-engine";
@@ -49,6 +50,7 @@ import {
   buildAgentSessionRecordsFromSessions,
   normalizeProviderRuntimeEvent,
   normalizeProviderSessionStatus,
+  reconcileAgentSessionExecutionContext,
   type AgentRunRecord,
 } from "../../../src/application/agent-runtime";
 import {
@@ -68,6 +70,7 @@ import { areWorkItemRecordsEquivalent } from "../../../src/application/mission/w
 import { isArtifactRequirementTopic } from "../../../src/application/mission/requirement-kind";
 import { reconcileWorkItemRecord } from "../../../src/application/mission/work-item-reconciler";
 import { buildAuthorityHealthGuidance } from "../../../src/infrastructure/authority/health-guidance";
+import { buildAuthorityExecutorReadinessChecks } from "../../../src/infrastructure/authority/executor-readiness";
 import {
   reconcileRequirementAggregateState,
   sanitizeRequirementAggregateRecords,
@@ -143,6 +146,7 @@ import type {
   AuthorityDispatchUpsertRequest,
   AuthorityEvent,
   AuthorityExecutorConfig,
+  AuthorityExecutorCapabilitySnapshot,
   AuthorityExecutorConfigPatch,
   AuthorityExecutorStatus,
   AuthorityHealthSnapshot,
@@ -322,6 +326,27 @@ function updateSessionStatusCapability(outcome: "success" | "error", error?: unk
       "OpenClaw executor does not support session_status; Authority runtime repair will stay lifecycle/chat-driven.",
     );
   }
+}
+
+function buildExecutorCapabilitySnapshot(
+  executor: AuthorityExecutorStatus,
+): AuthorityExecutorCapabilitySnapshot {
+  const sessionStatus =
+    executor.state === "ready"
+      ? sessionStatusCapabilityState
+      : ("unknown" as const);
+  const notes: string[] = [];
+  if (sessionStatus === "unsupported") {
+    notes.push("下游执行器不提供 session_status，Authority 会退回 lifecycle/chat 驱动的运行态修复。");
+  } else if (sessionStatus === "unknown" && executor.state === "ready") {
+    notes.push("Authority 尚未确认 session_status 能力，首次探测后会自动切换到真实边界。");
+  }
+
+  return {
+    sessionStatus,
+    processRuntime: "unsupported",
+    notes,
+  };
 }
 
 function normalizeDecisionTicketRevision(value: number | null | undefined): number {
@@ -632,6 +657,7 @@ class AuthorityRepository {
   getHealth(input?: {
     executor: AuthorityExecutorStatus;
     executorConfig: AuthorityExecutorConfig;
+    executorCapabilities: AuthorityExecutorCapabilitySnapshot;
   }): AuthorityHealthSnapshot {
     const executorConfig = input?.executorConfig ?? toPublicExecutorConfig(this.loadExecutorConfig());
     const executor =
@@ -661,6 +687,12 @@ class AuthorityRepository {
       ok: true,
       executor,
       executorConfig,
+      executorCapabilities: input?.executorCapabilities ?? buildExecutorCapabilitySnapshot(executor),
+      executorReadiness: buildAuthorityExecutorReadinessChecks({
+        executor,
+        executorConfig,
+        executorCapabilities: input?.executorCapabilities ?? buildExecutorCapabilitySnapshot(executor),
+      }),
       authority: {
         dbPath: this.dbPath,
         connected: true,
@@ -1308,6 +1340,7 @@ class AuthorityRepository {
   getBootstrap(input?: {
     executor: AuthorityExecutorStatus;
     executorConfig: AuthorityExecutorConfig;
+    executorCapabilities: AuthorityExecutorCapabilitySnapshot;
   }): AuthorityBootstrapSnapshot {
     const health = this.getHealth(input);
     const config = this.loadConfig();
@@ -1320,6 +1353,8 @@ class AuthorityRepository {
       runtime,
       executor: health.executor,
       executorConfig: health.executorConfig,
+      executorCapabilities: health.executorCapabilities,
+      executorReadiness: health.executorReadiness,
       authority: {
         url: `http://127.0.0.1:${AUTHORITY_PORT}`,
         dbPath: this.dbPath,
@@ -1599,9 +1634,12 @@ class AuthorityRepository {
   ): AuthorityCompanyRuntimeSnapshot {
     const company = this.loadCompanyById(companyId);
     const normalizedCompany = company ? normalizeCompany(company) : null;
-    const activeAgentSessions = [...(overrides?.activeAgentSessions ?? snapshot.activeAgentSessions ?? [])].sort(
-      (left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0),
-    );
+    const activeAgentSessions = reconcileAgentSessionExecutionContext({
+      sessions: [...(overrides?.activeAgentSessions ?? snapshot.activeAgentSessions ?? [])].sort(
+        (left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0),
+      ),
+      dispatches: snapshot.activeDispatches ?? [],
+    });
     const activeAgentRuns = [...(overrides?.activeAgentRuns ?? this.readActiveExecutorRuns(companyId))]
       .filter((run) => run.state !== "completed" && run.state !== "aborted" && run.state !== "error")
       .sort((left, right) => right.lastEventAt - left.lastEventAt);
@@ -2357,6 +2395,12 @@ class AuthorityRepository {
           summary: input.dispatch.summary,
           status: input.dispatch.status,
           deliveryState: input.dispatch.deliveryState ?? null,
+          checkoutState: input.dispatch.checkoutState ?? null,
+          checkoutActorId: input.dispatch.checkoutActorId ?? null,
+          checkoutSessionKey: input.dispatch.checkoutSessionKey ?? null,
+          checkedOutAt: input.dispatch.checkedOutAt ?? null,
+          releasedAt: input.dispatch.releasedAt ?? null,
+          releaseReason: input.dispatch.releaseReason ?? null,
           fromActorId: input.dispatch.fromActorId ?? null,
           targetActorIds: input.dispatch.targetActorIds,
           sourceMessageId: input.dispatch.sourceMessageId ?? null,
@@ -3747,15 +3791,17 @@ function getExecutorSnapshot() {
     lastConnectedAt: bridgeSnapshot.lastConnectedAt,
   });
   const executorStatus = executorBridge.status();
+  const executor =
+    sessionStatusCapabilityState === "unsupported" && executorStatus.state === "ready"
+      ? {
+          ...executorStatus,
+          note: `${executorStatus.note} 当前 OpenClaw 未提供 session_status，Authority 已降级为 lifecycle/chat 修复。`,
+        }
+      : executorStatus;
   return {
-    executor:
-      sessionStatusCapabilityState === "unsupported" && executorStatus.state === "ready"
-        ? {
-            ...executorStatus,
-            note: `${executorStatus.note} 当前 OpenClaw 未提供 session_status，Authority 已降级为 lifecycle/chat 修复。`,
-          }
-        : executorStatus,
+    executor,
     executorConfig: toPublicExecutorConfig(stored),
+    executorCapabilities: buildExecutorCapabilitySnapshot(executor),
   };
 }
 
@@ -4150,7 +4196,7 @@ async function ensureManagedCompanyExecutorProvisionedBestEffort(
 
 async function reconcileManagedExecutorState(reason: string) {
   if (executorBridge.status().state !== "ready") {
-    return;
+    return [];
   }
 
   let existingAgentIds = new Set<string>();
@@ -4161,6 +4207,9 @@ async function reconcileManagedExecutorState(reason: string) {
   }
 
   const currentConfig = repository.loadConfig();
+  if (!currentConfig) {
+    return [];
+  }
   const reconcilePlan = planManagedExecutorReconcile({
     trackedAgents: repository.listManagedExecutorAgents(),
     desiredTargets: listDesiredManagedExecutorAgents(currentConfig),
@@ -4217,9 +4266,47 @@ async function reconcileManagedExecutorState(reason: string) {
   );
   const fileResults = await Promise.allSettled(managedFiles.map((file) => syncAgentFileToExecutor(file)));
   const failures = fileResults.filter((result) => result.status === "rejected");
+  const fileSyncFailedAgentIds = new Set<string>();
+  fileResults.forEach((result, index) => {
+    if (result.status === "rejected") {
+      const agentId = managedFiles[index]?.agentId;
+      if (agentId) {
+        fileSyncFailedAgentIds.add(agentId);
+      }
+    }
+  });
   if (failures.length > 0) {
     console.warn(`Failed to mirror ${failures.length} managed company file(s) to OpenClaw executor (${reason}).`);
   }
+
+  const changedCompanyIds: string[] = [];
+  for (const company of currentConfig.companies) {
+    const nextProvisioning = resolveManagedExecutorProvisioningState({
+      company,
+      visibleAgentIds: existingAgentIds,
+      bridgeState: executorBridge.status().state,
+      fileSyncFailedAgentIds,
+    });
+    const previousProvisioning = company.system?.executorProvisioning;
+    const pendingChanged =
+      (previousProvisioning?.pendingAgentIds ?? []).join("\n") !== (nextProvisioning.pendingAgentIds ?? []).join("\n");
+    if (
+      previousProvisioning?.state !== nextProvisioning.state ||
+      (previousProvisioning?.lastError ?? null) !== nextProvisioning.lastError ||
+      pendingChanged
+    ) {
+      updateCompanyExecutorProvisioning({
+        companyId: company.id,
+        state: nextProvisioning.state,
+        pendingAgentIds: nextProvisioning.pendingAgentIds,
+        lastError: nextProvisioning.lastError,
+        updatedAt: nextProvisioning.updatedAt,
+      });
+      changedCompanyIds.push(company.id);
+    }
+  }
+
+  return changedCompanyIds;
 }
 
 function queueManagedExecutorSync(reason: string) {
@@ -4229,8 +4316,17 @@ function queueManagedExecutorSync(reason: string) {
   }
 
   managedExecutorSyncPromise = runManagedExecutorMutation(async () => {
-    await reconcileManagedExecutorState(reason);
+    return await reconcileManagedExecutorState(reason);
   })
+    .then((changedCompanyIds) => {
+      if (!changedCompanyIds?.length) {
+        return;
+      }
+      broadcast({ type: "bootstrap.updated", timestamp: Date.now() });
+      changedCompanyIds.forEach((companyId) => {
+        broadcast({ type: "company.updated", companyId, timestamp: Date.now() });
+      });
+    })
     .catch((error) => {
       console.warn(`Managed OpenClaw reconcile failed (${reason}).`, error);
     })
@@ -4579,6 +4675,14 @@ async function performRuntimeSessionStatusRepair() {
 setInterval(() => {
   void performRuntimeSessionStatusRepair();
 }, 10_000);
+
+setInterval(() => {
+  const config = repository.loadConfig();
+  if (!config?.companies.some((company) => company.system?.executorProvisioning?.state !== "ready")) {
+    return;
+  }
+  void queueManagedExecutorSync("executor.provisioning.watchdog");
+}, 15_000);
 
 void executorBridge.reconnect().catch((error) => {
   console.warn("Authority executor bridge failed to connect on startup:", error);

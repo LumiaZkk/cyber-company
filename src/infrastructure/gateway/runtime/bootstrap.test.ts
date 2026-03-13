@@ -48,4 +48,23 @@ describe("backend bootstrap", () => {
       "后端不提供归档接口，系统将使用产品侧轮次归档。",
     ]);
   });
+
+  it("surfaces degraded session status repair when runtime observability falls back", () => {
+    const manifest = buildProviderManifest({
+      providerId: "authority",
+      capabilities: createBackendCapabilities({
+        sessionHistory: true,
+        sessionArchives: false,
+        agentFiles: true,
+        skillsStatus: true,
+        runtimeObservability: true,
+        sessionStatus: false,
+      }),
+    });
+
+    expect(manifest.actorStrategy).toBe("native-multi-actor");
+    expect(manifest.notes).toContain(
+      "后端不提供 session_status，运行态修复将退回 lifecycle/chat 驱动的降级模式。",
+    );
+  });
 });

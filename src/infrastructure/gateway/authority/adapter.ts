@@ -3,8 +3,10 @@ import {
   AUTHORITY_PROVIDER_ID,
   DEFAULT_AUTHORITY_URL,
   type AuthorityBootstrapSnapshot,
+  type AuthorityExecutorCapabilitySnapshot,
   type AuthorityEvent,
   type AuthorityGatewayConfigSnapshot,
+  type AuthorityHealthSnapshot,
   type AuthorityModelsResponse,
 } from "../../authority/contract";
 import {
@@ -42,7 +44,7 @@ import {
   normalizeProviderSessionStatus,
 } from "../../../application/agent-runtime";
 
-const authorityCapabilities = createBackendCapabilities({
+const authorityCapabilityDefaults = createBackendCapabilities({
   sessionHistory: true,
   sessionArchives: false,
   sessionArchiveRestore: false,
@@ -61,6 +63,16 @@ const authorityCapabilities = createBackendCapabilities({
   agentSkillsOverride: false,
   usageInsights: true,
 });
+
+export function resolveAuthorityBackendCapabilities(
+  snapshot?: AuthorityExecutorCapabilitySnapshot | null,
+) {
+  return createBackendCapabilities({
+    ...authorityCapabilityDefaults,
+    sessionStatus: snapshot ? snapshot.sessionStatus !== "unsupported" : authorityCapabilityDefaults.sessionStatus,
+    processRuntime: snapshot ? snapshot.processRuntime === "supported" : authorityCapabilityDefaults.processRuntime,
+  });
+}
 
 function toBackendEventFrame(event: AuthorityEvent): BackendEventFrame {
   return {
@@ -105,13 +117,24 @@ function toHello(url: string): BackendHello {
 
 class AuthorityBackendAdapter implements AgentBackend {
   readonly providerId = AUTHORITY_PROVIDER_ID;
-  readonly capabilities = authorityCapabilities;
   private connected = false;
+  private currentCapabilities = authorityCapabilityDefaults;
   private unsubscribeEvents: (() => void) | null = null;
   private subscriptions = new Map<string, Set<(payload: unknown) => void>>();
   private onEventHandler: ((event: BackendEventFrame) => void) | null = null;
   private onHelloHandler: ((hello: BackendHello) => void) | null = null;
   private onCloseHandler: ((info: BackendCloseInfo) => void) | null = null;
+
+  get capabilities() {
+    return this.currentCapabilities;
+  }
+
+  private syncCapabilitiesFromHealthSnapshot(
+    health: AuthorityHealthSnapshot | null | undefined,
+  ) {
+    this.currentCapabilities = resolveAuthorityBackendCapabilities(health?.executorCapabilities);
+    return this.currentCapabilities;
+  }
 
   get isConnected() {
     return this.connected;
@@ -152,8 +175,8 @@ class AuthorityBackendAdapter implements AgentBackend {
   }
 
   async probeCapabilities() {
-    await authorityClient.health();
-    return this.capabilities;
+    const health = await authorityClient.health();
+    return this.syncCapabilitiesFromHealthSnapshot(health);
   }
 
   async listActors(): Promise<ActorRef[]> {
@@ -276,7 +299,10 @@ class AuthorityBackendAdapter implements AgentBackend {
 
   async request<T = unknown>(method: string, params?: unknown): Promise<T> {
     if (method === "authority.health") {
-      return (await authorityClient.health()) as T;
+      return (await authorityClient.health().then((health) => {
+        this.syncCapabilitiesFromHealthSnapshot(health);
+        return health;
+      })) as T;
     }
     if (method === "authority.bootstrap") {
       return (await authorityClient.bootstrap()) as T;
@@ -712,7 +738,10 @@ class AuthorityBackendAdapter implements AgentBackend {
   }
 
   getHealth() {
-    return authorityClient.health();
+    return authorityClient.health().then((health) => {
+      this.syncCapabilitiesFromHealthSnapshot(health);
+      return health;
+    });
   }
 
   getStatus() {

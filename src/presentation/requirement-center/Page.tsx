@@ -43,8 +43,11 @@ import { formatTime } from "../../lib/utils";
 import { useBoardCommunicationSync } from "../board/hooks/useBoardCommunicationSync";
 import { useBoardRuntimeState } from "../board/hooks/useBoardRuntimeState";
 import { useBoardTaskBackfill } from "../board/hooks/useBoardTaskBackfill";
+import { buildActivityInboxSummary } from "../../application/governance/activity-inbox";
 import { appendOperatorActionAuditEvent } from "../../application/governance/operator-action-audit";
+import { describeDispatchCheckout } from "../../domain/delegation/dispatch-checkout";
 import { CanonicalRuntimeSummaryCard } from "../shared/CanonicalRuntimeSummaryCard";
+import { ActivityInboxStrip } from "../shared/ActivityInboxStrip";
 
 function getRequirementTimelineLabel(eventType: string) {
   if (eventType === "requirement_seeded") return "主线已立项";
@@ -356,6 +359,23 @@ function RequirementCenterContent({
         .sort((left, right) => right.updatedAt - left.updatedAt),
     [activeDispatches, aggregate?.workItemId, room?.id],
   );
+  const roomDispatchCheckout = useMemo(() => {
+    const resolveActorLabel = (actorId: string | null) =>
+      actorId
+        ? activeCompany.employees.find((employee) => employee.agentId === actorId)?.nickname ?? actorId
+        : "成员";
+    const details = roomDispatches.map((dispatch) =>
+      describeDispatchCheckout({
+        dispatch,
+        resolveActorLabel,
+      }),
+    );
+    return {
+      claimedCount: details.filter((detail) => detail.checkoutState === "claimed").length,
+      openCount: details.filter((detail) => detail.checkoutState === "open").length,
+      latest: details[0] ?? null,
+    };
+  }, [activeCompany.employees, roomDispatches]);
 
   const scopedArtifactIds = useMemo(
     () =>
@@ -432,6 +452,12 @@ function RequirementCenterContent({
     Boolean(aggregate) &&
     (aggregate?.acceptanceStatus === "pending" || aggregate?.status === "completed");
   const canRequestChange = Boolean(aggregate) && aggregate?.status !== "archived";
+  const activityInboxSummary = buildActivityInboxSummary({
+    scopeLabel: "当前主线",
+    handoffCount: boardTaskSurface.visiblePendingHandoffs.length,
+    escalationCount: boardTaskSurface.visibleSlaAlerts.length,
+    manualTakeoverCount: boardTaskSurface.visibleTakeoverCount,
+  });
 
   const resolveRequirementDecision = (optionId: string) => {
     if (!openRequirementDecisionTicket) {
@@ -1056,6 +1082,16 @@ function RequirementCenterContent({
                       <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
                         {roomDispatches.length} 条派单
                       </Badge>
+                      {roomDispatchCheckout.claimedCount > 0 ? (
+                        <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+                          {roomDispatchCheckout.claimedCount} 条执行中
+                        </Badge>
+                      ) : null}
+                      {roomDispatchCheckout.openCount > 0 ? (
+                        <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+                          {roomDispatchCheckout.openCount} 条待接手
+                        </Badge>
+                      ) : null}
                       <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
                         {(room?.memberIds ?? aggregate.memberIds).length} 位成员
                       </Badge>
@@ -1063,6 +1099,11 @@ function RequirementCenterContent({
                         最近同步 {formatTime(room?.updatedAt ?? aggregate.updatedAt)}
                       </Badge>
                     </div>
+                    {roomDispatchCheckout.latest ? (
+                      <div className="mt-3 text-xs leading-5 text-slate-600">
+                        当前执行权：{roomDispatchCheckout.latest.detail}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="space-y-3">
@@ -1257,9 +1298,8 @@ function RequirementCenterContent({
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-              <div className="text-sm leading-6 text-slate-600">
-                当前有 {boardTaskSurface.visibleTakeoverCount} 条接管提醒，{boardTaskSurface.visibleSlaAlerts.length} 条超时提醒，
-                {boardTaskSurface.visiblePendingHandoffs.length} 条待完成交接。
+              <div className="min-w-0 flex-1">
+                <ActivityInboxStrip summary={activityInboxSummary} title="统一活动摘要" />
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button

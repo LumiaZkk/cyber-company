@@ -112,6 +112,20 @@ function createBootstrap(config: CyberCompanyConfig | null): AuthorityBootstrapS
       lastError: null,
       lastConnectedAt: Date.now(),
     },
+    executorCapabilities: {
+      sessionStatus: "supported",
+      processRuntime: "unsupported",
+      notes: [],
+    },
+    executorReadiness: [
+      {
+        id: "connection",
+        label: "执行器连接",
+        state: "ready",
+        summary: "test",
+        detail: "ws://127.0.0.1:18789",
+      },
+    ],
     authority: {
       url: "http://127.0.0.1:18790",
       dbPath: "/tmp/test.sqlite",

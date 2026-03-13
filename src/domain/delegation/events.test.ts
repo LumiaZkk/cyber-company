@@ -88,6 +88,11 @@ describe("projectCompanyCommunicationFromEvents", () => {
       summary: "Please draft the architecture update.",
       fromActorId: "live-co-ceo",
       targetActorIds: ["live-co-cto"],
+      consumerSessionKey: "agent:live-co-cto:main",
+      checkoutState: "released",
+      checkoutActorId: "live-co-cto",
+      checkoutSessionKey: "agent:live-co-cto:main",
+      releaseReason: "answered",
       syncSource: "event",
       responseMessageId: "event-2",
     });

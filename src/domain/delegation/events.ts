@@ -4,6 +4,7 @@ import type {
   HandoffRecord,
   RequestRecord,
 } from "./types";
+import { buildDispatchCheckoutUpdate } from "./dispatch-checkout";
 import type { Company } from "../org/types";
 
 export type DelegationEventKind =
@@ -231,6 +232,12 @@ function dispatchMaterialChanged(
     (existing.latestEventId ?? null) !== (next.latestEventId ?? null) ||
     (existing.consumedAt ?? null) !== (next.consumedAt ?? null) ||
     (existing.consumerSessionKey ?? null) !== (next.consumerSessionKey ?? null) ||
+    (existing.checkoutState ?? null) !== (next.checkoutState ?? null) ||
+    (existing.checkoutActorId ?? null) !== (next.checkoutActorId ?? null) ||
+    (existing.checkoutSessionKey ?? null) !== (next.checkoutSessionKey ?? null) ||
+    (existing.checkedOutAt ?? null) !== (next.checkedOutAt ?? null) ||
+    (existing.releasedAt ?? null) !== (next.releasedAt ?? null) ||
+    (existing.releaseReason ?? null) !== (next.releaseReason ?? null) ||
     (existing.syncSource ?? null) !== (next.syncSource ?? null)
   );
 }
@@ -381,6 +388,11 @@ function supersedeShadowedDispatches(dispatches: DispatchRecord[]): DispatchReco
         ...dispatch,
         status: "superseded" as const,
         updatedAt: Math.max(dispatch.updatedAt, winner.updatedAt),
+        ...buildDispatchCheckoutUpdate({
+          existing: dispatch,
+          nextStatus: "superseded",
+          timestamp: Math.max(dispatch.updatedAt, winner.updatedAt),
+        }),
       };
     })
     .sort((left, right) => right.updatedAt - left.updatedAt);
@@ -461,14 +473,23 @@ export function projectDelegationFromEvents(input: {
     if (dispatchStatus) {
       const consumerSessionKey =
         event.kind.startsWith("report_")
-          ? existingDispatch?.fromActorId?.trim()
-            ? `agent:${existingDispatch.fromActorId.trim()}:main`
-            : null
+          ? event.sessionKey?.trim() || (event.fromActorId?.trim() ? `agent:${event.fromActorId.trim()}:main` : null)
           : null;
       const consumedAt =
         event.kind === "report_answered" || event.kind === "report_blocked"
           ? event.createdAt
           : existingDispatch?.consumedAt ?? null;
+      const checkoutUpdate = buildDispatchCheckoutUpdate({
+        existing: existingDispatch,
+        nextStatus: dispatchStatus,
+        timestamp: event.createdAt,
+        actorId:
+          event.kind.startsWith("report_") || dispatchStatus === "acknowledged"
+            ? event.fromActorId ?? null
+            : null,
+        sessionKey: consumerSessionKey ?? event.sessionKey ?? null,
+        targetActorIds: resolveDispatchTargetActorIds(event, existingDispatch),
+      });
       const nextDispatch: DispatchRecord = {
         id: event.dispatchId,
         workItemId: event.workItemId ?? existingDispatch?.workItemId ?? "work:unknown",
@@ -493,6 +514,7 @@ export function projectDelegationFromEvents(input: {
         consumedAt,
         consumerSessionKey:
           consumerSessionKey ?? existingDispatch?.consumerSessionKey ?? null,
+        ...checkoutUpdate,
         syncSource: "event",
         createdAt: existingDispatch?.createdAt ?? event.createdAt,
         updatedAt: Math.max(existingDispatch?.updatedAt ?? 0, event.createdAt),

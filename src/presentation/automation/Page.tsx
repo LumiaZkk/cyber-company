@@ -2,7 +2,12 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Play, Pause, Trash2, Clock, GitCommit } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { requestAutomationEnableApproval, buildAutomationApprovalInputFromJob } from "../../application/automation/approval";
-import { useOrgQuery } from "../../application/org";
+import {
+  evaluateAutomationBudgetGuardrail,
+  type AutomationBudgetGuardrail,
+} from "../../application/automation/budget-guardrail";
+import { syncAutomationRunLedger } from "../../application/automation/run-ledger";
+import { useOrgApp, useOrgQuery } from "../../application/org";
 import { appendOperatorActionAuditEvent } from "../../application/governance/operator-action-audit";
 import { ActionFormDialog } from "../../components/ui/action-form-dialog";
 import { Badge } from "../../components/ui/badge";
@@ -24,13 +29,22 @@ type CreateAutomationTemplate = {
 
 export function AutomationPresentationPage() {
   const { activeCompany } = useOrgQuery();
+  const { updateCompany } = useOrgApp();
   const employees = useMemo(() => activeCompany?.employees ?? [], [activeCompany?.employees]);
+  const automationRuns = useMemo(
+    () =>
+      [...(activeCompany?.automationRuns ?? [])]
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, 8),
+    [activeCompany?.automationRuns],
+  );
   const companyAgentIdsKey = employees
     .map((employee) => employee.agentId)
     .sort((left, right) => left.localeCompare(right))
     .join("|");
 
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [usageCost, setUsageCost] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionRunning, setActionRunning] = useState(false);
@@ -48,22 +62,35 @@ export function AutomationPresentationPage() {
   const [draftTask, setDraftTask] = useState("");
 
   const loadJobs = useCallback(async () => {
-    if (!gateway.isConnected) return;
+    if (!gateway.isConnected || !activeCompany) return;
 
     try {
       setError(null);
-      const result = (await gateway.listCron()) as CronListResult;
+      const [cronResult, usageSummary] = await Promise.all([
+        gateway.listCron() as Promise<CronListResult>,
+        gateway.getUsageCost({ days: 30 }).catch(() => null),
+      ]);
+      const result = cronResult;
       const allJobs = Array.isArray(result.jobs) ? result.jobs : [];
 
       const companyAgentIds = new Set(employees.map((e) => e.agentId));
       const filteredJobs = allJobs.filter((j) => !j.agentId || companyAgentIds.has(j.agentId));
       setJobs(filteredJobs);
+      setUsageCost(usageSummary?.totals?.totalCost ?? null);
+      const nextRunLedger = syncAutomationRunLedger({
+        company: activeCompany,
+        jobs: filteredJobs,
+        observedAt: Date.now(),
+      });
+      if (nextRunLedger) {
+        await updateCompany({ automationRuns: nextRunLedger });
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
     }
-  }, [employees]);
+  }, [activeCompany, employees, updateCompany]);
 
   useEffect(() => {
     setLoading(true);
@@ -79,6 +106,14 @@ export function AutomationPresentationPage() {
   }
 
   const scenario = buildAutomationScenario({ company: activeCompany, jobs });
+  const budgetGuardrail = useMemo<AutomationBudgetGuardrail>(
+    () =>
+      evaluateAutomationBudgetGuardrail({
+        company: activeCompany,
+        usageCost,
+      }),
+    [activeCompany, usageCost],
+  );
 
   const openCreateDialog = (template?: CreateAutomationTemplate) => {
     const ceo = employees.find((e) => e.metaRole === "ceo") || employees[0];
@@ -105,6 +140,7 @@ export function AutomationPresentationPage() {
     try {
       const result = await requestAutomationEnableApproval({
         company: activeCompany,
+        usageCost,
         automation: {
           name: draftName.trim(),
           agentId: draftAgentId,
@@ -126,11 +162,17 @@ export function AutomationPresentationPage() {
             approvalActionType: result.approval.actionType,
             targetActorId: result.approval.targetActorId ?? null,
             targetLabel: result.approval.targetLabel ?? null,
+            budgetStatus: result.guardrail.status,
+            budgetUsd: result.guardrail.budgetUsd,
+            currentUsageCost: result.guardrail.currentUsageCost,
           },
         });
-        toast.info("已提交自动化审批", `请先批准「${result.approval.summary}」，再继续执行。`);
+        toast.approval("已提交自动化审批", `请先批准「${result.approval.summary}」，再继续执行。`);
       } else {
         toast.success("执行班次已创建", "新的自动化部署已启动");
+        if (result.guardrail.status === "warning") {
+          toast.warning("自动化预算接近上限", result.guardrail.detail);
+        }
         await loadJobs();
       }
       setCreateDialogOpen(false);
@@ -147,6 +189,7 @@ export function AutomationPresentationPage() {
       if (nextStatus) {
         const result = await requestAutomationEnableApproval({
           company: activeCompany,
+          usageCost,
           automation: buildAutomationApprovalInputFromJob(job),
         });
         if (result.mode === "approval_requested") {
@@ -160,11 +203,17 @@ export function AutomationPresentationPage() {
               approvalActionType: result.approval.actionType,
               targetActorId: result.approval.targetActorId ?? null,
               targetLabel: result.approval.targetLabel ?? null,
+              budgetStatus: result.guardrail.status,
+              budgetUsd: result.guardrail.budgetUsd,
+              currentUsageCost: result.guardrail.currentUsageCost,
             },
           });
-          toast.info("已提交自动化审批", `请先批准「${result.approval.summary}」，再继续执行。`);
+          toast.approval("已提交自动化审批", `请先批准「${result.approval.summary}」，再继续执行。`);
         } else {
           toast.success("状态已更新", `已开启班次: ${job.name}`);
+          if (result.guardrail.status === "warning") {
+            toast.warning("自动化预算接近上限", result.guardrail.detail);
+          }
           await loadJobs();
         }
         return;
@@ -268,6 +317,139 @@ export function AutomationPresentationPage() {
               </div>
             </button>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="gap-2">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle>自动化预算护栏</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                近 30 天 usage 成本与自动化软预算的对照。超预算后，新启用会自动升级为人工审批。
+              </p>
+            </div>
+            <Badge
+              variant="outline"
+              className={
+                budgetGuardrail.status === "over_budget"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : budgetGuardrail.status === "warning" || budgetGuardrail.status === "usage_unavailable"
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : budgetGuardrail.status === "within_budget"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-slate-200 bg-white text-slate-500"
+              }
+            >
+              {budgetGuardrail.title}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm text-slate-600">
+          <div>{budgetGuardrail.detail}</div>
+          <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+            <span>
+              最近 30 天成本：
+              {budgetGuardrail.currentUsageCost !== null
+                ? ` $${budgetGuardrail.currentUsageCost.toFixed(2)}`
+                : " --"}
+            </span>
+            <span>
+              预算上限：
+              {budgetGuardrail.budgetUsd !== null ? ` $${budgetGuardrail.budgetUsd.toFixed(2)}` : " 未配置"}
+            </span>
+            <span>
+              剩余额度：
+              {budgetGuardrail.remainingUsd !== null ? ` $${budgetGuardrail.remainingUsd.toFixed(2)}` : " --"}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <div>
+            <CardTitle>自动化执行台账</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              从 Gateway cron 状态持续沉淀下来的 durable run ledger 基线，方便回看最近一次真实执行结果。
+            </p>
+          </div>
+          <Badge variant="secondary">{activeCompany.automationRuns?.length ?? 0} 条记录</Badge>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-4">
+          {automationRuns.length === 0 ? (
+            <div className="rounded-lg border border-dashed bg-slate-50 px-4 py-6 text-sm text-muted-foreground">
+              当前还没有可回看的自动化执行记录。等班次真正跑起来后，这里会开始沉淀最近的成功 / 失败 / 运行中状态。
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {automationRuns.map((run) => {
+                const executor = employees.find((employee) => employee.agentId === run.agentId);
+                const statusBadgeClass =
+                  run.status === "succeeded"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : run.status === "failed"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : run.status === "running"
+                        ? "border-blue-200 bg-blue-50 text-blue-700"
+                        : run.status === "cancelled"
+                          ? "border-amber-200 bg-amber-50 text-amber-700"
+                          : "border-slate-200 bg-slate-50 text-slate-600";
+                const statusLabel =
+                  run.status === "succeeded"
+                    ? "成功"
+                    : run.status === "failed"
+                      ? "失败"
+                      : run.status === "running"
+                        ? "执行中"
+                        : run.status === "cancelled"
+                          ? "已取消"
+                          : "状态未知";
+
+                return (
+                  <div
+                    key={run.id}
+                    className="rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm"
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-medium text-slate-900">{run.automationName}</div>
+                          <Badge variant="outline" className={statusBadgeClass}>
+                            {statusLabel}
+                          </Badge>
+                          {run.providerStatus && run.providerStatus !== run.status ? (
+                            <Badge variant="outline" className="border-slate-200 text-slate-500">
+                              provider: {run.providerStatus}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          执行节点：{executor?.nickname || run.agentId || "未绑定"} · 运行时间：
+                          {formatTime(run.runAt)}
+                        </div>
+                        {run.message ? (
+                          <div className="text-sm text-slate-600">{run.message}</div>
+                        ) : null}
+                      </div>
+                      <div className="min-w-[12rem] space-y-1 text-xs text-slate-500 md:text-right">
+                        <div>观察入账：{formatTime(run.observedAt)}</div>
+                        <div>下次调度：{formatTime(run.nextRunAt)}</div>
+                        <div>
+                          调度方式：
+                          {run.scheduleKind === "cron"
+                            ? run.scheduleExpr || "cron"
+                            : run.scheduleEveryMs
+                              ? `每 ${Math.round(run.scheduleEveryMs / 60000)} 分钟`
+                              : run.scheduleKind || "-"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
 

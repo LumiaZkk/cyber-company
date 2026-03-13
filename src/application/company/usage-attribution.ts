@@ -16,6 +16,9 @@ export type CompanyUsageAttribution = {
   sessions: CompanyAttributedSession[];
   totals: CostUsageTotals;
   countsByKind: Record<CompanyUsageSessionKind, number>;
+  eligibleSessionCount: number;
+  unattributedSessionCount: number;
+  coverageRatio: number | null;
   excludedBeforeCompanyCreation: number;
   excludedExternalGroupMembers: number;
 };
@@ -105,6 +108,7 @@ export function attributeUsageSessionsToCompany(params: {
     ad_hoc: 0,
   };
   const attributedSessions: CompanyAttributedSession[] = [];
+  let eligibleSessionCount = 0;
   let excludedBeforeCompanyCreation = 0;
   let excludedExternalGroupMembers = 0;
 
@@ -112,6 +116,8 @@ export function attributeUsageSessionsToCompany(params: {
     if (!session.usage || typeof session.agentId !== "string" || !companyAgentIds.has(session.agentId)) {
       continue;
     }
+
+    eligibleSessionCount += 1;
 
     const kind = classifySessionKind(session.key);
     const firstActivity =
@@ -138,10 +144,17 @@ export function attributeUsageSessionsToCompany(params: {
     mergeCostUsageTotals(totals, session.usage);
   }
 
+  const unattributedSessionCount = Math.max(0, eligibleSessionCount - attributedSessions.length);
+  const coverageRatio =
+    eligibleSessionCount > 0 ? attributedSessions.length / eligibleSessionCount : null;
+
   return {
     sessions: attributedSessions,
     totals,
     countsByKind,
+    eligibleSessionCount,
+    unattributedSessionCount,
+    coverageRatio,
     excludedBeforeCompanyCreation,
     excludedExternalGroupMembers,
   };

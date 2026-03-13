@@ -26,11 +26,15 @@ import {
   NEXT_CAPABILITY_ISSUE_STATUS,
   NEXT_CAPABILITY_REQUEST_STATUS,
   buildSkillReleaseReadiness,
+  buildCapabilityAuditTimeline,
+  buildCapabilityPlatformCloseoutSummary,
   buildCapabilityVerificationQueue,
+  CAPABILITY_AUDIT_ACTION_LABEL,
   type WorkspaceAppManifest,
   type WorkspaceAppManifestAction,
   type WorkspaceEmbeddedAppRuntime,
   RESOURCE_KIND_LABEL,
+  formatWorkspaceFileKindLabel,
   buildCapabilityIssueBoard,
   buildCapabilityRequestBoard,
   isWorkspaceReaderManifestDraft,
@@ -40,6 +44,7 @@ import {
   type ResolvedWorkflowCapabilityBinding,
   type WorkspaceReaderIndex,
   type WorkspaceFileRow,
+  type WorkspacePolicySummary,
   type WorkspaceWorkbenchTool,
   type CapabilityBoardLane,
 } from "../../../application/workspace";
@@ -49,6 +54,7 @@ import type {
   CapabilityIssueStatus,
   CapabilityRequestRecord,
   CapabilityRequestStatus,
+  CapabilityAuditEventRecord,
   CompanyWorkspaceAppKind,
   CompanyWorkspaceAppStatus,
   CompanyWorkspaceAppSurface,
@@ -67,6 +73,7 @@ type WorkspaceAppSummary = {
   icon: string;
   title: string;
   description: string;
+  summary?: string;
   status: CompanyWorkspaceAppStatus;
   surface?: CompanyWorkspaceAppSurface;
   template?: CompanyWorkspaceAppTemplate;
@@ -126,6 +133,7 @@ type WorkspacePageContentProps = {
   artifactBackedWorkspaceCount: number;
   mirroredOnlyWorkspaceCount: number;
   shouldSyncProviderWorkspace: boolean;
+  workspacePolicySummary: WorkspacePolicySummary;
   chapterFiles: WorkspaceFileRow[];
   canonFiles: WorkspaceFileRow[];
   reviewFiles: WorkspaceFileRow[];
@@ -148,6 +156,8 @@ type WorkspacePageContentProps = {
   skillRuns: SkillRunRecord[];
   capabilityRequests: CapabilityRequestRecord[];
   capabilityIssues: CapabilityIssueRecord[];
+  capabilityAuditEvents: CapabilityAuditEventRecord[];
+  manifestRegistrationCandidateCount: number;
   publishedAppTemplates: CompanyWorkspaceAppTemplate[];
   loadingIndex: boolean;
   executorProvisioning: {
@@ -165,8 +175,9 @@ type WorkspacePageContentProps = {
   onSelectEmbeddedFile: (fileKey: string) => void;
   onSelectKnowledge: (knowledgeId: string) => void;
   onOpenCtoWorkbench: (tool: WorkspaceWorkbenchTool) => void;
-  onPublishTemplateApp: (template: "reader" | "consistency" | "review-console") => void | Promise<void>;
-  onGenerateAppManifestDraft: () => void | Promise<void>;
+  onPublishTemplateApp: (template: "reader" | "consistency" | "review-console" | "dashboard") => void | Promise<void>;
+  onRegisterExistingApp: () => void | Promise<void>;
+  onGenerateAppManifestDraft: (appId?: string) => void | Promise<void>;
   onCreateSkillDraft: (tool: WorkspaceWorkbenchTool) => void | Promise<void>;
   onCreateCapabilityRequest: (tool: WorkspaceWorkbenchTool) => void | Promise<void>;
   onCreateCapabilityIssue: (input?: {
@@ -215,6 +226,8 @@ function renderWorkspaceAppIcon(template: CompanyWorkspaceAppTemplate) {
       return <BookOpenCheck className="h-5 w-5" />;
     case "dashboard":
       return <RefreshCcw className="h-5 w-5" />;
+    case "generic-app":
+      return <FileCode2 className="h-5 w-5" />;
   }
 }
 
@@ -224,6 +237,18 @@ const SKILL_STATUS_LABEL: Record<SkillDefinitionStatus, string> = {
   degraded: "降级",
   retired: "停用",
 };
+
+const CAPABILITY_RUN_TRIGGER_LABEL: Record<SkillRunRecord["triggerType"], string> = {
+  app_action: "App 动作",
+  workflow_step: "流程节点",
+  manual: "能力验证",
+};
+
+const CAPABILITY_PLATFORM_CLOSEOUT_STATUS_LABEL = {
+  ready: "已收口",
+  in_progress: "推进中",
+  attention: "待补齐",
+} as const;
 
 function formatBindingMatchLabel(matchedBy: ResolvedWorkflowCapabilityBinding["matchedBy"]) {
   return matchedBy
@@ -246,10 +271,11 @@ function WorkflowCapabilitySection({
     return null;
   }
 
-  const publishableTemplates = new Set<"reader" | "consistency" | "review-console">([
+  const publishableTemplates = new Set<"reader" | "consistency" | "review-console" | "dashboard">([
     "reader",
     "consistency",
     "review-console",
+    "dashboard",
   ]);
 
   return (
@@ -296,8 +322,8 @@ function WorkflowCapabilitySection({
                 </Button>
               ))}
               {binding.missingAppTemplates
-                .filter((template): template is "reader" | "consistency" | "review-console" =>
-                  publishableTemplates.has(template as "reader" | "consistency" | "review-console"),
+                .filter((template): template is "reader" | "consistency" | "review-console" | "dashboard" =>
+                  publishableTemplates.has(template as "reader" | "consistency" | "review-console" | "dashboard"),
                 )
                 .map((template) => (
                   <Button
@@ -307,7 +333,7 @@ function WorkflowCapabilitySection({
                     variant="secondary"
                     onClick={() => void onPublishTemplateApp(template)}
                   >
-                    发布 {template === "reader" ? "阅读器" : template === "consistency" ? "一致性中心" : "审阅控制台"}
+                    发布 {template === "reader" ? "阅读器" : template === "consistency" ? "一致性中心" : template === "dashboard" ? "仪表盘" : "审阅控制台"}
                   </Button>
                 ))}
             </div>
@@ -417,7 +443,7 @@ function SelectedAppGovernanceSection({
                         {request.contextFileName ? (
                           <Badge variant="outline">资源 · {request.contextFileName}</Badge>
                         ) : null}
-                        {request.contextRunId ? <Badge variant="outline">Run · {request.contextRunId}</Badge> : null}
+                        {request.contextRunId ? <Badge variant="outline">运行记录 · {request.contextRunId}</Badge> : null}
                       </div>
                     </div>
                     <Badge variant={request.status === "closed" ? "secondary" : "outline"}>
@@ -487,7 +513,7 @@ function SelectedAppGovernanceSection({
                         {issue.contextFileName ? (
                           <Badge variant="outline">资源 · {issue.contextFileName}</Badge>
                         ) : null}
-                        {issue.contextRunId ? <Badge variant="outline">Run · {issue.contextRunId}</Badge> : null}
+                        {issue.contextRunId ? <Badge variant="outline">运行记录 · {issue.contextRunId}</Badge> : null}
                       </div>
                     </div>
                     <Badge variant={issue.status === "closed" ? "secondary" : "outline"}>
@@ -634,7 +660,7 @@ function WorkspaceReaderSection({
                 {readerIndex.lastOpenedFile?.name ?? "还没有记录"}
               </div>
               <div className="mt-1 text-xs text-slate-500">
-                {readerIndex.lastOpenedFile ? `${RESOURCE_KIND_LABEL[readerIndex.lastOpenedFile.kind]} · 继续打开` : "第一次进入时会自动记录"}
+                {readerIndex.lastOpenedFile ? `${formatWorkspaceFileKindLabel(readerIndex.lastOpenedFile)} · 继续打开` : "第一次进入时会自动记录"}
               </div>
             </div>
           </div>
@@ -667,7 +693,7 @@ function WorkspaceReaderSection({
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-slate-950">{file.name}</div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {RESOURCE_KIND_LABEL[file.kind]} · {formatTime(file.updatedAtMs)}
+                          {formatWorkspaceFileKindLabel(file)} · {formatTime(file.updatedAtMs)}
                         </div>
                       </div>
                       <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-400" />
@@ -788,7 +814,7 @@ function WorkspaceReaderSection({
             </div>
             {selectedFile && (
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                <Badge variant="secondary">{RESOURCE_KIND_LABEL[selectedFile.kind]}</Badge>
+                <Badge variant="secondary">{formatWorkspaceFileKindLabel(selectedFile)}</Badge>
                 <span>{formatWorkspaceBytes(selectedFile.size)}</span>
                 <span>{formatTime(selectedFile.updatedAtMs)}</span>
                 <Button type="button" size="sm" variant="outline" onClick={() => onOpenFileChat(selectedFile.agentId)}>
@@ -1071,13 +1097,13 @@ function WorkspaceConsistencyHub({
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
-              先把关键参考资料、状态流转和交接依据做成可检索的唯一真相源，再让 CTO 基于这些文件开发校验工具。
+              先把关键参考资料、状态流转和交接依据做成可检索的唯一真相源，再把对应能力需求正式交给 CTO 技术中台。
             </div>
             <Button type="button" className="w-full" onClick={() => onOpenCtoWorkbench("consistency-checker")}>
-              让 CTO 开发校验工具
+              发起规则校验能力需求
             </Button>
             <Button type="button" variant="outline" className="w-full" onClick={onOpenNovelReader}>
-              先去内容查看器查看关键文件
+              先去内容查看 App 对照关键文件
             </Button>
           </CardContent>
         </Card>
@@ -1200,11 +1226,11 @@ const CapabilityVerificationQueueSection = ({
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {item.appLabel ? <Badge variant="outline">App · {item.appLabel}</Badge> : null}
-                        {item.skillLabel ? <Badge variant="outline">工具能力 · {item.skillLabel}</Badge> : null}
+                        {item.skillLabel ? <Badge variant="outline">能力 · {item.skillLabel}</Badge> : null}
                   {item.contextFileName ? <Badge variant="outline">资源 · {item.contextFileName}</Badge> : null}
                   {item.contextRunId ? (
                     <Badge variant="outline" className="max-w-full truncate">
-                      Run · {item.contextRunId}
+                      运行记录 · {item.contextRunId}
                     </Badge>
                   ) : null}
                   {item.requesterOrReporterLabel ? (
@@ -1272,14 +1298,20 @@ function WorkspaceWorkbench({
   skillRuns,
   workspaceApps,
   workspaceFiles,
+  executorProvisioning,
+  capabilityAuditEvents,
+  manifestRegistrationCandidateCount,
   capabilityRequests,
   capabilityIssues,
   onSelectApp,
   onOpenCtoWorkbench,
   onPublishTemplateApp,
+  onRegisterExistingApp,
   onCreateSkillDraft,
+  onGenerateAppManifestDraft,
   onCreateCapabilityRequest,
   onCreateCapabilityIssue,
+  onRetryCompanyProvisioning,
   onUpdateSkillStatus,
   onRunSkillSmokeTest,
   onPublishWorkflowCapabilityBindings,
@@ -1298,14 +1330,20 @@ function WorkspaceWorkbench({
   | "skillRuns"
   | "workspaceApps"
   | "workspaceFiles"
+  | "executorProvisioning"
+  | "capabilityAuditEvents"
+  | "manifestRegistrationCandidateCount"
   | "capabilityRequests"
   | "capabilityIssues"
   | "onSelectApp"
   | "onOpenCtoWorkbench"
   | "onPublishTemplateApp"
+  | "onRegisterExistingApp"
   | "onCreateSkillDraft"
+  | "onGenerateAppManifestDraft"
   | "onCreateCapabilityRequest"
   | "onCreateCapabilityIssue"
+  | "onRetryCompanyProvisioning"
   | "onUpdateSkillStatus"
   | "onRunSkillSmokeTest"
   | "onPublishWorkflowCapabilityBindings"
@@ -1363,6 +1401,37 @@ function WorkspaceWorkbench({
     appLabelById,
     skillLabelById,
   });
+  const capabilityAuditTimeline = buildCapabilityAuditTimeline(capabilityAuditEvents, {
+    appLabelById,
+    skillLabelById,
+  });
+  const closeoutSummary = buildCapabilityPlatformCloseoutSummary({
+    workspaceApps,
+    workspaceFiles,
+    skillDefinitions,
+    skillRuns,
+    capabilityRequests,
+    capabilityIssues,
+    capabilityAuditEvents,
+    executorProvisioning,
+  });
+  const firstAppWithoutManifest = workspaceApps.find((app) => !app.manifestArtifactId) ?? null;
+  const firstSkillNeedingValidation =
+    skillDefinitions.find(
+      (skill) =>
+        !buildSkillReleaseReadiness({
+          skill,
+          skillRuns,
+          workspaceApps,
+        }).latestSuccessfulSmokeTestRun,
+    ) ?? null;
+  const preferredDraftTool: WorkspaceWorkbenchTool = workspaceApps.some(
+    (app) => resolveWorkspaceAppTemplate(app) === "consistency",
+  )
+    ? "consistency-checker"
+    : workspaceApps.some((app) => resolveWorkspaceAppTemplate(app) === "reader")
+      ? "novel-reader"
+      : "chapter-review-console";
 
   return (
     <div className="space-y-5">
@@ -1402,9 +1471,18 @@ function WorkspaceWorkbench({
                     disabled={isPublished}
                     onClick={() => void onPublishTemplateApp(publishableTemplate)}
                   >
-                    {isPublished ? "已发布到公司应用" : "直接发布到工作目录"}
+                    {isPublished ? "已作为预设入口发布" : "从预设创建"}
                   </Button>
                 ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={manifestRegistrationCandidateCount === 0}
+                  onClick={() => void onRegisterExistingApp()}
+                >
+                  {manifestRegistrationCandidateCount > 0 ? "注册已有 App/Page" : "暂无可注册的 AppManifest"}
+                </Button>
                 <Button type="button" variant="outline" className="w-full" onClick={() => void onCreateSkillDraft(card.id)}>
                   登记能力草稿
                 </Button>
@@ -1421,6 +1499,118 @@ function WorkspaceWorkbench({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-2 2xl:grid-cols-4">
+        <Card className="border-slate-200/80 shadow-sm">
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-base">中台收口状态</CardTitle>
+                <CardDescription>按最终标准回看这家公司在 App、资源、能力、治理与运维上的收口进度。</CardDescription>
+              </div>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <Badge variant="default">已收口 {closeoutSummary.totals.ready}</Badge>
+                <Badge variant="secondary">推进中 {closeoutSummary.totals.in_progress}</Badge>
+                <Badge variant="outline">待补齐 {closeoutSummary.totals.attention}</Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {closeoutSummary.checks.map((check) => (
+              <div key={check.id} className="rounded-xl border border-slate-200 bg-white px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-950">{check.label}</div>
+                    <div className="mt-1 text-xs leading-5 text-slate-500">{check.summary}</div>
+                  </div>
+                  <Badge
+                    variant={
+                      check.status === "ready"
+                        ? "default"
+                        : check.status === "in_progress"
+                          ? "secondary"
+                          : "outline"
+                    }
+                  >
+                    {CAPABILITY_PLATFORM_CLOSEOUT_STATUS_LABEL[check.status]}
+                  </Badge>
+                </div>
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
+                  {check.detail}
+                </div>
+                {check.nextStep ? (
+                  <div className="mt-2 rounded-lg border border-dashed border-amber-200 bg-amber-50/80 px-3 py-2 text-xs leading-5 text-amber-900">
+                    下一步：{check.nextStep}
+                  </div>
+                ) : null}
+                {check.id === "executor-provisioning" && check.status !== "ready" ? (
+                  <div className="mt-3">
+                    <Button type="button" size="sm" variant="outline" onClick={() => void onRetryCompanyProvisioning()}>
+                      重试补齐执行器
+                    </Button>
+                  </div>
+                ) : null}
+                {check.id === "app-manifest-coverage" && check.status !== "ready" && firstAppWithoutManifest ? (
+                  <div className="mt-3">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void onGenerateAppManifestDraft(firstAppWithoutManifest.id)}
+                    >
+                      先补 {firstAppWithoutManifest.title} 的 AppManifest
+                    </Button>
+                  </div>
+                ) : null}
+                {check.id === "capability-validation" && check.status !== "ready" ? (
+                  <div className="mt-3">
+                    {skillDefinitions.length === 0 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void onCreateSkillDraft(preferredDraftTool)}
+                      >
+                        登记首条能力草稿
+                      </Button>
+                    ) : firstSkillNeedingValidation ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void onRunSkillSmokeTest(firstSkillNeedingValidation.id)}
+                      >
+                        先验证 {firstSkillNeedingValidation.title}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {check.id === "governance-and-audit" && check.status !== "ready" ? (
+                  <div className="mt-3">
+                    {skillDefinitions.length === 0 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void onCreateSkillDraft(preferredDraftTool)}
+                      >
+                        留下第一条治理记录
+                      </Button>
+                    ) : firstSkillNeedingValidation ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void onRunSkillSmokeTest(firstSkillNeedingValidation.id)}
+                      >
+                        先跑一次能力验证
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
         <Card className="border-slate-200/80 shadow-sm">
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1493,6 +1683,44 @@ function WorkspaceWorkbench({
 
         <Card className="border-slate-200/80 shadow-sm">
           <CardHeader>
+            <CardTitle className="text-base">治理审计轨迹</CardTitle>
+            <CardDescription>把能力草稿、需求、问题、运行和验证动作都收成正式时间线，方便 CTO 与业务负责人回看。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {capabilityAuditTimeline.length > 0 ? (
+              capabilityAuditTimeline.map((event) => (
+                <div key={event.id} className="rounded-xl border border-slate-200 bg-white px-4 py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-950">{event.summary}</div>
+                      <div className="mt-1 text-xs leading-5 text-slate-500">
+                        {event.actorLabel ?? "工作目录"} · {formatTime(event.updatedAt)}
+                      </div>
+                    </div>
+                    <Badge variant="secondary">{CAPABILITY_AUDIT_ACTION_LABEL[event.action]}</Badge>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Badge variant="outline">{event.kindLabel}</Badge>
+                    {event.appLabel ? <Badge variant="outline">App · {event.appLabel}</Badge> : null}
+                    {event.skillLabel ? <Badge variant="outline">能力 · {event.skillLabel}</Badge> : null}
+                  </div>
+                  {event.detail ? (
+                    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
+                      {event.detail}
+                    </div>
+                  ) : null}
+                </div>
+              ))
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                当前还没有治理审计轨迹。等你在工作目录里登记能力、推进需求、反馈问题或触发运行后，这里会开始积累正式记录。
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200/80 shadow-sm">
+          <CardHeader>
             <CardTitle className="text-base">能力草稿</CardTitle>
             <CardDescription>技术中台把可执行工具收成显式能力定义，避免它们只停留在会话里。</CardDescription>
           </CardHeader>
@@ -1531,11 +1759,11 @@ function WorkspaceWorkbench({
                       </div>
                       {releaseReadiness.latestSuccessfulSmokeTestRun ? (
                         <div className="mt-2 text-xs leading-5 text-slate-600">
-                          最近一次 smoke test：{formatTime(releaseReadiness.latestSuccessfulSmokeTestRun.updatedAt)}
+                          最近一次能力验证：{formatTime(releaseReadiness.latestSuccessfulSmokeTestRun.updatedAt)}
                         </div>
                       ) : (
                         <div className="mt-2 text-xs leading-5 text-slate-500">
-                          当前还没有成功 smoke test，发布为可用前至少需要先跑通一次能力验证。
+                          当前还没有成功能力验证，发布为可用前至少需要先跑通一次能力验证。
                         </div>
                       )}
                     </div>
@@ -1548,7 +1776,7 @@ function WorkspaceWorkbench({
                           disabled={skill.status === "retired"}
                           onClick={() => void onRunSkillSmokeTest(skill.id)}
                         >
-                          运行 smoke test
+                          运行能力验证
                         </Button>
                         <Button
                           type="button"
@@ -1589,7 +1817,7 @@ function WorkspaceWorkbench({
         <Card className="border-slate-200/80 shadow-sm">
           <CardHeader>
             <CardTitle className="text-base">能力运行台账</CardTitle>
-            <CardDescription>每次触发都先留下正式 run 记录，后续真实执行引擎会继续复用这条台账。</CardDescription>
+            <CardDescription>每次触发都会先留下正式运行记录，后续真实执行引擎会继续复用这条台账。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {recentSkillRuns.length > 0 ? (
@@ -1609,7 +1837,7 @@ function WorkspaceWorkbench({
                     </Badge>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <Badge variant="outline">{run.triggerType}</Badge>
+                    <Badge variant="outline">{CAPABILITY_RUN_TRIGGER_LABEL[run.triggerType]}</Badge>
                     {run.executionMode ? (
                       <Badge variant="outline">{skillRunExecutionModeLabel[run.executionMode]}</Badge>
                     ) : null}
@@ -1936,7 +2164,7 @@ function WorkspaceEmbeddedAppSection({
                       >
                         <div className="text-sm font-medium">{file.name}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                          <span>{RESOURCE_KIND_LABEL[file.kind]} · {file.agentLabel} · {formatTime(file.updatedAtMs ?? 0)}</span>
+                          <span>{formatWorkspaceFileKindLabel(file)} · {file.agentLabel} · {formatTime(file.updatedAtMs ?? 0)}</span>
                           {file.resourceOrigin === "inferred" ? (
                             <Badge variant="outline">{resourceOriginLabel[file.resourceOrigin]}</Badge>
                           ) : null}
@@ -1962,7 +2190,7 @@ function WorkspaceEmbeddedAppSection({
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Badge variant="secondary">{RESOURCE_KIND_LABEL[selectedFile.kind]}</Badge>
+                        <Badge variant="secondary">{formatWorkspaceFileKindLabel(selectedFile)}</Badge>
                         <Badge variant="outline">{selectedFile.resourceType}</Badge>
                         <Badge variant={selectedFile.resourceOrigin === "inferred" ? "outline" : "secondary"}>
                           {resourceOriginLabel[selectedFile.resourceOrigin]}
@@ -2016,6 +2244,7 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
     artifactBackedWorkspaceCount,
     mirroredOnlyWorkspaceCount,
     shouldSyncProviderWorkspace,
+    workspacePolicySummary,
     workflowCapabilityBindingCatalog,
     workflowCapabilityBindingsAreExplicit,
     workflowCapabilityBindings,
@@ -2023,6 +2252,8 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
     canonFiles,
     capabilityIssues,
     capabilityRequests,
+    capabilityAuditEvents,
+    manifestRegistrationCandidateCount,
     knowledgeItems,
     businessLeadLabel,
     ctoLabel,
@@ -2037,6 +2268,7 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
     onSelectApp,
     onTriggerSkill,
     onOpenCtoWorkbench,
+    onRegisterExistingApp,
     onPublishRecommendedApps,
     onOpenCtoChat,
     onOpenRequirementCenter,
@@ -2087,6 +2319,7 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
                 {!workspaceAppsAreExplicit ? (
                   <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950">
                     当前这些入口还是系统补位推荐，方便你先验证方向。点一下“固化推荐应用”后，它们才会正式挂到这家公司里，后续 CTO 产出的查看器、新页面或校验工具也会继续沿着这条显式链路发布。
+                    
                   </div>
                 ) : null}
               </div>
@@ -2098,10 +2331,18 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
                   </Button>
                 ) : null}
                 <Button type="button" onClick={() => onOpenCtoWorkbench("consistency-checker")}>
-                  让 CTO 开发校验工具
+                  发起规则校验能力需求
                 </Button>
                 <Button type="button" variant="outline" onClick={() => onOpenCtoWorkbench("novel-reader")}>
-                  让 CTO 开发内容查看器
+                  发起内容查看 App 需求
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void onRegisterExistingApp()}
+                  disabled={manifestRegistrationCandidateCount === 0}
+                >
+                  {manifestRegistrationCandidateCount > 0 ? "注册已有 App/Page" : "暂无可注册的 AppManifest"}
                 </Button>
                 {onPublishRecommendedApps ? (
                   <Button type="button" variant="secondary" onClick={() => void onPublishRecommendedApps()}>
@@ -2123,8 +2364,20 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
                 <div className="mt-1 text-sm text-slate-600">
                   {shouldSyncProviderWorkspace
                     ? `当前可直接消费的产品产物 ${artifactBackedWorkspaceCount} 份；镜像补充 ${mirroredOnlyWorkspaceCount} 份，仅在产物缺位时兜底。`
-                    : "当前后端不提供文件区，工作目录直接读取产品侧产物库。"}
+                    : workspacePolicySummary.mirrorEnabled
+                      ? "当前后端暂未提供文件区，工作目录直接读取产品侧产物库。"
+                      : "镜像补位已在公司策略里关闭，工作目录只读取正式产品产物。"}
                 </div>
+              </div>
+              <div className="rounded-2xl border border-violet-200 bg-violet-50/50 px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">工作目录边界</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Badge variant="secondary">{workspacePolicySummary.deliveryLabel}</Badge>
+                  <Badge variant="outline">{workspacePolicySummary.mirrorLabel}</Badge>
+                  <Badge variant="outline">{workspacePolicySummary.executionLabel}</Badge>
+                </div>
+                <div className="mt-2 text-sm text-slate-600">{workspacePolicySummary.mirrorDescription}</div>
+                <div className="mt-1 text-xs text-slate-500">{workspacePolicySummary.executionDescription}</div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">当前可读业务文档</div>
@@ -2211,6 +2464,11 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
                       {selectedApp.title}
                     </CardTitle>
                     <CardDescription className="mt-2 max-w-3xl leading-6">{selectedApp.description}</CardDescription>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Badge variant="outline">{workspacePolicySummary.deliveryLabel}</Badge>
+                      <Badge variant="outline">{workspacePolicySummary.mirrorLabel}</Badge>
+                      <Badge variant="outline">{workspacePolicySummary.executionLabel}</Badge>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Badge variant="outline">产品产物优先</Badge>
@@ -2226,6 +2484,8 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
                     {selectedAppSurface === "embedded" ? <Badge variant="outline">嵌入式 App</Badge> : null}
                     {shouldSyncProviderWorkspace && mirroredOnlyWorkspaceCount > 0 ? (
                       <Badge variant="outline">镜像补充 {mirroredOnlyWorkspaceCount}</Badge>
+                    ) : !workspacePolicySummary.mirrorEnabled ? (
+                      <Badge variant="secondary">镜像补位已关闭</Badge>
                     ) : null}
                     <Button type="button" size="sm" variant="outline" onClick={onRefreshIndex} disabled={loadingIndex}>
                       <RefreshCcw className={cn("mr-2 h-4 w-4", loadingIndex && "animate-spin")} />
@@ -2311,14 +2571,20 @@ export function WorkspacePageContent(props: WorkspacePageContentProps) {
                 skillRuns={skillRuns}
                 workspaceApps={workspaceApps}
                 workspaceFiles={props.workspaceFiles}
+                executorProvisioning={executorProvisioning}
                 capabilityRequests={capabilityRequests}
                 capabilityIssues={capabilityIssues}
+                capabilityAuditEvents={capabilityAuditEvents}
+                manifestRegistrationCandidateCount={manifestRegistrationCandidateCount}
                 onSelectApp={props.onSelectApp}
                 onOpenCtoWorkbench={props.onOpenCtoWorkbench}
                 onPublishTemplateApp={props.onPublishTemplateApp}
+                onRegisterExistingApp={props.onRegisterExistingApp}
                 onCreateSkillDraft={props.onCreateSkillDraft}
+                onGenerateAppManifestDraft={props.onGenerateAppManifestDraft}
                 onCreateCapabilityRequest={props.onCreateCapabilityRequest}
                 onCreateCapabilityIssue={props.onCreateCapabilityIssue}
+                onRetryCompanyProvisioning={props.onRetryCompanyProvisioning}
                 onUpdateSkillStatus={props.onUpdateSkillStatus}
                 onRunSkillSmokeTest={props.onRunSkillSmokeTest}
                 onPublishWorkflowCapabilityBindings={props.onPublishWorkflowCapabilityBindings}

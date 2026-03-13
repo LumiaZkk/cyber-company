@@ -15,6 +15,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCeoCockpitViewModel } from "../../application/governance/ceo-cockpit-view-model";
 import { buildCeoHomeSnapshot } from "../../application/governance/ceo-home-state";
+import { buildActivityInboxSummary } from "../../application/governance/activity-inbox";
 import { useCanonicalRuntimeSummary } from "../../application/runtime-summary";
 import { Avatar, AvatarFallback, AvatarImage } from "../../components/ui/avatar";
 import { Badge } from "../../components/ui/badge";
@@ -37,6 +38,7 @@ import { usePageVisibility } from "../../lib/use-page-visibility";
 import { formatTime, getAvatarUrl } from "../../lib/utils";
 import { ExecutiveSummaryStrip } from "../shared/ExecutiveSummaryStrip";
 import { CanonicalRuntimeSummaryCard } from "../shared/CanonicalRuntimeSummaryCard";
+import { ActivityInboxStrip } from "../shared/ActivityInboxStrip";
 
 export function CEOHomePageScreen() {
   const navigate = useNavigate();
@@ -117,6 +119,16 @@ export function CEOHomePageScreen() {
   }
   const { ceoSurface, orgAdvisor, outcomeReport, retrospective, ceoMemo, activityItems } =
     homeState;
+  const pendingHumanDecisionCount = ceoSurface.pendingHumanDecisions + ceoSurface.pendingApprovals;
+  const activityInboxSummary = buildActivityInboxSummary({
+    scopeLabel: "当前公司",
+    blockerCount: ceoSurface.activeBlockers,
+    requestCount: ceoSurface.openRequests,
+    handoffCount: ceoSurface.pendingHandoffs,
+    escalationCount: ceoSurface.openEscalations + ceoSurface.overdueItems,
+    pendingHumanDecisionCount,
+    manualTakeoverCount: ceoSurface.manualTakeovers,
+  });
 
   const quickPrompts = [
     "先别展开太多，直接给我一个最小可执行推进方案。",
@@ -350,29 +362,7 @@ export function CEOHomePageScreen() {
               <CardDescription>首页只保留异常数量和操作入口，不展示自动生成的长说明。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 p-4">
-              <div className="flex flex-wrap gap-2 text-xs">
-                <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">
-                  阻塞 {ceoSurface.activeBlockers}
-                </Badge>
-                <Badge variant="outline" className="border-violet-200 bg-violet-50 text-violet-700">
-                  交接 {ceoSurface.pendingHandoffs}
-                </Badge>
-                <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700">
-                  请求 {ceoSurface.openRequests}
-                </Badge>
-                <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
-                  SLA {ceoSurface.overdueItems}
-                </Badge>
-                <Badge variant="outline" className="border-orange-200 bg-orange-50 text-orange-700">
-                  升级 {ceoSurface.openEscalations}
-                </Badge>
-                <Badge variant="outline" className="border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700">
-                  人类决策 {ceoSurface.pendingHumanDecisions}
-                </Badge>
-                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                  接管 {ceoSurface.manualTakeovers}
-                </Badge>
-              </div>
+              <ActivityInboxStrip summary={activityInboxSummary} title="统一活动摘要" />
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
                 <ExecutiveSummaryStrip
                   title="轻量经营摘要"
@@ -422,7 +412,8 @@ export function CEOHomePageScreen() {
                         activeBlockers: ceoSurface.activeBlockers,
                         openRequests: ceoSurface.openRequests,
                         openEscalations: ceoSurface.openEscalations,
-                        pendingHumanDecisions: ceoSurface.pendingHumanDecisions,
+                        pendingHumanDecisions: pendingHumanDecisionCount,
+                        pendingApprovals: ceoSurface.pendingApprovals,
                         manualTakeovers: ceoSurface.manualTakeovers,
                       },
                     });

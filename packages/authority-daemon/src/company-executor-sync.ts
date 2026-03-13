@@ -26,7 +26,12 @@ import {
   generateHrSoul,
 } from "../../../src/domain/org/meta-agent-souls";
 import { isReservedSystemCompany } from "../../../src/domain/org/system-company";
-import type { Company, CyberCompanyConfig, EmployeeRef } from "../../../src/domain/org/types";
+import type {
+  Company,
+  CompanySystemMetadata,
+  CyberCompanyConfig,
+  EmployeeRef,
+} from "../../../src/domain/org/types";
 
 export type ManagedExecutorAgentTarget = {
   agentId: string;
@@ -49,6 +54,10 @@ export type ManagedExecutorReconcilePlan = {
   deleteAgentIds: string[];
   createTargets: ManagedExecutorAgentTarget[];
 };
+
+export type ManagedExecutorProvisioningResolution = NonNullable<
+  CompanySystemMetadata["executorProvisioning"]
+>;
 
 export type ManagedCompanyRuntimeSnapshot = {
   activeWorkItems?: WorkItemRecord[];
@@ -118,6 +127,12 @@ export function listDesiredManagedExecutorAgents(
         }),
       })),
   );
+}
+
+export function listDesiredManagedExecutorAgentIdsForCompany(company: Company): string[] {
+  return company.employees
+    .filter((employee) => !isSystemMappedEmployee(company, employee))
+    .map((employee) => employee.agentId);
 }
 
 export function buildManagedExecutorFilesForCompany(
@@ -230,5 +245,43 @@ export function planManagedExecutorReconcile(params: {
     createTargets: params.desiredTargets.filter(
       (target) => !params.existingAgentIds.has(target.agentId),
     ),
+  };
+}
+
+export function resolveManagedExecutorProvisioningState(params: {
+  company: Company;
+  visibleAgentIds: ReadonlySet<string>;
+  bridgeState: "ready" | "degraded" | "blocked";
+  fileSyncFailedAgentIds?: ReadonlySet<string>;
+  updatedAt?: number;
+}): ManagedExecutorProvisioningResolution {
+  const desiredAgentIds = listDesiredManagedExecutorAgentIdsForCompany(params.company);
+  const pendingAgentIds = desiredAgentIds.filter((agentId) => !params.visibleAgentIds.has(agentId));
+  const failedSyncAgentIds = desiredAgentIds.filter((agentId) =>
+    params.fileSyncFailedAgentIds?.has(agentId),
+  );
+
+  if (pendingAgentIds.length === 0 && failedSyncAgentIds.length === 0) {
+    return {
+      state: "ready",
+      pendingAgentIds: [],
+      lastError: null,
+      updatedAt: params.updatedAt ?? Date.now(),
+    };
+  }
+
+  const reasonParts: string[] = [];
+  if (pendingAgentIds.length > 0) {
+    reasonParts.push(`待可见 agent：${pendingAgentIds.join("、")}`);
+  }
+  if (failedSyncAgentIds.length > 0) {
+    reasonParts.push(`待同步文件：${failedSyncAgentIds.join("、")}`);
+  }
+
+  return {
+    state: params.bridgeState === "ready" ? "degraded" : "blocked",
+    pendingAgentIds,
+    lastError: reasonParts.join("；"),
+    updatedAt: params.updatedAt ?? Date.now(),
   };
 }

@@ -119,7 +119,7 @@ describe("buildCompanyConfigActions platform middle office records", () => {
     vi.clearAllMocks();
   });
 
-  it("persists skill definitions, skill runs, capability requests, and capability issues into the active company", async () => {
+  it("persists skill definitions, skill runs, capability requests, capability issues, and audit events into the active company", async () => {
     const config = createConfig();
     let state = {
       config,
@@ -204,6 +204,17 @@ describe("buildCompanyConfigActions platform middle office records", () => {
       createdAt: 30,
       updatedAt: 30,
     });
+    await actions.upsertCapabilityAuditEvent({
+      id: "audit-1",
+      kind: "skill",
+      entityId: "reader.build-index",
+      action: "created",
+      summary: "重建阅读索引 已登记为能力草稿",
+      actorLabel: "CTO",
+      skillId: "reader.build-index",
+      createdAt: 31,
+      updatedAt: 31,
+    });
 
     expect(state.activeCompany?.skillDefinitions).toHaveLength(1);
     expect(state.activeCompany?.skillDefinitions?.[0]?.id).toBe("reader.build-index");
@@ -213,6 +224,8 @@ describe("buildCompanyConfigActions platform middle office records", () => {
     expect(state.activeCompany?.capabilityRequests?.[0]?.summary).toContain("小说阅读器");
     expect(state.activeCompany?.capabilityIssues).toHaveLength(1);
     expect(state.activeCompany?.capabilityIssues?.[0]?.summary).toContain("无法打开");
+    expect(state.activeCompany?.capabilityAuditEvents).toHaveLength(1);
+    expect(state.activeCompany?.capabilityAuditEvents?.[0]?.summary).toContain("能力草稿");
     expect(vi.mocked(saveCompanyConfig)).toHaveBeenCalled();
   });
 });

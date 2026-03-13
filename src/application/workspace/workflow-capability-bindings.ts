@@ -1,6 +1,6 @@
 import type { CompanyWorkspaceApp, SkillDefinition, WorkflowCapabilityBinding } from "../../domain/org/types";
 import type { WorkItemRecord } from "../../domain/mission/types";
-import { isNovelCompany, resolveWorkspaceAppTemplate } from "../company/workspace-apps";
+import { resolveWorkspaceAppTemplate } from "../company/workspace-apps";
 
 export interface ResolvedWorkflowCapabilityBinding {
   id: string;
@@ -31,45 +31,10 @@ function matchesPatterns(text: string, patterns?: string[]) {
 function buildDefaultWorkflowBindings(): WorkflowCapabilityBinding[] {
   return [
     {
-      id: "reader-during-creation",
-      label: "创作阶段先打开阅读器对照上下文",
-      required: false,
-      guidance: "在创作、交稿或主编回看阶段，优先打开阅读器对照正文、设定和最近报告，避免脱离上下文单点推进。",
-      titleMatchers: ["小说", "章节", "正文"],
-      stageMatchers: ["创作", "交稿", "主编", "写手", "章节", "阅读"],
-      nextActionMatchers: ["交稿", "正文", "章节", "阅读", "目录", "对照"],
-      appTemplates: ["reader"],
-    },
-    {
-      id: "consistency-before-review",
-      label: "终审前执行一致性检查",
-      required: true,
-      guidance: "进入审校、终审或设定核对阶段时，优先打开一致性中心，并运行一致性检查，避免把逻辑错误带进终审。",
-      stageMatchers: ["审校", "终审", "一致性", "校对", "设定"],
-      nextActionMatchers: ["一致性", "校验", "检查", "终审", "设定", "伏笔"],
-      appTemplates: ["consistency"],
-      skillIds: ["consistency.check"],
-    },
-    {
-      id: "review-before-publish",
-      label: "发布/验收前执行预检",
-      required: true,
-      guidance: "进入发布、验收或最终确认阶段时，先在审阅控制台里执行发布前检查，再决定是否推进收口或发布。",
-      stageMatchers: ["发布", "验收", "收口", "归档", "审核"],
-      nextActionMatchers: ["发布", "验收", "预检", "审核", "归档", "确认"],
-      appTemplates: ["review-console"],
-      skillIds: ["review.precheck"],
-    },
-  ];
-}
-
-function buildGenericWorkflowBindings(): WorkflowCapabilityBinding[] {
-  return [
-    {
-      id: "viewer-during-delivery",
+      id: "viewer-before-context-switch",
       label: "推进前先打开内容查看器对照上下文",
       required: false,
-      guidance: "进入编写、设计、评审或交接阶段时，优先打开内容查看器对照主体内容、参考资料和最近报告，避免脱离上下文单点推进。",
+      guidance: "进入编写、设计、评审或交接阶段时，优先打开内容查看器，对照主体内容、参考资料和最近报告，避免脱离上下文单点推进。",
       titleMatchers: ["需求", "设计", "方案", "评审", "交付", "内容"],
       stageMatchers: ["编写", "设计", "评审", "交接", "开发", "验收"],
       nextActionMatchers: ["查看", "对照", "补充", "阅读", "同步", "整理"],
@@ -95,6 +60,16 @@ function buildGenericWorkflowBindings(): WorkflowCapabilityBinding[] {
       appTemplates: ["review-console"],
       skillIds: ["review.precheck"],
     },
+    {
+      id: "dashboard-during-monitoring",
+      label: "监控/调度阶段先打开仪表盘",
+      required: false,
+      guidance: "进入监控、调度、巡检或状态回看阶段时，优先打开仪表盘查看状态数据、异常样本和最近报告。",
+      titleMatchers: ["工单", "队列", "调度", "监控", "质检", "巡检"],
+      stageMatchers: ["监控", "调度", "队列", "巡检", "质检", "状态"],
+      nextActionMatchers: ["看板", "监控", "调度", "状态", "队列", "巡检"],
+      appTemplates: ["dashboard"],
+    },
   ];
 }
 
@@ -116,10 +91,7 @@ export function getCompanyWorkflowCapabilityBindings(
   if (Array.isArray(company.workflowCapabilityBindings) && company.workflowCapabilityBindings.length > 0) {
     return company.workflowCapabilityBindings;
   }
-  if (isNovelCompany(company as import("../../domain/org/types").Company)) {
-    return buildDefaultWorkflowBindings();
-  }
-  return buildGenericWorkflowBindings();
+  return buildDefaultWorkflowBindings();
 }
 
 export function resolveWorkflowCapabilityBindings(input: {

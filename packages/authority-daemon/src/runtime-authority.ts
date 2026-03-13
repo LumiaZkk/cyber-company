@@ -2,6 +2,7 @@ import type {
   AgentRunRecord,
   AgentSessionRecord,
 } from "../../../src/application/agent-runtime";
+import { reconcileAgentSessionExecutionContext } from "../../../src/application/agent-runtime";
 import { mergeDispatchRecords, projectDelegationFromEvents, type CompanyEvent } from "../../../src/domain/delegation/events";
 import type { DispatchRecord } from "../../../src/domain/delegation/types";
 import type { Company } from "../../../src/domain/org/types";
@@ -62,7 +63,7 @@ export function repairAgentSessionsFromDispatches(input: {
     }
   }
 
-  return [...input.sessions]
+  const repairedSessions = [...input.sessions]
     .map((session) => {
       const answeredAt = latestAnsweredAtBySessionKey.get(session.sessionKey);
       if (!answeredAt || activeSessionKeys.has(session.sessionKey)) {
@@ -84,4 +85,9 @@ export function repairAgentSessionsFromDispatches(input: {
       } satisfies AgentSessionRecord;
     })
     .sort((left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0));
+
+  return reconcileAgentSessionExecutionContext({
+    sessions: repairedSessions,
+    dispatches: input.dispatches,
+  });
 }

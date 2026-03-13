@@ -1,4 +1,5 @@
 import type {
+  AuthorityExecutorReadinessCheck,
   AuthorityHealthGuidanceItem,
   AuthorityHealthSnapshot,
 } from "../../infrastructure/authority/contract";
@@ -68,6 +69,15 @@ export function buildAuthorityGuidanceItems(
     },
     limit,
   );
+}
+
+export function collectExecutorReadinessIssues(
+  health: AuthorityHealthSnapshot,
+  limit = 5,
+): AuthorityExecutorReadinessCheck[] {
+  return (health.executorReadiness ?? [])
+    .filter((check) => check.state !== "ready")
+    .slice(0, limit);
 }
 
 export function collectAuthorityGuidance(

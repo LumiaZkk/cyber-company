@@ -18,6 +18,12 @@ import {
   type WorkspaceResourceKind,
   type WorkspaceResourceType,
 } from "../company/workspace-apps";
+import {
+  buildWorkspacePolicySummary,
+  resolveCompanyWorkspacePolicy,
+  shouldUseProviderWorkspaceMirror,
+  type WorkspacePolicySummary,
+} from "./workspace-policy";
 import { readCompanyRuntimeSnapshot, writeCompanyRuntimeSnapshot } from "../company/runtime-snapshot";
 import { gateway, type AgentListEntry, useGatewayStore } from "../gateway";
 import { isStrategicRequirementTopic } from "../mission/requirement-kind";
@@ -49,6 +55,7 @@ export type WorkspaceFileRow = {
 export type WorkspaceResourceOrigin = "declared" | "manifest" | "inferred";
 
 export type WorkspaceKnowledgeItemRow = SharedKnowledgeItem;
+export type { WorkspacePolicySummary } from "./workspace-policy";
 
 export const RESOURCE_KIND_LABEL: Record<WorkspaceResourceKind, string> = {
   chapter: "主体内容",
@@ -59,20 +66,39 @@ export const RESOURCE_KIND_LABEL: Record<WorkspaceResourceKind, string> = {
   other: "其他",
 };
 
+export function formatWorkspaceFileKindLabel(input: Pick<WorkspaceFileRow, "kind" | "resourceType">): string {
+  if (input.kind === "tooling" && input.resourceType === "dataset") {
+    return "数据";
+  }
+  if (input.kind === "other" && input.resourceType === "state") {
+    return "状态";
+  }
+  if (input.resourceType === "dataset") {
+    return "数据";
+  }
+  if (input.resourceType === "state") {
+    return "状态";
+  }
+  if (input.resourceType === "tool") {
+    return "工具";
+  }
+  return RESOURCE_KIND_LABEL[input.kind];
+}
+
 export const WORKBENCH_TOOL_CARDS = [
   {
     id: "consistency-checker" as const,
-    title: "让 CTO 开发校验工具",
+    title: "补齐规则校验能力",
     summary: "围绕唯一真相源、关键规则和状态流转做结构化校验，避免靠人肉回看和口头对齐。",
   },
   {
     id: "novel-reader" as const,
-    title: "让 CTO 开发内容查看器",
+    title: "补齐内容查看 App",
     summary: "把主体内容、参考资料和过程报告放在同一个查看界面里，便于业务团队直接对照。",
   },
   {
     id: "chapter-review-console" as const,
-    title: "让 CTO 开发审阅控制台",
+    title: "补齐审阅与预检 App",
     summary: "把对象状态、审阅意见、验收结论和交付前检查收进一个公司内工具页。",
   },
 ] as const;
@@ -82,12 +108,15 @@ export type WorkspaceWorkbenchTool = (typeof WORKBENCH_TOOL_CARDS)[number]["id"]
 export { useWorkspaceFileContent } from "./file-content";
 export {
   applyWorkspaceAppManifest,
+  buildPresetWorkspaceAppManifest,
   buildWorkspaceAppManifestDraft,
   getWorkspaceAppFilesForSection,
   isWorkspaceAppManifestDraft,
+  readWorkspaceAppManifestRegistrationMeta,
   resolveWorkspaceAppManifest,
   type WorkspaceAppManifest,
   type WorkspaceAppManifestAction,
+  type WorkspaceAppManifestRegistrationMeta,
   type WorkspaceAppManifestResource,
   type WorkspaceAppManifestSection,
 } from "./app-manifest";
@@ -122,6 +151,20 @@ export {
   type WorkspaceEmbeddedAppSnapshot,
 } from "./embedded-app-state";
 export { executeWorkspaceSkill } from "./skill-executor";
+export {
+  CAPABILITY_AUDIT_ACTION_LABEL,
+  CAPABILITY_AUDIT_KIND_LABEL,
+  buildCapabilityAuditTimeline,
+} from "./capability-audit";
+export {
+  buildCapabilityPlatformCloseoutSnapshot,
+  buildCapabilityPlatformCloseoutSummary,
+  isCapabilityPlatformCloseoutSnapshotEqual,
+  type CapabilityPlatformCloseoutSnapshot,
+  type CapabilityPlatformCloseoutCheck,
+  type CapabilityPlatformCloseoutStatus,
+  type CapabilityPlatformCloseoutSummary,
+} from "./platform-closeout";
 export {
   CAPABILITY_ISSUE_ACTION_LABEL,
   CAPABILITY_ISSUE_STATUS_LABEL,
@@ -447,8 +490,19 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
     () => workspaceApps.find((app) => resolveWorkspaceAppTemplate(app) === "consistency") ?? null,
     [workspaceApps],
   );
-  const shouldSyncProviderWorkspace =
-    supportsAgentFiles && providerManifest.storageStrategy === "provider-files";
+  const workspacePolicy = useMemo(
+    () => resolveCompanyWorkspacePolicy(activeCompany),
+    [activeCompany],
+  );
+  const workspacePolicySummary: WorkspacePolicySummary = useMemo(
+    () => buildWorkspacePolicySummary(workspacePolicy),
+    [workspacePolicy],
+  );
+  const shouldSyncProviderWorkspace = shouldUseProviderWorkspaceMirror({
+    policy: workspacePolicy,
+    supportsAgentFiles,
+    storageStrategy: providerManifest.storageStrategy,
+  });
   const ctoEmployee =
     activeCompany?.employees.find((employee) => employee.metaRole === "cto") ?? null;
 
@@ -641,7 +695,7 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
 
   const workspaceAppManifestsById = useMemo(
     () =>
-      workspaceApps.reduce<Record<string, WorkspaceAppManifest>>((acc, app) => {
+      workspaceApps.reduce<Record<string, WorkspaceAppManifest | null>>((acc, app) => {
         acc[app.id] = resolveWorkspaceAppManifest({
           app,
           artifacts: activeArtifacts,
@@ -764,6 +818,8 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
     refreshIndex: () => setRefreshVersion((current) => current + 1),
     reviewFiles,
     shouldSyncProviderWorkspace,
+    workspacePolicy,
+    workspacePolicySummary,
     supplementaryFiles,
     toolingFiles,
     workspaceApps,

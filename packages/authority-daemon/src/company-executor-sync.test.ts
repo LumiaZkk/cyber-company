@@ -5,7 +5,9 @@ import {
   buildManagedExecutorWorkspace,
   buildManagedExecutorWorkspaceRoot,
   listDesiredManagedExecutorAgents,
+  listDesiredManagedExecutorAgentIdsForCompany,
   planManagedExecutorReconcile,
+  resolveManagedExecutorProvisioningState,
 } from "./company-executor-sync";
 import { buildDefaultMainCompany } from "../../../src/domain/org/system-company";
 import type { Company, CyberCompanyConfig } from "../../../src/domain/org/types";
@@ -113,6 +115,16 @@ describe("company-executor-sync", () => {
     ]);
   });
 
+  it("lists desired managed executor agent ids for a single company", () => {
+    expect(listDesiredManagedExecutorAgentIdsForCompany(createCompany())).toEqual([
+      "company-1-ceo",
+      "company-1-hr",
+      "company-1-cto",
+      "company-1-coo",
+      "company-1-designer",
+    ]);
+  });
+
   it("builds managed manager files for both CEO and department leads", () => {
     const files = buildManagedExecutorFilesForCompany(createCompany());
 
@@ -214,5 +226,52 @@ describe("company-executor-sync", () => {
         workspace: "~/.openclaw/workspaces/cyber-company/company-1/company-1-cto",
       },
     ]);
+  });
+
+  it("marks provisioning ready when every managed agent is visible and file sync is clean", () => {
+    const company = createCompany();
+    const state = resolveManagedExecutorProvisioningState({
+      company,
+      visibleAgentIds: new Set(listDesiredManagedExecutorAgentIdsForCompany(company)),
+      bridgeState: "ready",
+      fileSyncFailedAgentIds: new Set(),
+      updatedAt: 123,
+    });
+
+    expect(state).toEqual({
+      state: "ready",
+      pendingAgentIds: [],
+      lastError: null,
+      updatedAt: 123,
+    });
+  });
+
+  it("keeps provisioning degraded when some agents are still missing", () => {
+    const company = createCompany();
+    const state = resolveManagedExecutorProvisioningState({
+      company,
+      visibleAgentIds: new Set(["company-1-ceo", "company-1-hr"]),
+      bridgeState: "ready",
+      updatedAt: 123,
+    });
+
+    expect(state.state).toBe("degraded");
+    expect(state.pendingAgentIds).toEqual(["company-1-cto", "company-1-coo", "company-1-designer"]);
+    expect(state.lastError).toContain("待可见 agent");
+  });
+
+  it("keeps provisioning degraded when file sync still fails even though agents are visible", () => {
+    const company = createCompany();
+    const state = resolveManagedExecutorProvisioningState({
+      company,
+      visibleAgentIds: new Set(listDesiredManagedExecutorAgentIdsForCompany(company)),
+      bridgeState: "ready",
+      fileSyncFailedAgentIds: new Set(["company-1-cto"]),
+      updatedAt: 123,
+    });
+
+    expect(state.state).toBe("degraded");
+    expect(state.pendingAgentIds).toEqual([]);
+    expect(state.lastError).toContain("待同步文件：company-1-cto");
   });
 });

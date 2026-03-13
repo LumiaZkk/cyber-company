@@ -52,7 +52,9 @@ export function SettingsPresentationPage() {
     handleExecutorConfigSubmit,
     handleExecutorReconnect,
     handleToggleOrgAutopilot,
+    handleUpdateAutonomyPolicy,
     handleUpdateCollaborationPolicy,
+    handleUpdateWorkspacePolicy,
     telegramSaving,
     providerKeySaving,
     addProviderSaving,
@@ -62,11 +64,15 @@ export function SettingsPresentationPage() {
     codexRefreshing,
     executorSaving,
     orgAutopilotSaving,
+    autonomyPolicySaving,
     collaborationPolicySaving,
+    workspacePolicySaving,
   } = useGatewaySettingsCommands(query);
 
   const [telegramDialogOpen, setTelegramDialogOpen] = useState(false);
   const [executorDialogOpen, setExecutorDialogOpen] = useState(false);
+  const [automationBudgetDialogOpen, setAutomationBudgetDialogOpen] = useState(false);
+  const [workspacePolicyDialogOpen, setWorkspacePolicyDialogOpen] = useState(false);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -125,19 +131,24 @@ export function SettingsPresentationPage() {
         companyCount={companyCount}
         orgAutopilotEnabled={orgAutopilotEnabled}
         orgAutopilotSaving={orgAutopilotSaving}
+        autonomyPolicySaving={autonomyPolicySaving}
         collaborationPolicySaving={collaborationPolicySaving}
+        workspacePolicySaving={workspacePolicySaving}
         switchCompany={switchCompany}
         loadConfig={loadConfig}
         reconnectGateway={reconnectGateway}
         disconnectGateway={disconnectGateway}
         handleToggleOrgAutopilot={handleToggleOrgAutopilot}
         handleUpdateCollaborationPolicy={handleUpdateCollaborationPolicy}
+        setAutomationBudgetDialogOpen={setAutomationBudgetDialogOpen}
+        setWorkspacePolicyDialogOpen={setWorkspacePolicyDialogOpen}
         runCommand={runCommand}
       />
 
       <SettingsProvidersChannelsSection
         executorStatus={executorStatus}
         executorConfig={executorConfig}
+        authorityHealth={authorityHealth}
         configSnapshot={configSnapshot}
         codexModels={codexModels}
         providerConfigs={providerConfigs}
@@ -172,6 +183,13 @@ export function SettingsPresentationPage() {
       <SettingsDialogs
         executorDialogOpen={executorDialogOpen}
         setExecutorDialogOpen={setExecutorDialogOpen}
+        automationBudgetDialogOpen={automationBudgetDialogOpen}
+        setAutomationBudgetDialogOpen={setAutomationBudgetDialogOpen}
+        workspacePolicyDialogOpen={workspacePolicyDialogOpen}
+        setWorkspacePolicyDialogOpen={setWorkspacePolicyDialogOpen}
+        activeCompany={activeCompany}
+        autonomyPolicySaving={autonomyPolicySaving}
+        workspacePolicySaving={workspacePolicySaving}
         executorConfig={executorConfig}
         telegramDialogOpen={telegramDialogOpen}
         setTelegramDialogOpen={setTelegramDialogOpen}
@@ -186,6 +204,8 @@ export function SettingsPresentationPage() {
         providerKeySaving={providerKeySaving}
         addProviderSaving={addProviderSaving}
         handleExecutorConfigSubmit={handleExecutorConfigSubmit}
+        handleUpdateAutonomyPolicy={handleUpdateAutonomyPolicy}
+        handleUpdateWorkspacePolicy={handleUpdateWorkspacePolicy}
         handleTelegramSubmit={handleTelegramSubmit}
         onProviderKeySubmit={onProviderKeySubmit}
         handleAddProviderSubmit={handleAddProviderSubmit}

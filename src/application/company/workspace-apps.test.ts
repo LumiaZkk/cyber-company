@@ -5,8 +5,8 @@ import {
   categorizeWorkspaceResource,
   getCompanyWorkspaceApps,
   hasStoredWorkspaceApps,
-  isNovelCompany,
   publishWorkspaceApp,
+  registerWorkspaceApp,
   resolveWorkspaceAppSurface,
   resolveWorkspaceAppTemplate,
   summarizeConsistencyAnchors,
@@ -32,15 +32,14 @@ function makeCompany(overrides?: Partial<Company>): Company {
 }
 
 describe("workspace-apps", () => {
-  it("detects novel companies and seeds company-specific apps", () => {
+  it("seeds generic recommended apps without relying on company scenario guesses", () => {
     const company = makeCompany();
 
-    expect(isNovelCompany(company)).toBe(true);
     expect(getCompanyWorkspaceApps(company).map((app) => app.id)).toEqual([
-      "novel-reader",
-      "consistency-hub",
-      "knowledge-hub",
-      "cto-workbench",
+      "app:reader",
+      "app:consistency",
+      "app:knowledge",
+      "app:workbench",
     ]);
     expect(hasStoredWorkspaceApps(company)).toBe(false);
     expect(buildRecommendedWorkspaceApps(company).every((app) => app.surface === "template")).toBe(true);
@@ -72,7 +71,7 @@ describe("workspace-apps", () => {
     expect(resolveWorkspaceAppSurface(apps[0]!)).toBe("template");
   });
 
-  it("provides generic recommended apps for non-novel companies", () => {
+  it("provides the same generic recommended apps for non-novel companies", () => {
     const company = makeCompany({
       name: "游戏工作室",
       description: "围绕关卡设计、模拟验证和上线验收协作",
@@ -84,7 +83,6 @@ describe("workspace-apps", () => {
       ],
     });
 
-    expect(isNovelCompany(company)).toBe(false);
     expect(getCompanyWorkspaceApps(company).map((app) => app.title)).toEqual([
       "内容查看器",
       "规则与校验",
@@ -116,7 +114,27 @@ describe("workspace-apps", () => {
     expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "reader")?.manifestArtifactId).toBe(
       "workspace-app-manifest:company-1:app:reader",
     );
-    expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "consistency")?.title).toBe("一致性中心");
+    expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "consistency")?.title).toBe("规则与校验");
+  });
+
+  it("registers existing manifest-backed apps as generic embedded company apps", () => {
+    const company = makeCompany();
+    const nextApps = registerWorkspaceApp(company, {
+      id: "app:simulator",
+      slug: "game-simulator",
+      title: "游戏模拟器",
+      summary: "通过显式 AppManifest 注册的公司内模拟器。",
+      surface: "embedded",
+      template: "generic-app",
+      manifestArtifactId: "artifact:simulator-manifest",
+      embeddedHostKey: "generic-app",
+    });
+
+    const simulator = nextApps.find((app) => app.id === "app:simulator");
+    expect(simulator?.summary).toContain("显式 AppManifest");
+    expect(resolveWorkspaceAppTemplate(simulator!)).toBe("generic-app");
+    expect(resolveWorkspaceAppSurface(simulator!)).toBe("embedded");
+    expect(simulator?.runtime?.kind).toBe("controlled-host");
   });
 
   it("categorizes workspace resources into novel-friendly buckets", () => {
@@ -127,7 +145,7 @@ describe("workspace-apps", () => {
     expect(categorizeWorkspaceResource("consistency-check.ts")).toBe("tooling");
   });
 
-  it("summarizes anchor coverage and builds CTO prompts", () => {
+  it("summarizes anchor coverage and builds generic CTO prompts", () => {
     const anchors = summarizeConsistencyAnchors([
       "00-共享设定库.md",
       "01-时间线.md",
@@ -137,12 +155,12 @@ describe("workspace-apps", () => {
     expect(anchors.find((anchor) => anchor.id === "handoff")?.found).toBe(false);
 
     const request = buildWorkspaceToolRequest(makeCompany(), "novel-reader");
-    expect(request.title).toBe("开发小说阅读器");
+    expect(request.title).toBe("补齐内容查看 App");
     expect(request.prompt).toContain("当前公司");
-    expect(request.prompt).toContain("小说阅读器");
+    expect(request.prompt).toContain("内容查看 App");
   });
 
-  it("builds generic CTO prompts for non-novel companies", () => {
+  it("builds the same CTO prompt contract for non-novel companies", () => {
     const company = makeCompany({
       name: "游戏工作室",
       description: "围绕关卡设计、模拟验证和上线验收协作",
@@ -154,7 +172,7 @@ describe("workspace-apps", () => {
     });
 
     const request = buildWorkspaceToolRequest(company, "novel-reader");
-    expect(request.title).toBe("开发内容查看器");
+    expect(request.title).toBe("补齐内容查看 App");
     expect(request.prompt).toContain("主体内容");
     expect(request.prompt).toContain("workspace-app-manifest.reader.json");
   });

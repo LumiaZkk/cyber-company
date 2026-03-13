@@ -6,6 +6,7 @@ import {
   isAuthorityRuntimeSnapshotStale,
   recordAuthorityRuntimeSyncError,
   recordAuthorityRuntimeSyncSuccess,
+  useAuthorityRuntimeSyncStore,
   type AuthorityRuntimeSyncOperation,
 } from "./runtime-sync-store";
 
@@ -40,7 +41,13 @@ export function applyAuthorityRuntimeCommandError(input: {
   fallbackMessage: string;
 }) {
   const message = input.error instanceof Error ? input.error.message : String(input.error);
-  console.warn(input.fallbackMessage, input.error);
+  const runtimeSyncState = useAuthorityRuntimeSyncStore.getState();
+  if (
+    runtimeSyncState.lastErrorOperation !== "command"
+    || runtimeSyncState.lastError !== message
+  ) {
+    console.warn(input.fallbackMessage, input.error);
+  }
   recordAuthorityRuntimeSyncError("command", input.error);
   input.set({ error: message });
 }

@@ -3,6 +3,7 @@ import type { AuthorityHealthSnapshot } from "../../infrastructure/authority/con
 import {
   buildAuthorityBannerModel,
   buildAuthorityGuidanceItems,
+  collectExecutorReadinessIssues,
   collectAuthorityGuidance,
   collectAuthorityRepairSteps,
   extractAuthorityHealthSnapshot,
@@ -31,6 +32,20 @@ function createHealthSnapshot(
       lastError: null,
       lastConnectedAt: 2_000,
     },
+    executorCapabilities: {
+      sessionStatus: "supported",
+      processRuntime: "unsupported",
+      notes: [],
+    },
+    executorReadiness: [
+      {
+        id: "connection",
+        label: "执行器连接",
+        state: "ready",
+        summary: "Authority 已接入 OpenClaw。",
+        detail: "ws://localhost:18789",
+      },
+    ],
     authority: {
       dbPath: "/tmp/authority.sqlite",
       connected: true,
@@ -168,6 +183,47 @@ describe("authority health helpers", () => {
       command: "npm run authority:backup",
     });
     expect(collectAuthorityRepairSteps(health)[0]).toContain("npm run authority:backup");
+  });
+
+  it("collects executor readiness issues separately from authority storage guidance", () => {
+    const base = createHealthSnapshot();
+    const health = createHealthSnapshot({
+      executorCapabilities: {
+        sessionStatus: "unsupported",
+        processRuntime: "unsupported",
+        notes: ["下游执行器不提供 session_status。"],
+      },
+      executorReadiness: [
+        {
+          id: "connection",
+          label: "执行器连接",
+          state: "ready",
+          summary: "Authority 已接入 OpenClaw。",
+          detail: "ws://localhost:18789",
+        },
+        {
+          id: "session-status",
+          label: "运行态探针",
+          state: "degraded",
+          summary: "当前执行器不支持 session_status。",
+          detail: "Authority 会退回 lifecycle/chat 驱动的降级修复模式。",
+        },
+        {
+          id: "process-runtime",
+          label: "进程观测",
+          state: "degraded",
+          summary: "当前执行器不提供 process runtime 观测。",
+          detail: "Runtime Inspector 会隐藏进程级 polling。",
+        },
+      ],
+      authority: {
+        ...base.authority,
+      },
+    });
+
+    const issues = collectExecutorReadinessIssues(health);
+    expect(issues).toHaveLength(2);
+    expect(issues[0]?.id).toBe("session-status");
   });
 
   it("recommends migrate plan when schema metadata is missing", () => {

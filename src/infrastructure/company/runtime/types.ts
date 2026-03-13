@@ -120,6 +120,7 @@ export interface CompanyRuntimeState {
   upsertSkillRun: (skillRun: CompanySkillRun) => Promise<void>;
   upsertCapabilityRequest: (request: CompanyCapabilityRequest) => Promise<void>;
   upsertCapabilityIssue: (issue: CompanyCapabilityIssue) => Promise<void>;
+  upsertCapabilityAuditEvent: (event: CompanyCapabilityAuditEvent) => Promise<void>;
   upsertRoomRecord: (room: RequirementRoomRecord) => void;
   appendRoomMessages: (
     roomId: string,
@@ -171,3 +172,4 @@ type CompanySkillDefinition = NonNullable<Company["skillDefinitions"]>[number];
 type CompanySkillRun = NonNullable<Company["skillRuns"]>[number];
 type CompanyCapabilityRequest = NonNullable<Company["capabilityRequests"]>[number];
 type CompanyCapabilityIssue = NonNullable<Company["capabilityIssues"]>[number];
+type CompanyCapabilityAuditEvent = NonNullable<Company["capabilityAuditEvents"]>[number];

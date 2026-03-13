@@ -113,6 +113,7 @@ export function selectExceptionInboxState(state: CompanyRuntimeState) {
 
 export function selectOrgState(state: CompanyRuntimeState) {
   return {
+    config: state.config,
     activeCompany: state.activeCompany,
     activeAgentSessions: state.activeAgentSessions,
     activeAgentRuntime: state.activeAgentRuntime,
