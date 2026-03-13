@@ -1,5 +1,14 @@
 export type ArtifactStatus = "draft" | "ready" | "superseded" | "archived";
 
+export type ArtifactResourceType =
+  | "document"
+  | "report"
+  | "dataset"
+  | "media"
+  | "state"
+  | "tool"
+  | "other";
+
 export interface ArtifactRecord {
   id: string;
   workItemId?: string | null;
@@ -15,6 +24,8 @@ export interface ArtifactRecord {
   sourceUrl?: string;
   summary?: string;
   content?: string | null;
+  resourceType?: ArtifactResourceType;
+  resourceTags?: string[];
   createdAt: number;
   updatedAt: number;
 }

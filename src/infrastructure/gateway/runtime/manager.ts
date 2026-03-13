@@ -12,6 +12,7 @@ import type {
   BackendHello,
   ConversationKind,
   ConversationRef,
+  ProviderRuntimeEvent,
   RunRef,
 } from "./types";
 
@@ -326,6 +327,26 @@ export class BackendManager implements AgentBackend {
 
   getStatus() {
     return this.currentBackend.getStatus();
+  }
+
+  getSessionStatus(sessionKey: string) {
+    return this.currentBackend.getSessionStatus(sessionKey);
+  }
+
+  subscribeAgentRuntime(handler: (event: ProviderRuntimeEvent) => void) {
+    return this.currentBackend.subscribeAgentRuntime(handler);
+  }
+
+  listProcesses(sessionKey?: string) {
+    return this.currentBackend.listProcesses
+      ? this.currentBackend.listProcesses(sessionKey)
+      : Promise.resolve(undefined);
+  }
+
+  pollProcess(id: string) {
+    return this.currentBackend.pollProcess
+      ? this.currentBackend.pollProcess(id)
+      : Promise.resolve(undefined);
   }
 
   getConfigSnapshot() {

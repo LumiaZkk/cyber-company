@@ -1,5 +1,6 @@
 import type { TaskStep } from "../../domain";
 import type { GatewaySessionRow } from "../gateway";
+import type { AgentRuntimeRecord, CanonicalAgentStatusRecord } from "../agent-runtime";
 import { isSessionActive } from "../../lib/sessions";
 
 export type ExecutionState =
@@ -36,6 +37,8 @@ export type ResolvedExecutionState = {
 
 type ResolveExecutionStateInput = {
   session?: GatewaySessionRow | null;
+  agentRuntime?: AgentRuntimeRecord | null;
+  canonicalStatus?: CanonicalAgentStatusRecord | null;
   evidenceTexts?: Array<string | null | undefined>;
   taskSteps?: TaskStep[];
   now?: number;
@@ -248,12 +251,56 @@ function findPatternMatches(
 }
 
 function resolveFallbackState(params: ResolveExecutionStateInput): ExecutionState {
+  if (params.canonicalStatus) {
+    if (params.canonicalStatus.interventionState === "takeover_required") {
+      return "manual_takeover_required";
+    }
+    if (params.canonicalStatus.coordinationState === "explicit_blocked") {
+      return params.canonicalStatus.reason.includes("工具") ? "blocked_tool_failure" : "blocked_timeout";
+    }
+    if (params.canonicalStatus.coordinationState === "waiting_input") {
+      return "waiting_input";
+    }
+    if (
+      params.canonicalStatus.coordinationState === "waiting_peer" ||
+      params.canonicalStatus.coordinationState === "pending_ack"
+    ) {
+      return "waiting_peer";
+    }
+    if (params.canonicalStatus.coordinationState === "executing") {
+      return "running";
+    }
+    if (params.canonicalStatus.coordinationState === "completed") {
+      return "completed";
+    }
+    if (params.canonicalStatus.runtimeState === "busy") {
+      return "running";
+    }
+    if (params.canonicalStatus.runtimeState === "idle") {
+      return "idle";
+    }
+    if (params.canonicalStatus.runtimeState === "degraded") {
+      return "blocked_timeout";
+    }
+    if (params.canonicalStatus.runtimeState === "no_signal" || params.canonicalStatus.runtimeState === "offline") {
+      return "unknown";
+    }
+  }
+
   if (params.fallbackState) {
     return params.fallbackState;
   }
 
   if (params.isGenerating) {
     return "running";
+  }
+
+  if (params.agentRuntime?.availability === "busy") {
+    return "running";
+  }
+
+  if (params.agentRuntime?.availability === "idle") {
+    return "idle";
   }
 
   if (params.session && typeof params.now === "number" && isSessionActive(params.session, params.now)) {
@@ -292,6 +339,36 @@ export function resolveExecutionState(
     });
   }
 
+  if (params.agentRuntime?.availability === "busy") {
+    evidence.push({
+      kind: "session_activity",
+      text: "Agent runtime 显示该节点仍在执行中。",
+    });
+  } else if (params.agentRuntime?.availability === "degraded") {
+    evidence.push({
+      kind: "timeout",
+      text: "Agent runtime 当前处于 degraded，需要继续观察或人工介入。",
+    });
+  }
+  if (params.canonicalStatus?.reason) {
+    evidence.push({
+      kind:
+        params.canonicalStatus.interventionState === "takeover_required"
+          ? "manual_takeover"
+          : params.canonicalStatus.coordinationState === "explicit_blocked"
+            ? "timeout"
+            : params.canonicalStatus.coordinationState === "waiting_input"
+              ? "waiting_input"
+              : params.canonicalStatus.coordinationState === "waiting_peer" ||
+                  params.canonicalStatus.coordinationState === "pending_ack"
+                ? "waiting_peer"
+                : params.canonicalStatus.coordinationState === "completed"
+                  ? "completion"
+                  : "session_activity",
+      text: params.canonicalStatus.reason,
+    });
+  }
+
   evidence.push(...findPatternMatches(texts, PATTERNS.manualTakeover, "manual_takeover"));
   evidence.push(...findPatternMatches(texts, PATTERNS.timeout, "timeout"));
   evidence.push(...findPatternMatches(texts, PATTERNS.toolFailure, "tool_failure"));
@@ -304,7 +381,9 @@ export function resolveExecutionState(
   const hasWipStep = taskSteps.some((step) => step.status === "wip");
 
   let state: ExecutionState;
-  if (evidence.some((item) => item.kind === "manual_takeover")) {
+  if (params.canonicalStatus) {
+    state = resolveFallbackState(params);
+  } else if (evidence.some((item) => item.kind === "manual_takeover")) {
     state = "manual_takeover_required";
   } else if (evidence.some((item) => item.kind === "tool_failure")) {
     state = "blocked_tool_failure";
@@ -317,6 +396,7 @@ export function resolveExecutionState(
   } else if (allStepsDone || evidence.some((item) => item.kind === "completion")) {
     state = "completed";
   } else if (
+    params.agentRuntime?.availability === "busy" ||
     params.isGenerating ||
     hasWipStep ||
     (params.session && typeof params.now === "number" && isSessionActive(params.session, params.now))

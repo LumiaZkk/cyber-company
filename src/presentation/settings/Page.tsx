@@ -31,6 +31,7 @@ export function SettingsPresentationPage() {
     orgAutopilotEnabled,
     providerConfigs,
     telegramConfig,
+    authorityHealth,
     doctorBaseline,
     executorStatus,
     executorConfig,
@@ -113,7 +114,7 @@ export function SettingsPresentationPage() {
         </div>
       )}
 
-      <SettingsDoctorSection doctorBaseline={doctorBaseline} />
+      <SettingsDoctorSection doctorBaseline={doctorBaseline} authorityHealth={authorityHealth} />
 
       <SettingsGatewayCompanySection
         token={token}

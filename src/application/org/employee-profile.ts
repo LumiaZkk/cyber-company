@@ -87,7 +87,7 @@ function resolveModelDraftFromSnapshot(
 
 export function useEmployeeProfileQuery(id: string | undefined) {
   const { connected, modelsVersion, manifest } = useGatewayStore();
-  const { activeCompany } = useOrgQuery();
+  const { activeCompany, activeAgentSessions, activeAgentRuntime } = useOrgQuery();
   const previousModelsVersionRef = useRef(modelsVersion);
   const [sessions, setSessions] = useState<GatewaySessionRow[]>([]);
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
@@ -225,7 +225,22 @@ export function useEmployeeProfileQuery(id: string | undefined) {
   const lastActive = sessions.reduce((latest, session) => {
     return Math.max(latest, resolveSessionUpdatedAt(session));
   }, 0);
-  const activeSessionCount = sessions.filter((session) => isSessionActive(session, currentTime)).length;
+  const runtime = id
+    ? activeAgentRuntime.find((entry) => entry.agentId === id) ?? null
+    : null;
+  const sessionRuntimeByKey = useMemo(
+    () => new Map(activeAgentSessions.map((entry) => [entry.sessionKey, entry] as const)),
+    [activeAgentSessions],
+  );
+  const activeSessionCount = runtime
+    ? runtime.activeSessionKeys.length
+    : sessions.filter((session) => {
+        const sessionRuntime = sessionRuntimeByKey.get(session.key);
+        if (sessionRuntime) {
+          return sessionRuntime.sessionState === "running" || sessionRuntime.sessionState === "streaming";
+        }
+        return isSessionActive(session, currentTime);
+      }).length;
   const effectiveModel = controlSnapshot?.modelOverride ?? controlSnapshot?.defaultModel ?? null;
   const modelDraftIsUnknown = useMemo(() => {
     const draft = modelDraft.trim();

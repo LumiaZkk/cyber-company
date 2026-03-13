@@ -1,6 +1,10 @@
 import { readCachedAuthorityConfig, readCachedAuthorityRuntimeSnapshot } from "../../authority/runtime-cache";
 import { runtimeStateFromAuthorityRuntimeSnapshot } from "../../authority/runtime-snapshot";
 import type {
+  CanonicalAgentStatusRecord,
+  AgentRunRecord,
+  AgentRuntimeRecord,
+  AgentSessionRecord,
   ArtifactRecord,
   Company,
   CompanyRuntimeState,
@@ -27,6 +31,10 @@ export type LoadedCompanyProductState = {
   loadedSupportRequests: CompanyRuntimeStateBootstrap["activeSupportRequests"];
   loadedEscalations: CompanyRuntimeStateBootstrap["activeEscalations"];
   loadedDecisionTickets: CompanyRuntimeStateBootstrap["activeDecisionTickets"];
+  loadedAgentSessions: AgentSessionRecord[];
+  loadedAgentRuns: AgentRunRecord[];
+  loadedAgentRuntime: AgentRuntimeRecord[];
+  loadedAgentStatuses: CanonicalAgentStatusRecord[];
   loadedRequirementAggregates: RequirementAggregateRecord[];
   loadedRequirementEvidence: RequirementEvidenceEvent[];
   primaryRequirementId: string | null;
@@ -50,6 +58,10 @@ export function loadProductState(companyId: string): LoadedCompanyProductState {
     loadedSupportRequests: state.activeSupportRequests,
     loadedEscalations: state.activeEscalations,
     loadedDecisionTickets: state.activeDecisionTickets,
+    loadedAgentSessions: state.activeAgentSessions,
+    loadedAgentRuns: state.activeAgentRuns,
+    loadedAgentRuntime: state.activeAgentRuntime,
+    loadedAgentStatuses: state.activeAgentStatuses,
     loadedRequirementAggregates: state.activeRequirementAggregates,
     loadedRequirementEvidence: state.activeRequirementEvidence,
     primaryRequirementId: state.primaryRequirementId,
@@ -73,6 +85,10 @@ export function createEmptyProductState(): Pick<
   | "activeSupportRequests"
   | "activeEscalations"
   | "activeDecisionTickets"
+  | "activeAgentSessions"
+  | "activeAgentRuns"
+  | "activeAgentRuntime"
+  | "activeAgentStatuses"
 > {
   return {
     authorityBackedState: false,
@@ -90,6 +106,10 @@ export function createEmptyProductState(): Pick<
     activeSupportRequests: [],
     activeEscalations: [],
     activeDecisionTickets: [],
+    activeAgentSessions: [],
+    activeAgentRuns: [],
+    activeAgentRuntime: [],
+    activeAgentStatuses: [],
   };
 }
 
@@ -117,6 +137,10 @@ export function loadInitialCompanyState() {
     activeSupportRequests: state?.loadedSupportRequests ?? [],
     activeEscalations: state?.loadedEscalations ?? [],
     activeDecisionTickets: state?.loadedDecisionTickets ?? [],
+    activeAgentSessions: state?.loadedAgentSessions ?? [],
+    activeAgentRuns: state?.loadedAgentRuns ?? [],
+    activeAgentRuntime: state?.loadedAgentRuntime ?? [],
+    activeAgentStatuses: state?.loadedAgentStatuses ?? [],
     bootstrapPhase: activeCompany ? ("ready" as const) : config ? ("missing" as const) : ("idle" as const),
   };
 }

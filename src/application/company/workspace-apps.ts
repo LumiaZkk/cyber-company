@@ -1,6 +1,19 @@
-import type { Company, CompanyWorkspaceApp } from "../../domain/org/types";
+import type {
+  Company,
+  CompanyWorkspaceApp,
+  CompanyWorkspaceAppStatus,
+  CompanyWorkspaceAppSurface,
+  CompanyWorkspaceAppTemplate,
+} from "../../domain/org/types";
+import type { ArtifactResourceType } from "../../domain/artifact/types";
 
 export type WorkspaceResourceKind = "chapter" | "canon" | "review" | "knowledge" | "tooling" | "other";
+export type WorkspaceResourceType = ArtifactResourceType;
+export type WorkspaceResourceDescriptor = {
+  kind: WorkspaceResourceKind;
+  resourceType: WorkspaceResourceType;
+  tags: string[];
+};
 
 type WorkspaceAnchor = {
   id: string;
@@ -16,6 +29,21 @@ const CONSISTENCY_ANCHORS: WorkspaceAnchor[] = [
   { id: "foreshadow", label: "伏笔追踪", matcher: /伏笔|foreshadow/i },
   { id: "handoff", label: "章节交接", matcher: /交接|handoff|清单/i },
 ];
+
+type WorkspaceAppSeed = Pick<
+  CompanyWorkspaceApp,
+  "slug" | "title" | "description" | "icon" | "kind" | "status" | "surface" | "template"
+>;
+
+const WORKSPACE_APP_TEMPLATE_BY_KIND: Record<
+  Exclude<CompanyWorkspaceApp["kind"], "custom">,
+  CompanyWorkspaceAppTemplate
+> = {
+  "novel-reader": "reader",
+  "consistency-hub": "consistency",
+  "knowledge-hub": "knowledge",
+  "cto-workbench": "workbench",
+};
 
 export function isNovelCompany(company: Company | null | undefined): boolean {
   if (!company) {
@@ -34,21 +62,191 @@ export function isNovelCompany(company: Company | null | undefined): boolean {
   return NOVEL_COMPANY_PATTERN.test(haystack);
 }
 
+export function hasStoredWorkspaceApps(company: Company | null | undefined): boolean {
+  return Boolean(company?.workspaceApps?.length);
+}
+
+export function resolveWorkspaceAppTemplate(
+  app: Pick<CompanyWorkspaceApp, "kind" | "template">,
+): CompanyWorkspaceAppTemplate {
+  if (app.template) {
+    return app.template;
+  }
+  if (app.kind === "custom") {
+    return "workbench";
+  }
+  return WORKSPACE_APP_TEMPLATE_BY_KIND[app.kind];
+}
+
+export function resolveWorkspaceAppSurface(
+  app: Pick<CompanyWorkspaceApp, "surface">,
+): CompanyWorkspaceAppSurface {
+  return app.surface ?? "template";
+}
+
+function normalizeWorkspaceApp(app: CompanyWorkspaceApp): CompanyWorkspaceApp {
+  return {
+    ...app,
+    surface: resolveWorkspaceAppSurface(app),
+    template: resolveWorkspaceAppTemplate(app),
+  };
+}
+
+export function buildRecommendedWorkspaceApps(company: Company): CompanyWorkspaceApp[] {
+  if (isNovelCompany(company)) {
+    return buildNovelWorkspaceApps(company).map(normalizeWorkspaceApp);
+  }
+  return [];
+}
+
+function buildWorkspaceAppSeed(template: CompanyWorkspaceAppTemplate): WorkspaceAppSeed {
+  switch (template) {
+    case "reader":
+      return {
+        slug: "reader",
+        title: "公司阅读器",
+        description: "直接阅读正文、设定、报告和关键上下文，不再只靠文件树猜内容。",
+        icon: "📖",
+        kind: "custom",
+        status: "ready",
+        surface: "template",
+        template: "reader",
+      };
+    case "consistency":
+      return {
+        slug: "consistency-hub",
+        title: "一致性中心",
+        description: "围绕设定、人物、时间线和伏笔，管理这家公司的唯一真相源。",
+        icon: "🧭",
+        kind: "custom",
+        status: "recommended",
+        surface: "template",
+        template: "consistency",
+      };
+    case "knowledge":
+      return {
+        slug: "knowledge-hub",
+        title: "知识与验收",
+        description: "集中查看正式方案、验收结论和可追溯来源。",
+        icon: "🧾",
+        kind: "custom",
+        status: "ready",
+        surface: "template",
+        template: "knowledge",
+      };
+    case "workbench":
+      return {
+        slug: "cto-workbench",
+        title: "CTO 工具工坊",
+        description: "围绕当前公司持续设计、开发和发布新能力。",
+        icon: "🛠️",
+        kind: "custom",
+        status: "recommended",
+        surface: "template",
+        template: "workbench",
+      };
+    case "review-console":
+      return {
+        slug: "review-console",
+        title: "审阅控制台",
+        description: "集中查看审阅报告、终审结论和发布前检查结果。",
+        icon: "🧪",
+        kind: "custom",
+        status: "recommended",
+        surface: "template",
+        template: "review-console",
+      };
+    case "dashboard":
+      return {
+        slug: "workspace-dashboard",
+        title: "工作目录仪表盘",
+        description: "把当前工作目录的状态数据、关键指标和上下文聚合成一个入口。",
+        icon: "📊",
+        kind: "custom",
+        status: "ready",
+        surface: "template",
+        template: "dashboard",
+      };
+  }
+  const exhaustiveTemplate: never = template;
+  throw new Error(`Unknown workspace app template: ${exhaustiveTemplate}`);
+}
+
+function buildDefaultWorkspaceAppId(template: CompanyWorkspaceAppTemplate): string {
+  return `app:${template}`;
+}
+
+type PublishWorkspaceAppInput = {
+  template: CompanyWorkspaceAppTemplate;
+  title?: string;
+  description?: string;
+  icon?: string;
+  status?: CompanyWorkspaceAppStatus;
+  surface?: CompanyWorkspaceAppSurface;
+  ownerAgentId?: string;
+  manifestArtifactId?: string | null;
+  embeddedHostKey?: string | null;
+  embeddedPermissions?: CompanyWorkspaceApp["embeddedPermissions"];
+};
+
+export function publishWorkspaceApp(
+  company: Company,
+  input: PublishWorkspaceAppInput,
+): CompanyWorkspaceApp[] {
+  const baseApps = getCompanyWorkspaceApps(company).map(normalizeWorkspaceApp);
+  const nextApps = [...baseApps];
+  const existingIndex = nextApps.findIndex(
+    (app) => resolveWorkspaceAppTemplate(app) === input.template,
+  );
+  const existingApp = existingIndex >= 0 ? nextApps[existingIndex] : null;
+  const seed = buildWorkspaceAppSeed(input.template);
+
+  const nextApp = normalizeWorkspaceApp({
+    id: existingApp?.id ?? buildDefaultWorkspaceAppId(input.template),
+    slug: existingApp?.slug ?? seed.slug,
+    title: input.title ?? existingApp?.title ?? seed.title,
+    description: input.description ?? existingApp?.description ?? seed.description,
+    icon: input.icon ?? existingApp?.icon ?? seed.icon,
+    kind: existingApp?.kind ?? seed.kind,
+    status: input.status ?? existingApp?.status ?? seed.status,
+    ownerAgentId: input.ownerAgentId ?? existingApp?.ownerAgentId,
+    surface: input.surface ?? existingApp?.surface ?? seed.surface,
+    template: input.template,
+    manifestArtifactId:
+      input.manifestArtifactId !== undefined
+        ? input.manifestArtifactId
+        : existingApp?.manifestArtifactId ?? null,
+    embeddedHostKey:
+      input.embeddedHostKey !== undefined
+        ? input.embeddedHostKey
+        : existingApp?.embeddedHostKey ?? null,
+    embeddedPermissions:
+      input.embeddedPermissions !== undefined
+        ? input.embeddedPermissions
+        : existingApp?.embeddedPermissions ?? null,
+  });
+
+  if (existingIndex >= 0) {
+    nextApps[existingIndex] = nextApp;
+    return nextApps;
+  }
+
+  return [...nextApps, nextApp];
+}
+
 export function getCompanyWorkspaceApps(company: Company | null | undefined): CompanyWorkspaceApp[] {
   if (!company) {
     return [];
   }
 
-  const derivedApps = isNovelCompany(company)
-    ? buildNovelWorkspaceApps(company)
+  const storedApps = Array.isArray(company.workspaceApps)
+    ? company.workspaceApps.map(normalizeWorkspaceApp)
     : [];
-  const storedApps = Array.isArray(company.workspaceApps) ? company.workspaceApps : [];
-
-  const merged = new Map<string, CompanyWorkspaceApp>();
-  for (const app of [...derivedApps, ...storedApps]) {
-    merged.set(app.id, app);
+  if (storedApps.length > 0) {
+    return storedApps;
   }
-  return [...merged.values()];
+
+  return buildRecommendedWorkspaceApps(company);
 }
 
 function buildNovelWorkspaceApps(company: Company): CompanyWorkspaceApp[] {
@@ -63,6 +261,8 @@ function buildNovelWorkspaceApps(company: Company): CompanyWorkspaceApp[] {
       kind: "novel-reader",
       status: "ready",
       ownerAgentId: ctoAgentId,
+      surface: "template",
+      template: "reader",
     },
     {
       id: "consistency-hub",
@@ -73,6 +273,8 @@ function buildNovelWorkspaceApps(company: Company): CompanyWorkspaceApp[] {
       kind: "consistency-hub",
       status: "recommended",
       ownerAgentId: ctoAgentId,
+      surface: "template",
+      template: "consistency",
     },
     {
       id: "knowledge-hub",
@@ -83,6 +285,8 @@ function buildNovelWorkspaceApps(company: Company): CompanyWorkspaceApp[] {
       kind: "knowledge-hub",
       status: "ready",
       ownerAgentId: ctoAgentId,
+      surface: "template",
+      template: "knowledge",
     },
     {
       id: "cto-workbench",
@@ -93,28 +297,51 @@ function buildNovelWorkspaceApps(company: Company): CompanyWorkspaceApp[] {
       kind: "cto-workbench",
       status: "recommended",
       ownerAgentId: ctoAgentId,
+      surface: "template",
+      template: "workbench",
     },
   ];
 }
 
-export function categorizeWorkspaceResource(name: string, path?: string | null): WorkspaceResourceKind {
+export function describeWorkspaceResource(name: string, path?: string | null): WorkspaceResourceDescriptor {
   const haystack = `${name} ${path ?? ""}`.trim().toLowerCase();
+  const tags = new Set<string>();
   if (/(审校|review|终审|qa|校对|发布结果|publish)/i.test(haystack)) {
-    return "review";
+    tags.add("qa.report");
+    tags.add("company.resource");
+    return { kind: "review", resourceType: "report", tags: [...tags] };
   }
   if (/(第?\s*\d+\s*章|ch\d+|chapter|chapters\/|正文)/i.test(haystack)) {
-    return "chapter";
+    tags.add("story.chapter");
+    tags.add("company.resource");
+    return { kind: "chapter", resourceType: "document", tags: [...tags] };
   }
   if (/(设定|人物|时间线|世界观|伏笔|canon|timeline|foreshadow|shared-system)/i.test(haystack)) {
-    return "canon";
+    tags.add("story.canon");
+    if (/(时间线|timeline)/i.test(haystack)) {
+      tags.add("story.timeline");
+    }
+    if (/(伏笔|foreshadow)/i.test(haystack)) {
+      tags.add("story.foreshadow");
+    }
+    tags.add("company.resource");
+    return { kind: "canon", resourceType: "document", tags: [...tags] };
   }
   if (/(团队规划|技术方案|工具方案|运营策略|汇总方案|执行方案|治理件|策略|方案|总结|总览)/i.test(haystack)) {
-    return "knowledge";
+    tags.add("company.knowledge");
+    tags.add("company.resource");
+    return { kind: "knowledge", resourceType: "document", tags: [...tags] };
   }
   if (/\.(json|ya?ml|ts|js|py|sh)$/i.test(haystack) || /(tool|script|spec)/i.test(haystack)) {
-    return "tooling";
+    tags.add("tech.tool");
+    return { kind: "tooling", resourceType: "tool", tags: [...tags] };
   }
-  return "other";
+  tags.add("company.resource");
+  return { kind: "other", resourceType: "other", tags: [...tags] };
+}
+
+export function categorizeWorkspaceResource(name: string, path?: string | null): WorkspaceResourceKind {
+  return describeWorkspaceResource(name, path).kind;
 }
 
 export function summarizeConsistencyAnchors(
@@ -155,7 +382,7 @@ export function buildWorkspaceToolRequest(
     case "novel-reader":
       return {
         title: "开发小说阅读器",
-        prompt: `${sharedContext}\n\n请先为小说创作团队开发第一版“小说阅读器”。它至少要覆盖：章节目录、正文阅读、审校报告对照、共享设定侧边栏、版本切换。`,
+        prompt: `${sharedContext}\n\n请先为小说创作团队开发第一版“小说阅读器”。它至少要覆盖：章节目录、正文阅读、审校报告对照、共享设定侧边栏、版本切换。\n\n交付要求：\n1. 除了页面方案，还要显式产出一份 \`workspace-app-manifest.reader.json\`。\n2. 这个 AppManifest 至少要把正文/设定/报告三类内容分到不同 section，不要只靠文件名猜。\n3. 每条资源至少包含：slot、title，以及 artifactId/sourcePath/sourceName 三选一的定位信息。\n4. 如果阅读器会触发动作，请把动作声明到 manifest actions 里，而不是只写在文档里。`,
       };
     default:
       return {

@@ -29,6 +29,10 @@ export function selectMissionBoardState(state: CompanyRuntimeState) {
     activeSupportRequests: state.activeSupportRequests,
     activeEscalations: state.activeEscalations,
     activeDecisionTickets: state.activeDecisionTickets,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuns: state.activeAgentRuns,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
   };
 }
 
@@ -49,6 +53,10 @@ export function selectConversationWorkspaceState(state: CompanyRuntimeState) {
     activeSupportRequests: state.activeSupportRequests,
     activeEscalations: state.activeEscalations,
     activeDecisionTickets: state.activeDecisionTickets,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuns: state.activeAgentRuns,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
   };
 }
 
@@ -74,6 +82,9 @@ export function selectCeoCockpitState(state: CompanyRuntimeState) {
     activeSupportRequests: state.activeSupportRequests,
     activeEscalations: state.activeEscalations,
     activeDecisionTickets: state.activeDecisionTickets,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
   };
 }
 
@@ -90,11 +101,31 @@ export function selectExceptionInboxState(state: CompanyRuntimeState) {
     activeSupportRequests: state.activeSupportRequests,
     activeEscalations: state.activeEscalations,
     activeDecisionTickets: state.activeDecisionTickets,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
   };
 }
 
 export function selectOrgState(state: CompanyRuntimeState) {
   return {
     activeCompany: state.activeCompany,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
+  };
+}
+
+export function selectRuntimeInspectorState(state: CompanyRuntimeState) {
+  return {
+    activeCompany: state.activeCompany,
+    activeWorkItems: state.activeWorkItems,
+    activeDispatches: state.activeDispatches,
+    activeSupportRequests: state.activeSupportRequests,
+    activeEscalations: state.activeEscalations,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuns: state.activeAgentRuns,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
   };
 }

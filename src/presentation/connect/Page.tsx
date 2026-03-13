@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Zap, HardDrive, Terminal, RotateCw } from "lucide-react";
+import {
+  collectAuthorityGuidance,
+  resolveAuthorityControlState,
+  resolveAuthorityStorageState,
+} from "../../application/gateway/authority-health";
 import { useGatewayStore } from "../../application/gateway";
 import { toast } from "../../components/system/toast-store";
+import { formatTime } from "../../lib/utils";
+import type { AuthorityHealthSnapshot } from "../../infrastructure/authority/contract";
+import { probeAuthorityHealth } from "../../infrastructure/authority/client";
 import { ConnectionDiagnosisSummary } from "../shared/ConnectionDiagnosisSummary";
 
 type GatewayStoreSnapshot = ReturnType<typeof useGatewayStore.getState>;
@@ -24,6 +32,23 @@ type ConnectFormProps = Pick<
   savedToken: string;
 };
 
+type AuthorityProbeState =
+  | {
+      status: "idle" | "loading";
+      health: null;
+      error: null;
+    }
+  | {
+      status: "ready";
+      health: AuthorityHealthSnapshot;
+      error: null;
+    }
+  | {
+      status: "failed";
+      health: null;
+      error: string;
+    };
+
 function ConnectForm({
   providers,
   connect,
@@ -40,7 +65,45 @@ function ConnectForm({
 }: ConnectFormProps) {
   const [url, setUrl] = useState(savedUrl || currentProvider?.defaultUrl || "");
   const [token, setToken] = useState(savedToken || "");
+  const [authorityProbe, setAuthorityProbe] = useState<AuthorityProbeState>({
+    status: "idle",
+    health: null,
+    error: null,
+  });
   const authorityOnly = providers.length <= 1;
+
+  useEffect(() => {
+    const normalized = url.trim();
+    if (!normalized) {
+      setAuthorityProbe({ status: "idle", health: null, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setAuthorityProbe({ status: "loading", health: null, error: null });
+      void probeAuthorityHealth(normalized)
+        .then((health) => {
+          if (!cancelled) {
+            setAuthorityProbe({ status: "ready", health, error: null });
+          }
+        })
+        .catch((probeError) => {
+          if (!cancelled) {
+            setAuthorityProbe({
+              status: "failed",
+              health: null,
+              error: probeError instanceof Error ? probeError.message : String(probeError),
+            });
+          }
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [url]);
 
   const handleConnect = (event: React.FormEvent) => {
     event.preventDefault();
@@ -51,6 +114,22 @@ function ConnectForm({
   };
 
   const isFailed = phase === "failed";
+  const authorityProbeState =
+    authorityProbe.status === "ready"
+      ? resolveAuthorityControlState(authorityProbe.health)
+      : authorityProbe.status === "failed"
+        ? "blocked"
+        : null;
+  const authorityStorageState =
+    authorityProbe.status === "ready" ? resolveAuthorityStorageState(authorityProbe.health) : null;
+  const authorityProbeSteps =
+    authorityProbe.status === "ready"
+      ? collectAuthorityGuidance(authorityProbe.health)
+      : [
+          "确认 `npm run dev` 或 `npm run authority:start` 已启动",
+          `检查控制面地址是否正确（当前 ${url || currentProvider?.defaultUrl || "http://127.0.0.1:18790"}）`,
+          "如果 authority 已开启鉴权，确认 Token 输入无误",
+        ];
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -180,6 +259,63 @@ function ConnectForm({
                     <RotateCw className="h-3.5 w-3.5" />
                     重试连接
                   </button>
+                }
+              />
+            ) : null}
+
+            {authorityProbeState ? (
+              <ConnectionDiagnosisSummary
+                variant="onboarding"
+                state={authorityProbeState}
+                title={
+                  authorityProbe.status === "ready"
+                    ? "Authority 控制面探测"
+                    : "Authority 控制面暂不可达"
+                }
+                summary={
+                  authorityProbe.status === "ready"
+                    ? authorityStorageState === "ready" && authorityProbe.health.executor.state === "ready"
+                      ? "控制面已经响应，数据库、备份目录和执行器状态都已通过当前检查。"
+                      : authorityProbe.health.authority.doctor.issues[0] ??
+                        authorityProbe.health.authority.preflight.warnings[0] ??
+                        authorityProbe.health.authority.preflight.issues[0] ??
+                        authorityProbe.health.executor.note
+                    : "还没探测到可用的 Authority 控制面，请先确认本地 daemon 是否已启动。"
+                }
+                detail={
+                  authorityProbe.status === "ready"
+                    ? `${authorityProbe.health.authority.dbPath} · schema v${
+                        authorityProbe.health.authority.doctor.schemaVersion ?? "?"
+                      } · 备份 ${authorityProbe.health.authority.doctor.backupCount} 份 · 最新备份 ${
+                        authorityProbe.health.authority.doctor.latestBackupAt
+                          ? formatTime(authorityProbe.health.authority.doctor.latestBackupAt)
+                          : "尚无"
+                      }`
+                    : authorityProbe.error
+                }
+                steps={authorityProbeSteps}
+                layers={
+                  authorityProbe.status === "ready"
+                    ? [
+                        {
+                          id: "authority",
+                          label: "Authority",
+                          state: authorityStorageState ?? "degraded",
+                          summary:
+                            authorityProbe.health.authority.preflight.warnings[0] ??
+                            `schema v${authorityProbe.health.authority.preflight.schemaVersion ?? "?"} · ` +
+                            (authorityProbe.health.authority.preflight.dbExists
+                              ? "本地 authority SQLite 已存在。"
+                              : "首次启动将自动初始化 authority SQLite。"),
+                        },
+                        {
+                          id: "executor",
+                          label: "Executor",
+                          state: authorityProbe.health.executor.state,
+                          summary: authorityProbe.health.executor.note,
+                        },
+                      ]
+                    : undefined
                 }
               />
             ) : null}

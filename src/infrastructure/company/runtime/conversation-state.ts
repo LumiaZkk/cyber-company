@@ -111,6 +111,7 @@ export function buildConversationStateActions(
             previousAggregate: previousPrimaryAggregate,
             actorId: nextPrimaryAggregate.ownerActorId,
             timestamp: nextRecord.updatedAt,
+            source: "backfill",
           })
         : activeRequirementEvidence;
     set({
@@ -130,6 +131,8 @@ export function buildConversationStateActions(
         kind: "requirement_promoted",
         aggregate: nextPrimaryAggregate,
         actorId: nextPrimaryAggregate.ownerActorId,
+        previousAggregate: previousPrimaryAggregate,
+        source: "backfill",
       });
     }
     return true;

@@ -50,7 +50,8 @@ Depends on:
 
 - `docs/paperclip-borrowing-tracker.md` 第 4 节总览表是状态单一真相。
 - 这份文档负责解释方向和优先级，不单独维护另一套状态枚举。
-- 当前真正的开发焦点以 `docs/v1-stability-roadmap.md` 里的“当前唯一施工切片”为准，而不是看有多少个顶层项被标成 `in_progress`。
+- 当前真正的开发焦点以 `docs/v1-stability-roadmap.md` 里的“当前唯一施工切片”为准，而不是看有多少个顶层项处于开放状态。
+- `stabilizing` 不是长期状态。它只表示“主实现已落，但正在做最后一轮收尾、验证和拆残余工作”。
 
 ## 2.2 当前推进到哪里
 
@@ -61,7 +62,9 @@ Depends on:
 - `PC-STATE-02`
   `requirement.transition`、`requirement.promote`、`room.append`、`room.delete`、`room-bindings.upsert`、`dispatch.create`、`dispatch.delete`、`artifact.upsert`、`artifact.sync-mirror`、`artifact.delete` 已经改成 authority command 写入，开始从“浏览器整份 runtime 回灌”收口
 - `PC-STATE-01` / `PC-STATE-03`
-  已补 `docs/v1-phase3-authority-object-boundaries.md`，开始把关键对象的权威字段、派生字段、revision 和写入边界收成正式设计
+  已补 `docs/v1-phase3-authority-object-boundaries.md`，而且不只是第一刀：revision baseline 已上线，`DecisionTicket` 也已经补上显式 `decision.resolve / decision.cancel` 命令，`loadRuntime()` 也已从读时写回收成纯读；现在第一批 authority company event audit 已覆盖 decision lifecycle、dispatch、room、room-binding、artifact、runtime repair，以及自治引擎生成的 support request / escalation / decision 的 upsert/delete 生命周期。与此同时，`requirement_*` workflow event payload 也已经补到带 `source / changedFields / previous*` 的解释级别，而且显式 operator recovery、chat focus action、chat takeover pack copy、chat 打开需求团队房间和运营大厅 `blueprint copy / knowledge sync / group chat / quick task / hire / role update / fire` 也已经开始进入同一条 event log。下一步主要是 audit 规则收口
+- `PC-OPS-03` / `PC-OPS-04`
+  这轮已经从“纯计划”进入第一刀实现：新增了 `authority:doctor / authority:backup / authority:backups / authority:migrate / authority:restore / authority:preflight` CLI，能直接检查本地 authority SQLite 的公司数、runtime 数、event 数、active company、executor state、backup inventory，显式生成本地备份文件、列出备份清单，并从备份恢复 authority SQLite；`authority:migrate` 已作为第一版显式 migration 入口，用来给老库回填缺失的 `schemaVersion` metadata。`authority:restore` 现在不只支持 `--latest`，还支持 `--plan / --force / --allow-safety-backup`，会在真正覆盖前先输出 restore plan，并默认阻止“恢复 pre-restore safety backup”以及“用更旧备份覆盖更新数据库”。同时 authority server 已开始写入 `schemaVersion` metadata，doctor / preflight / restore plan 也开始显式显示 schema version，并阻止恢复来自更高 schema 版本的备份。`authority:preflight` 也已经从二元检查升级成真实 startup checks：如果数据库已存在但缺少 schemaVersion metadata、还没有标准备份，或最新标准备份过旧，会明确返回 `degraded`。`npm run dev` 和 `npm run authority:start` 也已开始先跑 preflight，而且 backup 已开始支持最小 retention。现在这些结论也已经回推到 Settings Doctor 和 Connect 探测卡片，页面可以直接看到 authority 的 schema version、doctor / preflight / backup 摘要。下一步主要是更正式的 migration / restore 闭环
 
 与此同时，产品表面也开始配合这条稳定性路线收口：
 
@@ -76,13 +79,23 @@ Depends on:
 
 同时也要注意一个阅读方式：
 
-- 现在文档里出现多个 `in_progress`，表示有多条顶层借鉴项尚未收口
+- 当前文档状态已经拆成 `active` 和 `stabilizing`
+- `active` 只表示当前唯一施工焦点
+- `stabilizing` 表示主实现已落，但还没正式关单
 - 不表示当前在并行推进多条实现主线
 
 当前真正的施工焦点只有一条：
 
-- `PC-STATE-01` / `PC-STATE-03`
-  也就是 V1 Phase 3 的关键对象稳态化
+- `PC-OPS-03` / `PC-OPS-04`
+  也就是 V1 Phase 4 的 authority operator tooling：先把体检、备份、恢复和启动前检查做成真实入口
+
+后续推进约束也明确一下：
+
+- 不为了好看提前关单
+- 也不允许为了“以后再说”长期挂着 `stabilizing`
+- 如果某项主实现已经完成，下一轮就应该二选一：
+  - 按关闭标准推进到 `adopted`
+  - 或把残余内容拆出去，让原项尽快关单
 
 ## 2.3 回到 Paperclip 时的一眼判断
 
@@ -93,11 +106,11 @@ Depends on:
   - `PC-STATE-02`
   也就是 Doctor 基线、统一诊断表达、authority command 写入样板，这些已经从想法变成代码和界面。
 - 当前正在推进的：
-  - `PC-STATE-01` / `PC-STATE-03`
-  也就是关键对象稳态化，这一轮已经有正式设计稿，下一步是把 revision、字段边界和 decision command 落成实现。
+- `PC-STATE-01` / `PC-STATE-03`
+  也就是关键对象稳态化，这一轮已经从设计稿推进到四步实现：`revision baseline + decision ticket explicit commands + read-path cleanup + first decision/dispatch/room/binding/artifact/repair/company-ops lifecycle audit events` 都已落成，而且 requirement workflow payload 也已经开始自带推进上下文；下一步主要剩 audit 边界。
 - 紧随其后的下一步：
-  - `PC-OPS-03` / `PC-OPS-04`
-  也就是 migration / backup / restore / run 前检查，让 authority 的 operator tooling 跟上。
+  - `PC-STATE-01` / `PC-STATE-03`
+  也就是在 Phase 4 打开体检/备份入口后，再回头把剩余 audit 规则和对象边界继续收口。
 - 明确不借的：
   - issue-first 前台叙事
   - 通用 agent company OS 产品表面

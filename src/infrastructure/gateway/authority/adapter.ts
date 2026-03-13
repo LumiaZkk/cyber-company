@@ -27,6 +27,7 @@ import {
   type GatewayAuthCodexOauthStatusResult,
   type GatewayAuthImportCodexCliResult,
   type GatewayModelsListParams,
+  type ProviderRuntimeEvent,
   type ProviderMessage,
   type SessionsArchivesGetResult,
   type SessionsArchivesListResult,
@@ -34,11 +35,21 @@ import {
   type SessionsListResult,
   type SessionsUsageResult,
 } from "../runtime/types";
+import {
+  normalizeProviderRuntimeEvent,
+  normalizeProviderSessionStatus,
+} from "../../../application/agent-runtime";
 
 const authorityCapabilities = createBackendCapabilities({
   sessionHistory: true,
   sessionArchives: false,
   sessionArchiveRestore: false,
+  sessionStatus: true,
+  agentLifecycle: true,
+  toolLifecycle: true,
+  processRuntime: false,
+  presence: false,
+  runtimeObservability: true,
   cron: true,
   config: true,
   channelStatus: true,
@@ -81,6 +92,7 @@ function toHello(url: string): BackendHello {
         "artifact.updated",
         "decision.updated",
         "executor.status",
+        "agent.runtime.updated",
         "chat",
       ],
     },
@@ -378,6 +390,16 @@ class AuthorityBackendAdapter implements AgentBackend {
         params as Parameters<typeof authorityClient.deleteDecisionTicket>[0],
       )) as T;
     }
+    if (method === "authority.decision.resolve") {
+      return (await authorityClient.resolveDecisionTicket(
+        params as Parameters<typeof authorityClient.resolveDecisionTicket>[0],
+      )) as T;
+    }
+    if (method === "authority.decision.cancel") {
+      return (await authorityClient.cancelDecisionTicket(
+        params as Parameters<typeof authorityClient.cancelDecisionTicket>[0],
+      )) as T;
+    }
     if (method === "authority.executor.get") {
       return (await authorityClient.getExecutorConfig()) as T;
     }
@@ -619,7 +641,34 @@ class AuthorityBackendAdapter implements AgentBackend {
   }
 
   getStatus() {
-    return authorityClient.health();
+    return authorityClient.requestGateway<Record<string, unknown>>("status", {});
+  }
+
+  async getSessionStatus(sessionKey: string) {
+    const result = await authorityClient.requestGateway("session_status", { sessionKey });
+    return normalizeProviderSessionStatus(this.providerId, sessionKey, result);
+  }
+
+  subscribeAgentRuntime(handler: (event: ProviderRuntimeEvent) => void) {
+    return this.subscribe("agent.runtime.updated", (payload) => {
+      const eventPayload =
+        payload && typeof payload === "object" && "event" in (payload as Record<string, unknown>)
+          ? (payload as { event?: unknown }).event
+          : payload;
+      if (
+        eventPayload &&
+        typeof eventPayload === "object" &&
+        "streamKind" in (eventPayload as Record<string, unknown>) &&
+        "providerId" in (eventPayload as Record<string, unknown>)
+      ) {
+        handler(eventPayload as ProviderRuntimeEvent);
+        return;
+      }
+      const normalized = normalizeProviderRuntimeEvent(this.providerId, eventPayload);
+      if (normalized) {
+        handler(normalized);
+      }
+    });
   }
 
   getConfigSnapshot(): Promise<AuthorityGatewayConfigSnapshot> {

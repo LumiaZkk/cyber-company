@@ -7,6 +7,10 @@ import { useAuthorityRuntimeSyncStore } from "../../infrastructure/authority/run
 import type { AuthorityHealthSnapshot } from "../../infrastructure/authority/contract";
 import type { CompanyCollaborationPolicy } from "../../domain/org/types";
 import {
+  collectAuthorityGuidance,
+  resolveAuthorityStorageState,
+} from "./authority-health";
+import {
   formatCodexRuntimeSyncDescription,
   reapplyCodexModelsToActiveSessions,
   syncCodexModelsToAllowlist,
@@ -174,9 +178,21 @@ export function useGatewaySettingsQuery() {
       ? {
           id: "authority",
           label: "Authority",
-          state: "ready",
-          summary: "Authority 本地权威源在线。",
-          detail: authorityHealth.authority.dbPath,
+          state: resolveAuthorityStorageState(authorityHealth),
+          summary:
+            collectAuthorityGuidance(authorityHealth, 1)[0] ??
+            "Authority 本地权威源在线，doctor 与 preflight 已通过。",
+          detail:
+            `${authorityHealth.authority.dbPath} · schema v${
+              authorityHealth.authority.doctor.schemaVersion ?? "?"
+            } · backups ${authorityHealth.authority.doctor.backupCount}`
+            + (
+              authorityHealth.authority.doctor.latestBackupAt
+                ? ` · latest ${new Date(authorityHealth.authority.doctor.latestBackupAt).toLocaleString("zh-CN", {
+                    hour12: false,
+                  })}`
+                : ""
+            ),
           timestamp: authorityHealth.authority.startedAt,
         }
       : {

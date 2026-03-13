@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { syncDelegationClosedLoopState } from "../../../application/delegation/closed-loop";
 import { gateway } from "../../../application/gateway";
+import { appendOperatorActionAuditEvent } from "../../../application/governance/operator-action-audit";
 import type { RequirementSessionSnapshot } from "../../../domain/mission/requirement-snapshot";
 import type { ArtifactRecord } from "../../../domain/artifact/types";
 import type { DispatchRecord } from "../../../domain/delegation/types";
@@ -28,6 +29,7 @@ function extractChatSyncSessionKey(payload: unknown): string | null {
 
 export function useBoardCommunicationSync(input: {
   activeCompany: Company;
+  surface: "board" | "requirement_center";
   companySessionSnapshots: RequirementSessionSnapshot[];
   setCompanySessionSnapshots: (snapshots: RequirementSessionSnapshot[]) => void;
   activeArtifacts: ArtifactRecord[];
@@ -91,12 +93,35 @@ export function useBoardCommunicationSync(input: {
         current.replaceDispatchRecords(dispatches);
         await current.updateCompany(companyPatch);
         if (!options?.silent) {
+          void appendOperatorActionAuditEvent({
+            companyId: current.activeCompany.id,
+            action: "communication_recovery",
+            surface: input.surface,
+            outcome: "succeeded",
+            force: options?.force,
+            requestsAdded: summary.requestsAdded,
+            requestsUpdated: summary.requestsUpdated,
+            tasksRecovered: summary.tasksRecovered,
+            handoffsRecovered: summary.handoffsRecovered,
+          });
+        }
+        if (!options?.silent) {
           toast.success(
             "请求闭环已同步",
             `新增 ${summary.requestsAdded}，更新 ${summary.requestsUpdated}，恢复任务 ${summary.tasksRecovered}，恢复交接 ${summary.handoffsRecovered}。`,
           );
         }
       } catch (error) {
+        if (!options?.silent) {
+          void appendOperatorActionAuditEvent({
+            companyId: latestInputRef.current.activeCompany.id,
+            action: "communication_recovery",
+            surface: input.surface,
+            outcome: "failed",
+            force: options?.force,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         if (!options?.silent) {
           toast.error("恢复失败", error instanceof Error ? error.message : String(error));
         }

@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import type { FocusProgressEvent } from "../../../application/governance/chat-progress";
+import { appendOperatorActionAuditEvent } from "../../../application/governance/operator-action-audit";
 import { toast } from "../../../components/system/toast-store";
 
 export function useChatCoordinationActions(input: {
@@ -22,6 +23,18 @@ export function useChatCoordinationActions(input: {
 
     try {
       await navigator.clipboard.writeText(input.takeoverPack.operatorNote);
+      if (input.activeCompanyId) {
+        void appendOperatorActionAuditEvent({
+          companyId: input.activeCompanyId,
+          action: "takeover_pack_copy",
+          surface: "chat",
+          outcome: "succeeded",
+          details: {
+            hasTakeoverPack: true,
+            noteLength: input.takeoverPack.operatorNote.length,
+          },
+        });
+      }
       input.appendLocalProgressEvent({
         id: `copy-takeover:${Date.now()}`,
         timestamp: Date.now(),
@@ -35,6 +48,19 @@ export function useChatCoordinationActions(input: {
       input.setIsSummaryOpen(true);
       toast.success("接管包已复制", "可以直接贴给人工执行者继续处理。");
     } catch (error) {
+      if (input.activeCompanyId) {
+        void appendOperatorActionAuditEvent({
+          companyId: input.activeCompanyId,
+          action: "takeover_pack_copy",
+          surface: "chat",
+          outcome: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          details: {
+            hasTakeoverPack: true,
+            noteLength: input.takeoverPack.operatorNote.length,
+          },
+        });
+      }
       input.appendLocalProgressEvent({
         id: `copy-takeover-failed:${Date.now()}`,
         timestamp: Date.now(),
@@ -60,6 +86,16 @@ export function useChatCoordinationActions(input: {
       if (!summary) {
         return;
       }
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "communication_recovery",
+        surface: "chat",
+        outcome: "succeeded",
+        requestsAdded: summary.requestsAdded,
+        requestsUpdated: summary.requestsUpdated,
+        tasksRecovered: summary.tasksRecovered,
+        handoffsRecovered: summary.handoffsRecovered,
+      });
       input.appendLocalProgressEvent({
         id: `recover:${Date.now()}`,
         timestamp: Date.now(),
@@ -76,6 +112,13 @@ export function useChatCoordinationActions(input: {
         `新增 ${summary.requestsAdded}，更新 ${summary.requestsUpdated}，恢复任务 ${summary.tasksRecovered}，恢复交接 ${summary.handoffsRecovered}。`,
       );
     } catch (error) {
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "communication_recovery",
+        surface: "chat",
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
       input.appendLocalProgressEvent({
         id: `recover-failed:${Date.now()}`,
         timestamp: Date.now(),

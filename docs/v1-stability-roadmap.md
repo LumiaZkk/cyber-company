@@ -36,34 +36,60 @@ V1 不覆盖这些方向：
 
 | Phase | 目标 | 借鉴项 | 当前状态 |
 |---|---|---|---|
-| Phase 1 | 先看清问题，再建立升级基线 | `PC-OPS-01`, `PC-OPS-02` | `in_progress` |
-| Phase 2 | 收紧写入边界，停止整份 runtime 回灌 | `PC-STATE-02` | `in_progress` |
-| Phase 3 | 把关键对象从运行态投影收口成稳态对象 | `PC-STATE-01`, `PC-STATE-03` | `in_progress` |
-| Phase 4 | 补齐 Authority 运维闭环 | `PC-OPS-01`, `PC-OPS-02`, `PC-OPS-03`, `PC-OPS-04` | `planned` |
+| Phase 1 | 先看清问题，再建立升级基线 | `PC-OPS-01`, `PC-OPS-02` | `stabilizing` |
+| Phase 2 | 收紧写入边界，停止整份 runtime 回灌 | `PC-STATE-02` | `stabilizing` |
+| Phase 3 | 把关键对象从运行态投影收口成稳态对象 | `PC-STATE-01`, `PC-STATE-03` | `stabilizing` |
+| Phase 4 | 补齐 Authority 运维闭环 | `PC-OPS-01`, `PC-OPS-02`, `PC-OPS-03`, `PC-OPS-04` | `active` |
 
 ## 2.1 当前唯一施工切片
 
-虽然 Phase 表里现在有多个 `in_progress`，但它们不是并行开工的意思。
+从当前版本开始，Phase 状态拆成两层：
+
+- `active`
+  表示当前唯一施工切片所在阶段。
+- `stabilizing`
+  表示主实现已落，但还没达到关闭标准，当前处于收尾与验证阶段。
 
 当前的执行约束是：
 
-- 顶层阶段可以同时保持 `in_progress`
-  这表示“阶段还没收口”，不表示“这周同时在做多条主线”。
+- 同时只允许一个 `active`
+  这表示“当前真正正在施工的主线”。
+- 允许多个 `stabilizing`
+  这表示“这些阶段已经做出主要成果，但还没关单”。
 - 实施层面只保留一个当前唯一施工切片
   这样可以避免单人串行推进时的上下文切换和半完成状态堆积。
 
 截至 2026-03-13，当前唯一施工切片是：
 
-- `Phase 3 / Slice A`
-  内容：把 `RequirementAggregate / RequirementRoom / Dispatch / Artifact / DecisionTicket` 的对象边界、revision 和 authority command 边界写实。
-  设计稿：`docs/v1-phase3-authority-object-boundaries.md`
+- `Phase 4 / Slice D-1`
+  内容：先把 authority 的本地体检和备份恢复做成真实可用的 operator tooling，而不是只留在设置页说明和底层实现里。
+  当前进度：已新增 `authority:doctor / authority:backup / authority:backups / authority:migrate / authority:restore / authority:preflight` CLI。`authority:doctor` 会直接读取本地 authority SQLite，输出 `schema version / db path / db size / backup dir / backup count / latest backup / companies / runtimes / events / active company / executor state / latest runtime / latest event`；`authority:backup` 会在 checkpoint 后复制当前 SQLite，并开始支持最小 retention；`authority:backups` 会列出当前备份清单；`authority:migrate` 已作为第一版显式 migration 入口，用来给老库回填 `schemaVersion` metadata；`authority:restore` 除了支持 `--from` 之外，也已经支持 `--latest`、`--plan`、`--force`、`--allow-safety-backup`，可以在真正覆盖前先输出 restore plan，并默认阻止“直接恢复 pre-restore safety backup”以及“用更旧备份覆盖更新的 authority.sqlite”；现在 restore plan 还会检查 `schemaVersion`，默认阻止恢复来自更高 schema 版本的备份，并对 legacy / 旧 schema 备份给出显式 warning；authority server 启动时也会开始写入 `schemaVersion` metadata，给后续 migration 留出稳定基线；`authority:preflight` 已不再只是 ready/blocked 二元检查，而是会在“数据库已存在但缺 schemaVersion metadata”、“数据库已存在但还没有标准备份”或“标准备份过旧”时返回 `degraded`，并在 `npm run dev` 与 `npm run authority:start` 里开始实际运行。现在这些结论已经回推到 Settings Doctor 和 Connect 探测卡片里，页面也能直接看到 `schema version`、backup inventory、doctor / preflight 状态和最小修复提示。当前下一步是继续补更正式的 migration / restore 闭环。
 
-当前不是主施工焦点、但仍保持开放的 `in_progress` 阶段：
+当前不是主施工焦点、但仍保持开放的 `stabilizing` 阶段：
 
 - `Phase 1`
   原因：Doctor 基线已落，但启动体检、异常分型、修复建议闭环还没完全收口。
 - `Phase 2`
   原因：主链 command 已落，但 `/runtime` 兼容路径还没完全退居恢复通道。
+- `Phase 3`
+  原因：关键对象稳态化和 operator audit 已经做了大半，但 audit 规则还没完全收口成关闭状态。
+
+## 2.2 关闭标准
+
+V1 的阶段不允许长期停留在 `stabilizing`。
+
+从当前版本开始，阶段关闭规则固定为：
+
+1. 当前阶段的主目标已经完成
+2. 当前阶段对应的关键验证已经跑通
+3. 文档里的“当前已落地切片”和“剩余项”已经同步
+4. 剩余工作如果已经明显属于下一轮，必须拆到新的切片，而不是继续把当前阶段挂着
+
+执行约束：
+
+- 同时只保留一个 `active`
+- `stabilizing` 只允许作为短暂收尾态存在
+- 如果某个 `stabilizing` 阶段在后续 1 个当前施工切片里没有被继续推进或拆分，就应该优先整理并推动关单
 
 ## 3. 当前已落地的切片
 
@@ -87,11 +113,41 @@ V1 不覆盖这些方向：
 - `CEO 首页` 与 `运营报表` 已共享 `ExecutiveSummaryStrip`
 - `Requirement Center` 与 `Board` 已切到中性 `requirement-execution-projection`，不再由需求中心直接依赖 board 命名的 builder
 - 已补 `docs/v1-phase3-authority-object-boundaries.md`，把 `RequirementAggregate / RequirementRoom / Dispatch / Artifact / DecisionTicket` 的字段分层、revision 和 command 边界写成正式设计稿
+- `RequirementRoom / Dispatch / Artifact / DecisionTicket` 已补 revision baseline，authority snapshot / runtime normalizer / persistence / authority-backed 测试都已跟上
+- `DecisionTicket` 已开始走 `decision.upsert` / `decision.delete` authority command，不再只靠本地 `upsertDecisionTicketRecord` 改状态
+- `Requirement Center` 与 `Chat` 里的决策动作已经改走显式 `decision.resolve`，不再把“做决定”混成 generic upsert
+- `Authority loadRuntime()` 不再在主读路径里自动 `saveRuntime()`；repair 改成显式 `repairRuntimeIfNeeded()`，并在启动时统一执行一次
+- `decision.resolve / decision.cancel` 已开始写入 authority company event log，记录 `ticketId / decisionType / status / resolution / resolutionOptionId / revision`
+- `decision.upsert / delete` 已开始写入 `decision_record_upserted / decision_record_deleted`
+- `dispatch.create / delete` 已开始写入 `dispatch_record_upserted / dispatch_record_deleted`
+- `room.append / delete` 已开始写入 `room_record_upserted / room_record_deleted`
+- `room-bindings.upsert` 已开始写入 `room_bindings_upserted`
+- `artifact.upsert / delete / sync-mirror` 已开始写入 `artifact_record_upserted / artifact_record_deleted / artifact_mirror_synced`
+- 显式 `repairRuntimeIfNeeded()` 已开始写入 `runtime_repaired`
+- `companyOpsEngine` 已开始为自治引擎生成或收走的 `support request / escalation / decision` 写入 `ops_cycle_applied`、对应的 `*_record_upserted`，以及 `support_request_record_deleted / escalation_record_deleted / decision_record_deleted`
+- `requirement_*` workflow event 的 payload 已开始带 `source / changedFields / previousAggregateId / previousOwner* / previousRoomId / previousRevision`
+- 已新增 `authority:doctor` CLI，可直接体检本地 authority SQLite 的公司数、runtime 数、event 数、active company 和 executor state
+- 已新增 `authority:backup` CLI，可直接生成本地 authority SQLite 备份文件，并支持最小 retention
+- 已新增 `authority:backups` CLI，可直接列出当前备份清单
+- 已新增 `authority:restore` CLI，可从备份文件恢复 authority SQLite，并自动留下 `pre-restore` safety backup
+- `authority:restore` 已支持 `--latest`，恢复时不再需要先手工找备份路径
+- `authority:restore` 已支持 `--plan / --force / --allow-safety-backup`，恢复前会默认阻止高风险回滚
+- authority 已开始写入 `schemaVersion` metadata，doctor / preflight / restore plan 也开始显式显示 schema version
+- 已新增 `authority:migrate` CLI，开始显式回填老库缺失的 `schemaVersion` metadata
+- restore plan 已开始阻止恢复来自更高 schema 版本的备份，并对 legacy / 旧 schema 备份给出提示
+- 已新增 `authority:preflight` CLI，可在启动前检查 authority data dir / backup dir / db path
+- `authority:preflight` 已开始区分 `ready / degraded / blocked`，会把“已有数据库但缺 schema metadata”、“已有数据库但没备份”或“备份太旧”标成真实风险
+- `npm run dev` 与 `npm run authority:start` 已开始在启动 authority 前执行 `authority:preflight`
+- Settings Doctor 已开始直接显示 authority schema version、backup inventory、company/runtime/event 计数和 preflight 结果
+- Connect 已开始在失败前后探测 Authority `/health`，并显示控制面可达性、schema version、备份状态和最小修复提示
 
 仍然保留：
 
 - `/runtime` 兼容同步路径仍开启
 - Authority Doctor 仍然是“设置页基线版”，还不是完整的修复工具
+- backup / restore 已经具备最小可用路径，retention、restore guardrail 和 schema/version 基线也已有第一版，但还没有更正式的 migration / restore 闭环
+- startup preflight 已经能识别备份缺失/过旧，但还没有自动 remediation 或更强的恢复保护
+- Settings / Connect 已经能看见 authority operator tooling 的关键结论，但还没有直接在页面里触发 backup / restore
 - `Board` 与 `Ops` 虽然已经开始分层，但更深的共享摘要模块和更彻底的页面裁剪还可以继续收口
 
 ## 4. 阶段出口
@@ -112,7 +168,7 @@ V1 不覆盖这些方向：
 
 - `RequirementAggregate` 的权威字段和派生字段写清楚
 - `Dispatch` / `DecisionTicket` / `Artifact` / `RequirementRoom` 的边界更稳定
-- Phase 3 设计稿已经落地，下一步进入类型、持久化和 command 切片实现
+- Phase 3 设计稿、Slice A-1 和 Slice A-2 的第一批命令已落地，主读路径的 read-repair 也已经拆出，第一批 decision / dispatch / room / binding / artifact / repair / company-ops 审计事件也开始进入 company event log，而且 `companyOpsEngine` 已开始补齐 `support request / escalation / decision` 的 upsert/delete 生命周期；`requirement_*` workflow event 也开始自带更完整的推进上下文。下一步主要是 audit 规则继续扩面
 
 ### Phase 4
 

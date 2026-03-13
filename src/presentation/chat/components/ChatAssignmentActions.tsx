@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import { Users } from "lucide-react";
+import { appendOperatorActionAuditEvent } from "../../../application/governance/operator-action-audit";
 import { buildRequirementRoomRouteFromCompanyContext } from "../../../application/delegation/room-routing";
 import { inferMissionTopicKey, inferRequestTopicKey } from "../../../application/delegation/request-topic";
 import { readConversationWorkspaceState } from "../../../application/mission";
@@ -74,11 +75,12 @@ export const ChatAssignmentActions = memo(function ChatAssignmentActions(input: 
           <button
             type="button"
             onClick={() => {
+              const topic = resolveTaskTitle(input.messageText, "任务小组");
               const groupRoute = buildRequirementRoomRouteFromCompanyContext({
                 companyId,
                 employees: input.employees,
                 memberIds: actionSurface.employees.map((member) => member.agentId),
-                topic: resolveTaskTitle(input.messageText, "任务小组"),
+                topic,
                 topicKey:
                   input.currentConversationRequirementTopicKey ??
                   input.requirementOverviewTopicKey ??
@@ -93,8 +95,31 @@ export const ChatAssignmentActions = memo(function ChatAssignmentActions(input: 
                 existingRooms: readConversationWorkspaceState().activeRoomRecords,
               });
               if (groupRoute) {
+                void appendOperatorActionAuditEvent({
+                  companyId,
+                  action: "group_chat_route_open",
+                  surface: "chat",
+                  outcome: "succeeded",
+                  details: {
+                    memberCount: actionSurface.employees.length,
+                    topicPreview: topic.slice(0, 48),
+                    route: groupRoute,
+                  },
+                });
                 input.onNavigateToRoute(groupRoute);
+                return;
               }
+              void appendOperatorActionAuditEvent({
+                companyId,
+                action: "group_chat_route_open",
+                surface: "chat",
+                outcome: "failed",
+                error: "没有生成有效的需求团队房间。",
+                details: {
+                  memberCount: actionSurface.employees.length,
+                  topicPreview: topic.slice(0, 48),
+                },
+              });
             }}
             className="group/btn flex items-center gap-1.5 rounded-lg border border-emerald-100 bg-white px-2 py-1.5 shadow-sm transition-all hover:border-emerald-300 hover:bg-emerald-50"
           >

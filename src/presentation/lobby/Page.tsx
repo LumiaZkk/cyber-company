@@ -156,6 +156,7 @@ function CompanyLobbyPageContent({
     updateRoleDialogOpen,
     updateRoleInitial,
   } = useLobbyPageState({
+    activeCompanyId: activeCompany.id,
     commands: {
       buildBlueprintText,
       syncKnowledge,
@@ -186,6 +187,14 @@ function CompanyLobbyPageContent({
         </Badge>
       );
     }
+    if (status === "no_signal") {
+      return (
+        <Badge variant="outline" className="bg-violet-500/10 text-violet-600 border-violet-500/20">
+          <div className="w-1.5 h-1.5 rounded-full bg-violet-500 mr-1.5" />
+          无信号
+        </Badge>
+      );
+    }
     return (
       <Badge variant="outline" className="bg-slate-500/10 text-slate-500 border-slate-500/20">
         <div className="w-1.5 h-1.5 rounded-full bg-slate-500 mr-1.5" />
@@ -209,6 +218,7 @@ function CompanyLobbyPageContent({
         canOpenRequirementCenter={Boolean(requirementOverview || primaryWorkItem)}
         onOpenRequirementCenter={() => navigate("/requirement")}
         onOpenBoard={() => navigate("/board")}
+        onOpenRuntimeInspector={() => navigate("/runtime")}
         onContactCeo={() => ceoEmployee && navigate(`/chat/${ceoEmployee.agentId}`)}
       />
 

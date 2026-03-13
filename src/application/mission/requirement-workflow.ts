@@ -3,6 +3,10 @@ import type {
   RequirementEvidenceEvent,
 } from "../../domain/mission/types";
 
+type RequirementWorkflowChanges = Partial<
+  Omit<RequirementAggregateRecord, "id" | "companyId" | "primary" | "revision">
+>;
+
 export type RequirementWorkflowEventKind =
   | "requirement_seeded"
   | "requirement_promoted"
@@ -60,8 +64,17 @@ export function resolveRequirementWorkflowEventKind(input: {
 export function buildRequirementWorkflowEvidencePayload(input: {
   previousAggregate: RequirementAggregateRecord | null;
   nextAggregate: RequirementAggregateRecord;
+  source?: RequirementEvidenceEvent["source"];
+  changes?: RequirementWorkflowChanges | null;
 }) {
   const { previousAggregate, nextAggregate } = input;
+  const explicitChangedFields = Object.keys(input.changes ?? {}).filter(
+    (key) => key !== "updatedAt" && key !== "lastEvidenceAt",
+  );
+  const changedFields = [...new Set([
+    ...explicitChangedFields,
+    ...(previousAggregate?.id !== nextAggregate.id ? ["primaryRequirementId"] : []),
+  ])];
   return {
     ownerActorId: nextAggregate.ownerActorId,
     ownerLabel: nextAggregate.ownerLabel,
@@ -77,6 +90,13 @@ export function buildRequirementWorkflowEvidencePayload(input: {
     workItemId: nextAggregate.workItemId,
     topicKey: nextAggregate.topicKey,
     roomId: nextAggregate.roomId,
+    source: input.source ?? null,
+    changedFields,
+    previousAggregateId: previousAggregate?.id ?? null,
+    previousOwnerActorId: previousAggregate?.ownerActorId ?? null,
+    previousOwnerLabel: previousAggregate?.ownerLabel ?? null,
+    previousRoomId: previousAggregate?.roomId ?? null,
+    previousRevision: previousAggregate?.revision ?? null,
     previousStatus: previousAggregate?.status ?? null,
     previousStageGateStatus: previousAggregate?.stageGateStatus ?? null,
     previousAcceptanceStatus: previousAggregate?.acceptanceStatus ?? null,
@@ -91,6 +111,7 @@ export function buildRequirementWorkflowEvidence(input: {
   actorId?: string | null;
   timestamp: number;
   source?: RequirementEvidenceEvent["source"];
+  changes?: RequirementWorkflowChanges | null;
 }): RequirementEvidenceEvent {
   return {
     id: `local:${input.aggregate.id}:${input.eventType}:${input.aggregate.revision}`,
@@ -104,6 +125,8 @@ export function buildRequirementWorkflowEvidence(input: {
     payload: buildRequirementWorkflowEvidencePayload({
       previousAggregate: input.previousAggregate,
       nextAggregate: input.aggregate,
+      source: input.source,
+      changes: input.changes,
     }),
     applied: true,
   };

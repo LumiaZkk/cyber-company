@@ -8,6 +8,7 @@ export function useChatSessionContext(input: BuildChatSessionContextInput) {
   const {
     activeCompany,
     activeConversationState,
+    activeAgentRuntime,
     activeRequirementRoom,
     activeRoomBindings,
     activeRoomRecords,
@@ -40,6 +41,7 @@ export function useChatSessionContext(input: BuildChatSessionContextInput) {
       buildChatSessionContext({
         activeCompany,
         activeConversationState,
+        activeAgentRuntime,
         activeRequirementRoom,
         activeRoomBindings,
         activeRoomRecords,
@@ -69,6 +71,7 @@ export function useChatSessionContext(input: BuildChatSessionContextInput) {
     [
       activeCompany,
       activeConversationState,
+      activeAgentRuntime,
       activeRequirementRoom,
       activeRoomBindings,
       activeRoomRecords,

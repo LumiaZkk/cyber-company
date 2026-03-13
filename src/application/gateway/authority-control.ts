@@ -4,7 +4,9 @@ import type {
   AuthorityArtifactDeleteRequest,
   AuthorityArtifactMirrorSyncRequest,
   AuthorityArtifactUpsertRequest,
+  AuthorityDecisionTicketCancelRequest,
   AuthorityDecisionTicketDeleteRequest,
+  AuthorityDecisionTicketResolveRequest,
   AuthorityDecisionTicketUpsertRequest,
   AuthorityDispatchUpsertRequest,
   AuthorityDispatchDeleteRequest,
@@ -112,6 +114,14 @@ export function upsertAuthorityDecisionTicket(input: AuthorityDecisionTicketUpse
 
 export function deleteAuthorityDecisionTicket(input: AuthorityDecisionTicketDeleteRequest) {
   return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.decision.delete", input);
+}
+
+export function resolveAuthorityDecisionTicket(input: AuthorityDecisionTicketResolveRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.decision.resolve", input);
+}
+
+export function cancelAuthorityDecisionTicket(input: AuthorityDecisionTicketCancelRequest) {
+  return gateway.request<AuthorityCompanyRuntimeSnapshot>("authority.decision.cancel", input);
 }
 
 export function getAuthorityExecutorConfig() {

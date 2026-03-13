@@ -36,6 +36,8 @@ const DEFAULT_COMMAND_ROUTES = [
   "artifact.delete",
   "decision.upsert",
   "decision.delete",
+  "decision.resolve",
+  "decision.cancel",
 ];
 
 export function buildAuthorityRuntimeSignature(snapshot: AuthorityCompanyRuntimeSnapshot) {

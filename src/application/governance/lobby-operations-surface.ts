@@ -6,6 +6,12 @@ import {
 } from "./company-insights";
 import { summarizeRequestHealth } from "../delegation/request-health";
 import {
+  type CanonicalAgentStatusRecord,
+  mapAgentRuntimeAvailabilityToLegacyStatus,
+  type AgentSessionRecord,
+  type AgentRuntimeRecord,
+} from "../agent-runtime";
+import {
   isBlockedExecutionState,
   isWaitingExecutionState,
   resolveExecutionState,
@@ -40,7 +46,7 @@ export type LobbyUnifiedStreamItem = {
 };
 
 export type LobbyEmployeeCardData = EmployeeRef & {
-  status: "running" | "idle" | "stopped";
+  status: "running" | "idle" | "no_signal" | "stopped";
   realName: string;
   skills: string[];
   lastActiveAt: number;
@@ -136,6 +142,9 @@ function buildEmployeeFocusSummary(input: {
 
 type LobbyOperationsSurfaceInput = {
   activeCompany: Company;
+  activeAgentSessions: AgentSessionRecord[];
+  activeAgentRuntime: AgentRuntimeRecord[];
+  activeAgentStatuses: CanonicalAgentStatusRecord[];
   agentsCache: AgentListEntry[];
   cronCache: CronJob[];
   currentTime: number;
@@ -152,11 +161,41 @@ type LobbyOperationsSurfaceInput = {
   isStrategicRequirement: boolean;
 };
 
+function isLobbySessionActive(params: {
+  session: GatewaySessionRow & { agentId: string };
+  currentTime: number;
+  runtimeByAgentId: Map<string, AgentRuntimeRecord>;
+  sessionRuntimeByKey: Map<string, AgentSessionRecord>;
+}): boolean {
+  const { session, currentTime, runtimeByAgentId, sessionRuntimeByKey } = params;
+  const sessionRuntime = sessionRuntimeByKey.get(session.key);
+  if (sessionRuntime) {
+    return sessionRuntime.sessionState === "running" || sessionRuntime.sessionState === "streaming";
+  }
+
+  const agentRuntime = runtimeByAgentId.get(session.agentId);
+  if (!agentRuntime) {
+    return isSessionActive(session, currentTime);
+  }
+  if (agentRuntime.activeSessionKeys.includes(session.key)) {
+    return true;
+  }
+  if (agentRuntime.availability === "no_signal") {
+    return isSessionActive(session, currentTime);
+  }
+  if (agentRuntime.availability === "busy" && agentRuntime.activeSessionKeys.length === 0) {
+    return isSessionActive(session, currentTime);
+  }
+  return false;
+}
+
 export function buildLobbyOperationsSurface(
   input: LobbyOperationsSurfaceInput,
 ): LobbyOperationsSurface {
   const {
     activeCompany,
+    activeAgentSessions,
+    activeAgentRuntime,
     agentsCache,
     cronCache,
     currentTime,
@@ -172,30 +211,63 @@ export function buildLobbyOperationsSurface(
     primaryWorkItem,
     isStrategicRequirement,
   } = input;
+  const runtimeByAgentId = new Map(activeAgentRuntime.map((runtime) => [runtime.agentId, runtime]));
+  const canonicalStatusByAgentId = new Map(
+    input.activeAgentStatuses.map((status) => [status.agentId, status] as const),
+  );
+  const sessionRuntimeByKey = new Map(
+    activeAgentSessions.map((session) => [session.sessionKey, session] as const),
+  );
 
   const employeesData = activeCompany.employees.map((employee) => {
     const liveAgent = agentsCache.find((agent) => agent.id === employee.agentId);
     const employeeSessions = sessionsByAgent.get(employee.agentId) ?? [];
+    const agentRuntime = runtimeByAgentId.get(employee.agentId) ?? null;
+    const canonicalStatus = canonicalStatusByAgentId.get(employee.agentId) ?? null;
     const lastActiveAt = employeeSessions.reduce(
       (latest, session) => Math.max(latest, resolveSessionUpdatedAt(session)),
       0,
     );
-    const status: LobbyEmployeeCardData["status"] = employeeSessions.some((session) =>
-      isSessionActive(session, currentTime),
-    )
-      ? "running"
-      : lastActiveAt > 0 || Boolean(liveAgent)
-        ? "idle"
-        : "stopped";
+    const runtimeLastActiveAt = Math.max(
+      agentRuntime?.lastSeenAt ?? 0,
+      agentRuntime?.lastBusyAt ?? 0,
+      agentRuntime?.lastIdleAt ?? 0,
+    );
+    const status: LobbyEmployeeCardData["status"] = canonicalStatus
+      ? canonicalStatus.runtimeState === "busy"
+        ? "running"
+        : canonicalStatus.runtimeState === "no_signal"
+          ? "no_signal"
+          : canonicalStatus.runtimeState === "offline"
+            ? "stopped"
+            : "idle"
+      : agentRuntime
+        ? mapAgentRuntimeAvailabilityToLegacyStatus(agentRuntime.availability)
+      : employeeSessions.some((session) =>
+          isLobbySessionActive({
+            session,
+            currentTime,
+            runtimeByAgentId,
+            sessionRuntimeByKey,
+          }),
+        )
+        ? "running"
+        : lastActiveAt > 0 || Boolean(liveAgent)
+          ? "idle"
+          : "stopped";
     const latestSession = employeeSessions[0];
     const resolvedExecution =
       (latestSession
         ? sessionExecutions.get(latestSession.key) ??
           resolveExecutionState({
+            agentRuntime,
+            canonicalStatus,
             session: latestSession,
             now: currentTime,
           })
         : resolveExecutionState({
+            agentRuntime,
+            canonicalStatus,
             fallbackState: status === "stopped" ? "unknown" : "idle",
           }));
     const focusSummary = buildEmployeeFocusSummary({
@@ -216,7 +288,7 @@ export function buildLobbyOperationsSurface(
       status,
       realName: liveAgent?.name || `NO.${employee.agentId.slice(0, 8).toUpperCase()}`,
       skills: liveAgent?.identity?.theme ? [] : ((employee as { skills?: string[] }).skills ?? []),
-      lastActiveAt,
+      lastActiveAt: Math.max(lastActiveAt, runtimeLastActiveAt),
       execution: resolvedExecution,
       focusSummary,
     };
@@ -236,8 +308,23 @@ export function buildLobbyOperationsSurface(
   const scopedSessions = requirementScope
     ? companySessions.filter((session) => requirementParticipantAgentIds.has(session.agentId))
     : companySessions;
-  const activeSessions = scopedSessions.filter((session) => isSessionActive(session, currentTime));
-  const completedSessions = scopedSessions.filter((session) => !isSessionActive(session, currentTime));
+  const activeSessions = scopedSessions.filter((session) =>
+    isLobbySessionActive({
+      session,
+      currentTime,
+      runtimeByAgentId,
+      sessionRuntimeByKey,
+    }),
+  );
+  const completedSessions = scopedSessions.filter(
+    (session) =>
+      !isLobbySessionActive({
+        session,
+        currentTime,
+        runtimeByAgentId,
+        sessionRuntimeByKey,
+      }),
+  );
 
   const unifiedStream: LobbyUnifiedStreamItem[] = [
     ...scopedSessions.map((session) => {
@@ -270,7 +357,12 @@ export function buildLobbyOperationsSurface(
         type: "session" as const,
         timestamp: resolveSessionUpdatedAt(session),
         employee,
-        active: isSessionActive(session, currentTime),
+        active: isLobbySessionActive({
+          session,
+          currentTime,
+          runtimeByAgentId,
+          sessionRuntimeByKey,
+        }),
         title: resolveSessionTitle(session),
         preview: session.lastMessagePreview,
         execution,
@@ -330,6 +422,7 @@ export function buildLobbyOperationsSurface(
   const employeeInsights = buildEmployeeOperationalInsights({
     company: activeCompany,
     sessions: companySessions,
+    activeAgentRuntime,
     now: currentTime,
   });
   const outcomeReport = buildOutcomeReport({

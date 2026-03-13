@@ -30,7 +30,28 @@ export type WorkflowEventKind =
   | "requirement_accepted"
   | "requirement_reopened";
 
-export type CompanyEventKind = DelegationEventKind | WorkflowEventKind;
+export type GovernanceEventKind =
+  | "ops_cycle_applied"
+  | "operator_action_recorded"
+  | "support_request_record_upserted"
+  | "support_request_record_deleted"
+  | "escalation_record_upserted"
+  | "escalation_record_deleted"
+  | "decision_record_upserted"
+  | "decision_record_deleted"
+  | "decision_resolved"
+  | "decision_cancelled"
+  | "dispatch_record_upserted"
+  | "dispatch_record_deleted"
+  | "room_record_upserted"
+  | "room_record_deleted"
+  | "room_bindings_upserted"
+  | "artifact_record_upserted"
+  | "artifact_record_deleted"
+  | "artifact_mirror_synced"
+  | "runtime_repaired";
+
+export type CompanyEventKind = DelegationEventKind | WorkflowEventKind | GovernanceEventKind;
 
 export type DelegationEvent = {
   eventId: string;

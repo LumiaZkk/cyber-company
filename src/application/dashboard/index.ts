@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { mapAgentRuntimeAvailabilityToLegacyStatus } from "../agent-runtime";
 import { resolveCompanyKnowledge } from "../artifact/shared-knowledge";
 import { attributeUsageSessionsToCompany } from "../company/usage-attribution";
 import { gateway, type AgentListEntry, type CostUsageSummary, type GatewaySessionRow } from "../gateway";
@@ -27,7 +28,7 @@ type AttributedUsage = {
 };
 
 export function useDashboardViewModel() {
-  const { activeCompany } = useOrgQuery();
+  const { activeCompany, activeAgentSessions, activeAgentRuntime } = useOrgQuery();
   const { updateCompany } = useOrgApp();
   const [agents, setAgents] = useState<AgentListEntry[]>([]);
   const [sessions, setSessions] = useState<GatewaySessionRow[]>([]);
@@ -162,8 +163,27 @@ export function useDashboardViewModel() {
         return typeof session.agentId === "string" && companyAgentIds.has(session.agentId);
       });
 
-    const activeSessions = companySessions.filter((session) => isSessionActive(session, currentTime));
-    const runningAgentIds = new Set(activeSessions.map((session) => session.agentId));
+    const sessionRuntimeByKey = new Map(
+      activeAgentSessions.map((session) => [session.sessionKey, session] as const),
+    );
+    const activeRuntimeSessionKeys = new Set(
+      activeAgentRuntime.flatMap((runtime) => runtime.activeSessionKeys),
+    );
+    const activeSessions = companySessions.filter((session) => {
+      const sessionRuntime = sessionRuntimeByKey.get(session.key);
+      if (sessionRuntime) {
+        return sessionRuntime.sessionState === "running" || sessionRuntime.sessionState === "streaming";
+      }
+      if (activeRuntimeSessionKeys.has(session.key)) {
+        return true;
+      }
+      return isSessionActive(session, currentTime);
+    });
+    const runningAgentIds = new Set(
+      activeAgentRuntime
+        .filter((runtime) => mapAgentRuntimeAvailabilityToLegacyStatus(runtime.availability) === "running")
+        .map((runtime) => runtime.agentId),
+    );
     const runningAgents = activeCompany.employees.filter((employee) =>
       runningAgentIds.has(employee.agentId),
     );
@@ -215,6 +235,7 @@ export function useDashboardViewModel() {
         knowledgeItems: companyKnowledge,
       },
       sessions: companySessions,
+      activeAgentRuntime,
       now: currentTime,
     });
     const outcomeReport = buildOutcomeReport({
@@ -256,6 +277,8 @@ export function useDashboardViewModel() {
     };
   }, [
     activeCompany,
+    activeAgentSessions,
+    activeAgentRuntime,
     agents,
     companyUsage,
     companyUsageError,

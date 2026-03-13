@@ -107,6 +107,8 @@ function buildWorkspaceAppInventory(company: Company) {
     kind: app.kind,
     status: app.status,
     ownerAgentId: app.ownerAgentId ?? null,
+    surface: app.surface ?? null,
+    template: app.template ?? null,
   }));
 }
 

@@ -1,5 +1,7 @@
 import {
+  cancelAuthorityDecisionTicket,
   deleteAuthorityDecisionTicket,
+  resolveAuthorityDecisionTicket,
   upsertAuthorityDecisionTicket,
 } from "../../../application/gateway/authority-control";
 import type { CompanyRuntimeState } from "./types";
@@ -56,6 +58,8 @@ export function buildAutonomyActions(
   | "replaceEscalationRecords"
   | "deleteEscalationRecord"
   | "upsertDecisionTicketRecord"
+  | "resolveDecisionTicket"
+  | "cancelDecisionTicket"
   | "replaceDecisionTicketRecords"
   | "deleteDecisionTicketRecord"
 > {
@@ -167,6 +171,119 @@ export function buildAutonomyActions(
       }
       const next = upsertRecord(activeDecisionTickets, {
         ...normalizedTicket,
+      });
+      if (!next) {
+        return;
+      }
+      set({
+        activeDecisionTickets: next,
+        activeCompany: activeCompany
+          ? {
+              ...activeCompany,
+              decisionTickets: next.filter((item) => item.status === "open" || item.status === "pending_human"),
+            }
+          : activeCompany,
+      });
+    },
+
+    resolveDecisionTicket: ({ ticketId, optionId, resolution, timestamp }) => {
+      const { activeDecisionTickets, activeCompany, authorityBackedState } = get();
+      const existing = activeDecisionTickets.find((ticket) => ticket.id === ticketId) ?? null;
+      if (!existing) {
+        return;
+      }
+      const option =
+        optionId != null
+          ? existing.options.find((candidate) => candidate.id === optionId) ?? null
+          : null;
+      const updatedAt = timestamp ?? Date.now();
+      if (authorityBackedState && activeCompany) {
+        void resolveAuthorityDecisionTicket({
+          companyId: activeCompany.id,
+          ticketId,
+          optionId: option?.id ?? optionId ?? null,
+          resolution: resolution ?? option?.summary ?? option?.label ?? existing.resolution ?? null,
+          timestamp: updatedAt,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "decision.resolve",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to resolve decision ticket through authority",
+            });
+          });
+        return;
+      }
+      const next = upsertRecord(activeDecisionTickets, {
+        ...existing,
+        status: "resolved",
+        resolutionOptionId: option?.id ?? optionId ?? null,
+        resolution: resolution ?? option?.summary ?? option?.label ?? existing.resolution ?? null,
+        revision: normalizeRevision(existing.revision) + 1,
+        updatedAt,
+      });
+      if (!next) {
+        return;
+      }
+      set({
+        activeDecisionTickets: next,
+        activeCompany: activeCompany
+          ? {
+              ...activeCompany,
+              decisionTickets: next.filter((item) => item.status === "open" || item.status === "pending_human"),
+            }
+          : activeCompany,
+      });
+    },
+
+    cancelDecisionTicket: ({ ticketId, resolution, timestamp }) => {
+      const { activeDecisionTickets, activeCompany, authorityBackedState } = get();
+      const existing = activeDecisionTickets.find((ticket) => ticket.id === ticketId) ?? null;
+      if (!existing) {
+        return;
+      }
+      const updatedAt = timestamp ?? Date.now();
+      if (authorityBackedState && activeCompany) {
+        void cancelAuthorityDecisionTicket({
+          companyId: activeCompany.id,
+          ticketId,
+          resolution: resolution ?? existing.resolution ?? null,
+          timestamp: updatedAt,
+        })
+          .then((snapshot) => {
+            applyAuthorityRuntimeSnapshotToStore({
+              operation: "command",
+              snapshot,
+              route: "decision.cancel",
+              set,
+              get,
+            });
+          })
+          .catch((error) => {
+            applyAuthorityRuntimeCommandError({
+              error,
+              set,
+              fallbackMessage: "Failed to cancel decision ticket through authority",
+            });
+          });
+        return;
+      }
+      const next = upsertRecord(activeDecisionTickets, {
+        ...existing,
+        status: "cancelled",
+        resolution: resolution ?? existing.resolution ?? null,
+        resolutionOptionId: null,
+        revision: normalizeRevision(existing.revision) + 1,
+        updatedAt,
       });
       if (!next) {
         return;

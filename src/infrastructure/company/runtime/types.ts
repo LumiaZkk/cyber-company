@@ -1,5 +1,11 @@
 import type { ArtifactRecord, SharedKnowledgeItem } from "../../../domain/artifact/types";
 import type {
+  CanonicalAgentStatusRecord,
+  AgentRunRecord,
+  AgentRuntimeRecord,
+  AgentSessionRecord,
+} from "../../../application/agent-runtime";
+import type {
   DecisionTicketRecord,
   DispatchRecord,
   EscalationRecord,
@@ -22,6 +28,12 @@ import type {
 import type { Company, CyberCompanyConfig } from "../../../domain/org/types";
 
 export type { ArtifactRecord, SharedKnowledgeItem } from "../../../domain/artifact/types";
+export type {
+  CanonicalAgentStatusRecord,
+  AgentRunRecord,
+  AgentRuntimeRecord,
+  AgentSessionRecord,
+} from "../../../application/agent-runtime";
 export type {
   DecisionTicketRecord,
   DispatchRecord,
@@ -64,6 +76,10 @@ export interface CompanyRuntimeState {
   activeSupportRequests: SupportRequestRecord[];
   activeEscalations: EscalationRecord[];
   activeDecisionTickets: DecisionTicketRecord[];
+  activeAgentSessions: AgentSessionRecord[];
+  activeAgentRuns: AgentRunRecord[];
+  activeAgentRuntime: AgentRuntimeRecord[];
+  activeAgentStatuses: CanonicalAgentStatusRecord[];
   loading: boolean;
   error: string | null;
   bootstrapPhase: CompanyBootstrapPhase;
@@ -82,9 +98,24 @@ export interface CompanyRuntimeState {
   replaceEscalationRecords: (escalations: EscalationRecord[]) => void;
   deleteEscalationRecord: (escalationId: string) => void;
   upsertDecisionTicketRecord: (ticket: DecisionTicketRecord) => void;
+  resolveDecisionTicket: (input: {
+    ticketId: string;
+    optionId?: string | null;
+    resolution?: string | null;
+    timestamp?: number;
+  }) => void;
+  cancelDecisionTicket: (input: {
+    ticketId: string;
+    resolution?: string | null;
+    timestamp?: number;
+  }) => void;
   replaceDecisionTicketRecords: (tickets: DecisionTicketRecord[]) => void;
   deleteDecisionTicketRecord: (ticketId: string) => void;
   upsertKnowledgeItem: (knowledgeItem: SharedKnowledgeItem) => Promise<void>;
+  upsertSkillDefinition: (skill: CompanySkillDefinition) => Promise<void>;
+  upsertSkillRun: (skillRun: CompanySkillRun) => Promise<void>;
+  upsertCapabilityRequest: (request: CompanyCapabilityRequest) => Promise<void>;
+  upsertCapabilityIssue: (issue: CompanyCapabilityIssue) => Promise<void>;
   upsertRoomRecord: (room: RequirementRoomRecord) => void;
   appendRoomMessages: (
     roomId: string,
@@ -131,3 +162,8 @@ export interface CompanyRuntimeState {
 
 export type RuntimeSet = (partial: Partial<CompanyRuntimeState>) => void;
 export type RuntimeGet = () => CompanyRuntimeState;
+
+type CompanySkillDefinition = NonNullable<Company["skillDefinitions"]>[number];
+type CompanySkillRun = NonNullable<Company["skillRuns"]>[number];
+type CompanyCapabilityRequest = NonNullable<Company["capabilityRequests"]>[number];
+type CompanyCapabilityIssue = NonNullable<Company["capabilityIssues"]>[number];

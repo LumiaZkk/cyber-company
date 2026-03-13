@@ -101,6 +101,7 @@ export function ChatPageScreen() {
     activeRoundRecords,
     activeDispatches,
     activeRoomBindings,
+    activeAgentRuntime,
     updateCompany,
     upsertTask,
     upsertHandoff,
@@ -116,7 +117,7 @@ export function ChatPageScreen() {
     setConversationDraftRequirement,
     clearConversationState,
     upsertWorkItemRecord,
-    upsertDecisionTicketRecord,
+    resolveDecisionTicket,
     upsertDispatchRecord,
     replaceDispatchRecords,
   } = useChatWorkspaceViewModel();
@@ -423,6 +424,7 @@ export function ChatPageScreen() {
   } = useChatSessionContext({
     activeCompany,
     activeConversationState,
+    activeAgentRuntime,
     activeRequirementRoom,
     activeRoomBindings,
     activeRoomRecords,
@@ -1574,12 +1576,11 @@ export function ChatPageScreen() {
       }
       const timestamp = Date.now();
       setDecisionSubmittingOptionId(optionId);
-      upsertDecisionTicketRecord({
-        ...openRequirementDecisionTicket,
-        status: "resolved",
-        resolutionOptionId: option.id,
+      resolveDecisionTicket({
+        ticketId: openRequirementDecisionTicket.id,
+        optionId: option.id,
         resolution: option.summary ?? option.label,
-        updatedAt: timestamp,
+        timestamp,
       });
       const resolutionMessage = buildRequirementDecisionResolutionMessage({
         ticket: openRequirementDecisionTicket,
@@ -1593,7 +1594,7 @@ export function ChatPageScreen() {
       }
       setDecisionSubmittingOptionId(null);
     },
-    [handleSend, openRequirementDecisionTicket, upsertDecisionTicketRecord],
+    [handleSend, openRequirementDecisionTicket, resolveDecisionTicket],
   );
 
   if (loading) {

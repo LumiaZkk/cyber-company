@@ -254,6 +254,10 @@ export function runtimeStateFromAuthorityRuntimeSnapshot(
   | "activeSupportRequests"
   | "activeEscalations"
   | "activeDecisionTickets"
+  | "activeAgentSessions"
+  | "activeAgentRuns"
+  | "activeAgentRuntime"
+  | "activeAgentStatuses"
 > {
   const companyId = runtime?.companyId ?? null;
   const activeWorkItems = runtime ? sanitizeWorkItemRecords(runtime.activeWorkItems ?? []) : [];
@@ -303,6 +307,10 @@ export function runtimeStateFromAuthorityRuntimeSnapshot(
     activeSupportRequests: runtime?.activeSupportRequests ?? [],
     activeEscalations: runtime?.activeEscalations ?? [],
     activeDecisionTickets: runtime?.activeDecisionTickets ?? [],
+    activeAgentSessions: runtime?.activeAgentSessions ?? [],
+    activeAgentRuns: runtime?.activeAgentRuns ?? [],
+    activeAgentRuntime: runtime?.activeAgentRuntime ?? [],
+    activeAgentStatuses: runtime?.activeAgentStatuses ?? [],
   };
 }
 
@@ -327,6 +335,10 @@ export function runtimeStateFromAuthorityBootstrap(
   | "activeSupportRequests"
   | "activeEscalations"
   | "activeDecisionTickets"
+  | "activeAgentSessions"
+  | "activeAgentRuns"
+  | "activeAgentRuntime"
+  | "activeAgentStatuses"
 > {
   return {
     ...runtimeStateFromAuthorityRuntimeSnapshot(snapshot.runtime),

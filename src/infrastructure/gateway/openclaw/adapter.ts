@@ -8,13 +8,24 @@ import {
   type AgentBackend,
   type ConversationKind,
   type ConversationRef,
+  type ProviderRuntimeEvent,
   type ProviderMessage,
 } from "../runtime/types";
+import {
+  normalizeProviderRuntimeEvent,
+  normalizeProviderSessionStatus,
+} from "../../../application/agent-runtime";
 
 const openClawCapabilities = createBackendCapabilities({
   sessionHistory: true,
   sessionArchives: true,
   sessionArchiveRestore: true,
+  sessionStatus: true,
+  agentLifecycle: true,
+  toolLifecycle: true,
+  processRuntime: false,
+  presence: true,
+  runtimeObservability: true,
   cron: true,
   config: true,
   channelStatus: true,
@@ -312,6 +323,20 @@ class OpenClawBackendAdapter implements AgentBackend {
 
   getStatus() {
     return this.gateway.getStatus();
+  }
+
+  async getSessionStatus(sessionKey: string) {
+    const result = await this.gateway.request("session_status", { sessionKey });
+    return normalizeProviderSessionStatus(this.providerId, sessionKey, result);
+  }
+
+  subscribeAgentRuntime(handler: (event: ProviderRuntimeEvent) => void) {
+    return this.gateway.subscribe("agent", (payload) => {
+      const normalized = normalizeProviderRuntimeEvent(this.providerId, payload);
+      if (normalized) {
+        handler(normalized);
+      }
+    });
   }
 
   getConfigSnapshot() {

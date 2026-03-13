@@ -29,7 +29,9 @@ function artifactMaterialChanged(existing: ArtifactRecord, next: ArtifactRecord)
     (existing.sourcePath ?? null) !== (next.sourcePath ?? null) ||
     (existing.sourceUrl ?? null) !== (next.sourceUrl ?? null) ||
     (existing.summary ?? null) !== (next.summary ?? null) ||
-    (existing.content ?? null) !== (next.content ?? null)
+    (existing.content ?? null) !== (next.content ?? null) ||
+    (existing.resourceType ?? null) !== (next.resourceType ?? null) ||
+    JSON.stringify(existing.resourceTags ?? []) !== JSON.stringify(next.resourceTags ?? [])
   );
 }
 

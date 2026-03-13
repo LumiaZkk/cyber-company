@@ -51,6 +51,9 @@ function BoardPageContent({
   activeRoomRecords,
   activeWorkItems,
   activeArtifacts,
+  activeAgentSessions,
+  activeAgentRuntime,
+  activeAgentStatuses,
   primaryRequirementId,
   replaceDispatchRecords,
   upsertTask,
@@ -76,6 +79,9 @@ function BoardPageContent({
     archivedSessions,
   } = useBoardRuntimeState({
     activeCompany,
+    activeAgentSessions,
+    activeAgentRuntime,
+    activeAgentStatuses,
     activeArtifacts,
     connected,
     isPageVisible,
@@ -243,6 +249,7 @@ function BoardPageContent({
 
   const { recoveringCommunication, handleRecoverCommunication } = useBoardCommunicationSync({
     activeCompany,
+    surface: "board",
     companySessionSnapshots,
     setCompanySessionSnapshots,
     activeArtifacts,

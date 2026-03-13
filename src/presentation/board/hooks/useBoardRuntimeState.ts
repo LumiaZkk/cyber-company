@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import type {
+  CanonicalAgentStatusRecord,
+  AgentRuntimeRecord,
+  AgentSessionRecord,
+} from "../../../application/agent-runtime";
 import { gateway, type ChatMessage, type GatewaySessionRow } from "../../../application/gateway";
 import { readPageSnapshot, writePageSnapshot } from "../../../application/company/page-snapshots";
 import { stripTruthInternalMonologue } from "../../../application/mission/message-truth";
@@ -53,12 +58,24 @@ function extractText(message: ChatMessage): string {
 
 export function useBoardRuntimeState(params: {
   activeCompany: Company;
+  activeAgentSessions: AgentSessionRecord[];
+  activeAgentRuntime: AgentRuntimeRecord[];
+  activeAgentStatuses: CanonicalAgentStatusRecord[];
   activeArtifacts: ArtifactRecord[];
   connected: boolean;
   isPageVisible: boolean;
   supportsAgentFiles: boolean;
 }) {
-  const { activeCompany, activeArtifacts, connected, isPageVisible, supportsAgentFiles } = params;
+  const {
+    activeCompany,
+    activeAgentSessions,
+    activeAgentRuntime,
+    activeAgentStatuses,
+    activeArtifacts,
+    connected,
+    isPageVisible,
+    supportsAgentFiles,
+  } = params;
   const boardSnapshotKey = activeCompany ? `board:${activeCompany.id}` : "board:none";
   const initialBoardSnapshot = readPageSnapshot<BoardPageSnapshot>(boardSnapshotKey);
   const [sessions, setSessions] = useState<GatewaySessionRow[]>(() => initialBoardSnapshot?.sessions ?? []);
@@ -165,6 +182,15 @@ export function useBoardRuntimeState(params: {
         return typeof session.agentId === "string" && companyAgentIds.has(session.agentId);
       }),
   ].sort((left, right) => resolveSessionUpdatedAt(right) - resolveSessionUpdatedAt(left));
+  const agentRuntimeByAgentId = new Map(
+    activeAgentRuntime.map((runtime) => [runtime.agentId, runtime] as const),
+  );
+  const agentStatusByAgentId = new Map(
+    activeAgentStatuses.map((status) => [status.agentId, status] as const),
+  );
+  const sessionRuntimeByKey = new Map(
+    activeAgentSessions.map((session) => [session.sessionKey, session] as const),
+  );
 
   useEffect(() => {
     if (!isPageVisible || sessions.length === 0) {
@@ -182,6 +208,7 @@ export function useBoardRuntimeState(params: {
       const batch = keysToFetch.slice(0, 15);
       const promises = batch.map(async (key) => {
         const session = sessions.find((item) => item.key === key);
+        const sessionActorId = session ? resolveSessionActorId(session) : null;
         try {
           const history = await gateway.getChatHistory(key, 20);
           const messages = history.messages || [];
@@ -190,15 +217,16 @@ export function useBoardRuntimeState(params: {
           const truncatedTopic = topic.length > 120 ? `${topic.slice(0, 120)}...` : topic;
           const evidenceTexts = messages.map(extractText).filter((text): text is string => text.length > 0);
           const execution = resolveExecutionState({
+            agentRuntime: sessionActorId ? agentRuntimeByAgentId.get(sessionActorId) ?? null : null,
+            canonicalStatus: sessionActorId ? agentStatusByAgentId.get(sessionActorId) ?? null : null,
             session,
             evidenceTexts,
             now: Date.now(),
           });
           entries.push([key, { topic: truncatedTopic || "(未检测到任务指令)", msgCount: messages.length }]);
-          const sessionAgentId = session ? resolveSessionActorId(session) : null;
-          if (sessionAgentId) {
+          if (sessionActorId) {
             snapshots.push({
-              agentId: sessionAgentId,
+              agentId: sessionActorId,
               sessionKey: key,
               updatedAt: session ? resolveSessionUpdatedAt(session) : Date.now(),
               messages: createRequirementMessageSnapshots(messages, {
@@ -213,10 +241,9 @@ export function useBoardRuntimeState(params: {
             return next;
           });
           if (execution.state === "manual_takeover_required") {
-            const sessionAgentId = session ? resolveSessionActorId(session) : null;
             const ownerLabel =
-              activeCompany.employees.find((employee) => employee.agentId === sessionAgentId)?.nickname ??
-              sessionAgentId ??
+              activeCompany.employees.find((employee) => employee.agentId === sessionActorId)?.nickname ??
+              sessionActorId ??
               "未知节点";
             const pack = buildManualTakeoverPack({
               messages,
@@ -240,6 +267,8 @@ export function useBoardRuntimeState(params: {
             next.set(
               key,
               resolveExecutionState({
+                agentRuntime: sessionActorId ? agentRuntimeByAgentId.get(sessionActorId) ?? null : null,
+                canonicalStatus: sessionActorId ? agentStatusByAgentId.get(sessionActorId) ?? null : null,
                 session,
                 fallbackState: "unknown",
               }),
@@ -274,7 +303,7 @@ export function useBoardRuntimeState(params: {
       }
     })();
     return () => controller.abort();
-  }, [activeCompany.employees, isPageVisible, sessions]);
+  }, [activeCompany.employees, agentRuntimeByAgentId, agentStatusByAgentId, isPageVisible, sessions]);
 
   useEffect(() => {
     const activeKeys = new Set(sessions.map((session) => session.key));
@@ -306,7 +335,33 @@ export function useBoardRuntimeState(params: {
     return () => clearInterval(timer);
   }, []);
 
-  const activeSessions = companySessions.filter((session) => isSessionActive(session, currentTime));
+  const resolvedSessionStates = new Map(sessionStates);
+  companySessions.forEach((session) => {
+    if (!resolvedSessionStates.has(session.key)) {
+      resolvedSessionStates.set(
+        session.key,
+        resolveExecutionState({
+          agentRuntime: agentRuntimeByAgentId.get(session.agentId) ?? null,
+          canonicalStatus: agentStatusByAgentId.get(session.agentId) ?? null,
+          session,
+          evidenceTexts: [session.lastMessagePreview, session.derivedTitle],
+          now: currentTime,
+        }),
+      );
+    }
+  });
+
+  const activeSessions = companySessions.filter((session) => {
+    const runtime = sessionRuntimeByKey.get(session.key);
+    const canonicalStatus = agentStatusByAgentId.get(session.agentId) ?? null;
+    if (runtime) {
+      return runtime.sessionState === "running" || runtime.sessionState === "streaming";
+    }
+    if (canonicalStatus?.coordinationState === "executing" || canonicalStatus?.runtimeState === "busy") {
+      return true;
+    }
+    return isSessionActive(session, currentTime);
+  });
   const archivedSessions = companySessions.filter(
     (session) => !activeSessions.some((candidate) => candidate.key === session.key),
   );
@@ -317,7 +372,7 @@ export function useBoardRuntimeState(params: {
     sessions,
     currentTime,
     sessionMeta,
-    sessionStates,
+    sessionStates: resolvedSessionStates,
     sessionTakeoverPacks,
     fileTasks,
     companySessionSnapshots,

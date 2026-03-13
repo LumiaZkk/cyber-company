@@ -26,18 +26,18 @@ export function useWorkspaceFileContent(input: {
       setSelectedFileContent(artifactContent);
       return;
     }
-    if (
-      !input.shouldSyncProviderWorkspace ||
-      !selectedFile.agentId ||
-      !selectedFile.name ||
-      previewText.length > 0
-    ) {
+    if (!input.shouldSyncProviderWorkspace || !selectedFile.agentId || !selectedFile.name) {
       setSelectedFileContent(previewText);
       return;
     }
 
     let cancelled = false;
     const loadSelectedFile = async () => {
+      if (previewText.length > 0) {
+        setSelectedFileContent(previewText);
+      } else {
+        setSelectedFileContent("");
+      }
       setLoadingFileKey(selectedFile.key);
       try {
         const result = await gateway.getAgentFile(selectedFile.agentId, selectedFile.name);

@@ -1,4 +1,10 @@
 import {
+  mapAgentRuntimeAvailabilityToLegacyStatus,
+  type CanonicalAgentStatusRecord,
+  type AgentSessionRecord,
+  type AgentRuntimeRecord,
+} from "../agent-runtime";
+import {
   buildEmployeeOperationalInsights,
   buildOutcomeReport,
   buildRetrospectiveSnapshot,
@@ -37,7 +43,7 @@ export type ManagerStatusCard = {
   role: string;
   departmentName: string;
   departmentKind: "meta" | "support" | "business";
-  state: "running" | "idle" | "offline";
+  state: "running" | "idle" | "no_signal" | "offline";
   subtitle: string;
 };
 
@@ -96,6 +102,9 @@ export function buildCeoHomeSnapshot(params: {
   sessions: GatewaySessionRow[];
   ceoHistory: ChatMessage[];
   currentTime: number;
+  activeAgentSessions?: AgentSessionRecord[];
+  activeAgentRuntime?: AgentRuntimeRecord[];
+  activeAgentStatuses?: CanonicalAgentStatusRecord[];
   activeRoomRecords: RequirementRoomRecord[];
   activeRoomBindings: RoomConversationBindingRecord[];
   activeWorkItems: WorkItemRecord[];
@@ -108,6 +117,9 @@ export function buildCeoHomeSnapshot(params: {
     sessions,
     ceoHistory,
     currentTime,
+    activeAgentSessions = [],
+    activeAgentRuntime = [],
+    activeAgentStatuses = [],
     activeRoomRecords,
     activeRoomBindings,
     activeWorkItems,
@@ -123,6 +135,13 @@ export function buildCeoHomeSnapshot(params: {
       return typeof session.agentId === "string" && companyAgentIds.has(session.agentId);
     })
     .sort((left, right) => resolveSessionUpdatedAt(right) - resolveSessionUpdatedAt(left));
+  const runtimeByAgentId = new Map(activeAgentRuntime.map((runtime) => [runtime.agentId, runtime] as const));
+  const canonicalStatusByAgentId = new Map(
+    activeAgentStatuses.map((status) => [status.agentId, status] as const),
+  );
+  const sessionRuntimeByKey = new Map(
+    activeAgentSessions.map((session) => [session.sessionKey, session] as const),
+  );
 
   const knowledgeItems = resolveCompanyKnowledge(company);
   const activeHandoffs = getActiveHandoffs(company.handoffs ?? []);
@@ -130,6 +149,7 @@ export function buildCeoHomeSnapshot(params: {
   const employeeInsights = buildEmployeeOperationalInsights({
     company: companyWithKnowledge,
     sessions: companySessions,
+    activeAgentRuntime,
     now: currentTime,
   });
   const outcomeReport = buildOutcomeReport({
@@ -158,11 +178,39 @@ export function buildCeoHomeSnapshot(params: {
         return null;
       }
       const latestSession = companySessions.find((session) => session.agentId === employee.agentId);
-      const state: ManagerStatusCard["state"] = latestSession
-        ? isSessionActive(latestSession, currentTime)
+      const runtime = runtimeByAgentId.get(employee.agentId) ?? null;
+      const canonicalStatus = canonicalStatusByAgentId.get(employee.agentId) ?? null;
+      const sessionRuntime = latestSession ? sessionRuntimeByKey.get(latestSession.key) ?? null : null;
+      const legacyState = canonicalStatus
+        ? canonicalStatus.runtimeState === "busy"
           ? "running"
-          : "idle"
-        : "offline";
+          : canonicalStatus.runtimeState === "offline"
+            ? "offline"
+            : canonicalStatus.runtimeState === "no_signal"
+              ? "no_signal"
+              : "idle"
+        : runtime
+          ? mapAgentRuntimeAvailabilityToLegacyStatus(runtime.availability)
+          : null;
+      const state: ManagerStatusCard["state"] = sessionRuntime
+        ? sessionRuntime.sessionState === "running" || sessionRuntime.sessionState === "streaming"
+          ? "running"
+          : sessionRuntime.sessionState === "offline"
+            ? "offline"
+            : "idle"
+        : legacyState === "running"
+          ? "running"
+          : legacyState === "idle"
+            ? "idle"
+            : legacyState === "no_signal"
+              ? "no_signal"
+              : runtime
+              ? "offline"
+              : latestSession
+                ? isSessionActive(latestSession, currentTime)
+                  ? "running"
+                  : "idle"
+                : "offline";
       const memberCount = resolveDepartmentMembers(company, department.id).length;
       return {
         agentId: employee.agentId,
@@ -172,8 +220,8 @@ export function buildCeoHomeSnapshot(params: {
         departmentKind: inferDepartmentKind(company, department),
         state,
         subtitle: latestSession
-          ? `${resolveSessionTitle(latestSession)} · ${formatTime(resolveSessionUpdatedAt(latestSession))}`
-          : `${memberCount} 名成员，当前待命`,
+          ? canonicalStatus?.reason ?? `${resolveSessionTitle(latestSession)} · ${formatTime(resolveSessionUpdatedAt(latestSession))}`
+          : canonicalStatus?.reason ?? `${memberCount} 名成员，当前待命`,
       };
     })
     .filter((card): card is ManagerStatusCard => Boolean(card));

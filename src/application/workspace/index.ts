@@ -2,11 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { useArtifactApp, useWorkspaceArtifactsQuery } from "../artifact";
 import { formatKnowledgeKindLabel, resolveCompanyKnowledge } from "../artifact/shared-knowledge";
 import {
+  applyWorkspaceAppManifest,
+  getWorkspaceAppFilesForSection,
+  resolveWorkspaceAppManifest,
+  type WorkspaceAppManifest,
+} from "./app-manifest";
+import { resolveWorkspaceReaderManifest } from "./reader-manifest";
+import {
+  hasStoredWorkspaceApps,
   buildWorkspaceToolRequest,
-  categorizeWorkspaceResource,
+  describeWorkspaceResource,
   getCompanyWorkspaceApps,
+  resolveWorkspaceAppTemplate,
   summarizeConsistencyAnchors,
   type WorkspaceResourceKind,
+  type WorkspaceResourceType,
 } from "../company/workspace-apps";
 import { readCompanyRuntimeSnapshot, writeCompanyRuntimeSnapshot } from "../company/runtime-snapshot";
 import { gateway, type AgentListEntry, useGatewayStore } from "../gateway";
@@ -31,6 +41,8 @@ export type WorkspaceFileRow = {
   updatedAtMs?: number;
   size?: number;
   kind: WorkspaceResourceKind;
+  resourceType: WorkspaceResourceType;
+  tags: string[];
 };
 
 export type WorkspaceKnowledgeItemRow = SharedKnowledgeItem;
@@ -65,6 +77,35 @@ export const WORKBENCH_TOOL_CARDS = [
 export type WorkspaceWorkbenchTool = (typeof WORKBENCH_TOOL_CARDS)[number]["id"];
 
 export { useWorkspaceFileContent } from "./file-content";
+export {
+  applyWorkspaceAppManifest,
+  buildWorkspaceAppManifestDraft,
+  getWorkspaceAppFilesForSection,
+  isWorkspaceAppManifestDraft,
+  resolveWorkspaceAppManifest,
+  type WorkspaceAppManifest,
+  type WorkspaceAppManifestAction,
+  type WorkspaceAppManifestResource,
+  type WorkspaceAppManifestSection,
+} from "./app-manifest";
+export {
+  applyWorkspaceReaderManifest,
+  buildWorkspaceReaderManifestDraft,
+  isWorkspaceReaderManifestDraft,
+  resolveWorkspaceReaderManifest,
+  type WorkspaceReaderManifest,
+  type WorkspaceReaderManifestEntry,
+  type WorkspaceReaderManifestResourceKind,
+} from "./reader-manifest";
+export {
+  buildWorkspaceReaderIndex,
+  loadWorkspaceReaderSnapshot,
+  recordWorkspaceFileVisit,
+  saveWorkspaceReaderSnapshot,
+  withWorkspaceSelection,
+  type WorkspaceReaderIndex,
+  type WorkspaceReaderPageSnapshot,
+} from "./reader-state";
 
 export function formatWorkspaceBytes(bytes?: number): string {
   if (bytes === undefined) {
@@ -114,6 +155,7 @@ function buildWorkspaceRows(input: {
       if (!name) {
         continue;
       }
+      const descriptor = describeWorkspaceResource(name, path);
       rows.push({
         key: `${employee.agentId}:${name}`,
         agentId: employee.agentId,
@@ -125,7 +167,9 @@ function buildWorkspaceRows(input: {
         content: typeof file.content === "string" ? file.content : null,
         updatedAtMs: typeof file.updatedAtMs === "number" ? file.updatedAtMs : undefined,
         size: typeof file.size === "number" ? file.size : undefined,
-        kind: categorizeWorkspaceResource(name, path),
+        kind: descriptor.kind,
+        resourceType: descriptor.resourceType,
+        tags: descriptor.tags,
       });
     }
   }
@@ -147,6 +191,10 @@ function buildArtifactMirrorRows(input: {
   return input.artifacts
     .map((artifact) => {
       const owner = artifact.sourceActorId ? employeeById.get(artifact.sourceActorId) : undefined;
+      const descriptor = describeWorkspaceResource(
+        artifact.sourceName ?? artifact.title,
+        artifact.sourcePath ?? artifact.sourceUrl ?? artifact.title,
+      );
       return {
         key: artifact.id,
         artifactId: artifact.id,
@@ -159,10 +207,9 @@ function buildArtifactMirrorRows(input: {
         previewText: artifact.summary,
         content: artifact.content ?? null,
         updatedAtMs: artifact.updatedAt,
-        kind: categorizeWorkspaceResource(
-          artifact.sourceName ?? artifact.title,
-          artifact.sourcePath ?? artifact.sourceUrl ?? artifact.title,
-        ),
+        kind: descriptor.kind,
+        resourceType: artifact.resourceType ?? descriptor.resourceType,
+        tags: artifact.resourceTags ?? descriptor.tags,
       } satisfies WorkspaceFileRow;
     })
     .sort((left, right) => {
@@ -251,26 +298,27 @@ function buildWorkspaceMirrorArtifacts(input: {
         continue;
       }
       const updatedAtMs = typeof file.updatedAtMs === "number" ? file.updatedAtMs : Date.now();
+      const sourcePath = typeof file.path === "string" ? file.path : file.name;
+      const descriptor = describeWorkspaceResource(file.name, sourcePath);
       nextArtifacts.push({
-        id: `workspace:${input.company.id}:${agentId}:${typeof file.path === "string" ? file.path : file.name}`,
+        id: `workspace:${input.company.id}:${agentId}:${sourcePath}`,
         workItemId: null,
         title: file.name,
-        kind: categorizeWorkspaceResource(
-          file.name,
-          typeof file.path === "string" ? file.path : file.name,
-        ),
+        kind: descriptor.kind,
         status: "ready",
         ownerActorId: agentId,
         providerId: gateway.providerId,
         sourceActorId: agentId,
         sourceName: file.name,
-        sourcePath: typeof file.path === "string" ? file.path : file.name,
+        sourcePath,
         summary: employee
           ? `${employee.nickname} · ${employee.role}`
           : typeof file.path === "string"
             ? file.path
             : file.name,
         content: typeof file.content === "string" ? file.content : null,
+        resourceType: descriptor.resourceType,
+        resourceTags: descriptor.tags,
         createdAt: updatedAtMs,
         updatedAt: updatedAtMs,
       });
@@ -309,6 +357,22 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
   const [refreshVersion, setRefreshVersion] = useState(0);
 
   const workspaceApps = useMemo(() => getCompanyWorkspaceApps(activeCompany), [activeCompany]);
+  const workspaceAppsAreExplicit = useMemo(
+    () => hasStoredWorkspaceApps(activeCompany),
+    [activeCompany],
+  );
+  const readerApp = useMemo(
+    () => workspaceApps.find((app) => resolveWorkspaceAppTemplate(app) === "reader") ?? null,
+    [workspaceApps],
+  );
+  const knowledgeApp = useMemo(
+    () => workspaceApps.find((app) => resolveWorkspaceAppTemplate(app) === "knowledge") ?? null,
+    [workspaceApps],
+  );
+  const consistencyApp = useMemo(
+    () => workspaceApps.find((app) => resolveWorkspaceAppTemplate(app) === "consistency") ?? null,
+    [workspaceApps],
+  );
   const shouldSyncProviderWorkspace =
     supportsAgentFiles && providerManifest.storageStrategy === "provider-files";
   const ctoEmployee =
@@ -480,6 +544,8 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
               content: existing.content ?? row.content ?? null,
               updatedAtMs: Math.max(existing.updatedAtMs ?? 0, row.updatedAtMs ?? 0) || undefined,
               size: existing.size ?? row.size,
+              resourceType: existing.resourceType ?? row.resourceType,
+              tags: existing.tags.length > 0 ? existing.tags : row.tags,
             }
           : row,
       );
@@ -493,37 +559,97 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
     });
   }, [activeArtifacts, activeCompany, filesByAgent, shouldSyncProviderWorkspace]);
 
+  const workspaceAppManifestsById = useMemo(
+    () =>
+      workspaceApps.reduce<Record<string, WorkspaceAppManifest>>((acc, app) => {
+        acc[app.id] = resolveWorkspaceAppManifest({
+          app,
+          artifacts: activeArtifacts,
+          files: workspaceFiles,
+        });
+        return acc;
+      }, {}),
+    [activeArtifacts, workspaceApps, workspaceFiles],
+  );
+  const readerAppManifest = readerApp ? workspaceAppManifestsById[readerApp.id] ?? null : null;
+  const knowledgeAppManifest = knowledgeApp ? workspaceAppManifestsById[knowledgeApp.id] ?? null : null;
+  const consistencyAppManifest = consistencyApp
+    ? workspaceAppManifestsById[consistencyApp.id] ?? null
+    : null;
+  const readerManifest = useMemo(
+    () =>
+      resolveWorkspaceReaderManifest({
+        artifacts: activeArtifacts,
+        files: workspaceFiles,
+      }),
+    [activeArtifacts, workspaceFiles],
+  );
+  const readerResolvedWorkspaceFiles = useMemo(
+    () => (readerAppManifest ? applyWorkspaceAppManifest(workspaceFiles, readerAppManifest) : workspaceFiles),
+    [readerAppManifest, workspaceFiles],
+  );
+
   const mirroredOnlyWorkspaceCount = useMemo(
-    () => workspaceFiles.filter((file) => !file.artifactId).length,
-    [workspaceFiles],
+    () => readerResolvedWorkspaceFiles.filter((file) => !file.artifactId).length,
+    [readerResolvedWorkspaceFiles],
   );
   const knowledgeItems = useMemo(
     () => (activeCompany ? resolveCompanyKnowledge(activeCompany) : []),
     [activeCompany],
   );
   const chapterFiles = useMemo(
-    () => workspaceFiles.filter((file) => file.kind === "chapter"),
-    [workspaceFiles],
+    () =>
+      readerAppManifest
+        ? getWorkspaceAppFilesForSection(readerResolvedWorkspaceFiles, readerAppManifest, "content").map((file) => ({
+            ...file,
+            kind: "chapter" as const,
+          }))
+        : readerResolvedWorkspaceFiles.filter((file) => file.kind === "chapter"),
+    [readerAppManifest, readerResolvedWorkspaceFiles],
   );
   const canonFiles = useMemo(
-    () => workspaceFiles.filter((file) => file.kind === "canon"),
-    [workspaceFiles],
+    () =>
+      readerAppManifest
+        ? getWorkspaceAppFilesForSection(readerResolvedWorkspaceFiles, readerAppManifest, "reference").map((file) => ({
+            ...file,
+            kind: "canon" as const,
+          }))
+        : readerResolvedWorkspaceFiles.filter((file) => file.kind === "canon"),
+    [readerAppManifest, readerResolvedWorkspaceFiles],
   );
   const reviewFiles = useMemo(
-    () => workspaceFiles.filter((file) => file.kind === "review"),
-    [workspaceFiles],
+    () =>
+      readerAppManifest
+        ? getWorkspaceAppFilesForSection(readerResolvedWorkspaceFiles, readerAppManifest, "reports").map((file) => ({
+            ...file,
+            kind: "review" as const,
+          }))
+        : readerResolvedWorkspaceFiles.filter((file) => file.kind === "review"),
+    [readerAppManifest, readerResolvedWorkspaceFiles],
   );
   const knowledgeFiles = useMemo(
-    () => workspaceFiles.filter((file) => file.kind === "knowledge"),
-    [workspaceFiles],
+    () =>
+      knowledgeAppManifest
+        ? getWorkspaceAppFilesForSection(readerResolvedWorkspaceFiles, knowledgeAppManifest, "sources").map((file) => ({
+            ...file,
+            kind: "knowledge" as const,
+          }))
+        : readerResolvedWorkspaceFiles.filter((file) => file.kind === "knowledge"),
+    [knowledgeAppManifest, readerResolvedWorkspaceFiles],
   );
   const toolingFiles = useMemo(
-    () => workspaceFiles.filter((file) => file.kind === "tooling"),
-    [workspaceFiles],
+    () =>
+      consistencyAppManifest
+        ? getWorkspaceAppFilesForSection(readerResolvedWorkspaceFiles, consistencyAppManifest, "tools").map((file) => ({
+            ...file,
+            kind: "tooling" as const,
+          }))
+        : readerResolvedWorkspaceFiles.filter((file) => file.kind === "tooling"),
+    [consistencyAppManifest, readerResolvedWorkspaceFiles],
   );
   const supplementaryFiles = useMemo(
-    () => workspaceFiles.filter((file) => file.kind === "tooling" || file.kind === "other"),
-    [workspaceFiles],
+    () => readerResolvedWorkspaceFiles.filter((file) => file.kind === "tooling" || file.kind === "other"),
+    [readerResolvedWorkspaceFiles],
   );
   const anchors = useMemo(
     () => summarizeConsistencyAnchors(canonFiles.map((file) => file.name)),
@@ -551,6 +677,8 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
     loadingIndex,
     mirroredOnlyWorkspaceCount,
     providerManifest,
+    readerManifest,
+    workspaceAppManifestsById,
     knowledgeFiles,
     knowledgeItems,
     refreshIndex: () => setRefreshVersion((current) => current + 1),
@@ -559,6 +687,7 @@ export function useWorkspaceViewModel(input: { isPageVisible: boolean }) {
     supplementaryFiles,
     toolingFiles,
     workspaceApps,
-    workspaceFiles,
+    workspaceAppsAreExplicit,
+    workspaceFiles: readerResolvedWorkspaceFiles,
   };
 }

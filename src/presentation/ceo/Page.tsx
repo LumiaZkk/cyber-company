@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  Activity,
   BookOpenCheck,
   Building2,
   CheckCircle2,
@@ -47,6 +48,9 @@ export function CEOHomePageScreen() {
     activeSupportRequests,
     activeEscalations,
     activeDecisionTickets,
+    activeAgentSessions,
+    activeAgentRuntime,
+    activeAgentStatuses,
     updateCompany,
   } = useCeoCockpitViewModel();
   const connected = useGatewayStore((state) => state.connected);
@@ -79,6 +83,9 @@ export function CEOHomePageScreen() {
       sessions,
       ceoHistory,
       currentTime,
+      activeAgentSessions,
+      activeAgentRuntime,
+      activeAgentStatuses,
       activeRoomRecords,
       activeRoomBindings,
       activeWorkItems,
@@ -91,12 +98,15 @@ export function CEOHomePageScreen() {
     sessions,
     ceoHistory,
     currentTime,
+    activeAgentSessions,
+    activeAgentRuntime,
     activeRoomRecords,
     activeRoomBindings,
     activeWorkItems,
     activeSupportRequests,
     activeEscalations,
     activeDecisionTickets,
+    activeAgentStatuses,
   ]);
 
   if (!activeCompany || !ceo || !homeState) {
@@ -112,6 +122,9 @@ export function CEOHomePageScreen() {
     if (state === "idle") {
       return "待命";
     }
+    if (state === "no_signal") {
+      return "无信号";
+    }
     return "离线";
   };
 
@@ -121,6 +134,9 @@ export function CEOHomePageScreen() {
     }
     if (state === "idle") {
       return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    }
+    if (state === "no_signal") {
+      return "border-violet-200 bg-violet-50 text-violet-700";
     }
     return "border-slate-200 bg-slate-50 text-slate-500";
   };
@@ -236,6 +252,10 @@ export function CEOHomePageScreen() {
                 <Button variant="outline" onClick={() => navigate("/ops")}>
                   <Layers3 className="mr-2 h-4 w-4" />
                   打开运营大厅
+                </Button>
+                <Button variant="outline" onClick={() => navigate("/runtime")}>
+                  <Activity className="mr-2 h-4 w-4" />
+                  查看运行态
                 </Button>
               </div>
             </div>

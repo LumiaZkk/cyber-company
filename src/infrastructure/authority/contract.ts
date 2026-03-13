@@ -17,10 +17,17 @@ import type {
 } from "../../domain/mission/types";
 import type { Company, CyberCompanyConfig, Department } from "../../domain/org/types";
 import type {
+  CanonicalAgentStatusRecord,
+  AgentRunRecord,
+  AgentRuntimeRecord,
+  AgentSessionRecord,
+} from "../../application/agent-runtime";
+import type {
   AgentListEntry,
   CostUsageSummary,
   ChatMessage,
   CompanyEvent,
+  ProviderRuntimeEvent,
   GatewayModelChoice,
   GatewayModelsListParams,
   GatewaySessionRow,
@@ -90,6 +97,10 @@ export type AuthorityCompanyRuntimeSnapshot = {
   activeSupportRequests: SupportRequestRecord[];
   activeEscalations: EscalationRecord[];
   activeDecisionTickets: DecisionTicketRecord[];
+  activeAgentSessions?: AgentSessionRecord[];
+  activeAgentRuns?: AgentRunRecord[];
+  activeAgentRuntime?: AgentRuntimeRecord[];
+  activeAgentStatuses?: CanonicalAgentStatusRecord[];
   updatedAt: number;
 };
 
@@ -114,6 +125,32 @@ export type AuthorityHealthSnapshot = {
     dbPath: string;
     connected: true;
     startedAt: number;
+    doctor: {
+      status: "ready" | "degraded" | "blocked";
+      schemaVersion: number | null;
+      backupDir: string;
+      backupCount: number;
+      latestBackupAt: number | null;
+      companyCount: number;
+      runtimeCount: number;
+      eventCount: number;
+      latestRuntimeAt: number | null;
+      latestEventAt: number | null;
+      activeCompanyId: string | null;
+      issues: string[];
+    };
+    preflight: {
+      status: "ready" | "degraded" | "blocked";
+      dataDir: string;
+      backupDir: string;
+      dbExists: boolean;
+      schemaVersion: number | null;
+      backupCount: number;
+      latestBackupAt: number | null;
+      notes: string[];
+      warnings: string[];
+      issues: string[];
+    };
   };
 };
 
@@ -144,6 +181,14 @@ export type AuthorityEvent =
         state: "delta" | "final" | "aborted" | "error";
         message?: ChatMessage;
         errorMessage?: string;
+      };
+    }
+  | {
+      type: "agent.runtime.updated";
+      companyId?: string | null;
+      timestamp: number;
+      payload: {
+        event: ProviderRuntimeEvent;
       };
     };
 
@@ -289,6 +334,21 @@ export type AuthorityDecisionTicketUpsertRequest = {
 export type AuthorityDecisionTicketDeleteRequest = {
   companyId: string;
   ticketId: string;
+};
+
+export type AuthorityDecisionTicketResolveRequest = {
+  companyId: string;
+  ticketId: string;
+  optionId?: string | null;
+  resolution?: string | null;
+  timestamp?: number;
+};
+
+export type AuthorityDecisionTicketCancelRequest = {
+  companyId: string;
+  ticketId: string;
+  resolution?: string | null;
+  timestamp?: number;
 };
 
 export type AuthorityAppendCompanyEventRequest = {

@@ -95,7 +95,7 @@ describe("useCompanyRuntimeStore authority-backed decision tickets", () => {
 
     useAuthorityRuntimeSyncStore.setState({
       compatibilityPathEnabled: true,
-      commandRoutes: ["decision.upsert", "decision.delete"],
+      commandRoutes: ["decision.upsert", "decision.resolve", "decision.cancel", "decision.delete"],
       mode: "compatibility_snapshot",
       lastSnapshotUpdatedAt: null,
       lastAppliedSignature: null,
@@ -177,6 +177,88 @@ describe("useCompanyRuntimeStore authority-backed decision tickets", () => {
       });
       const state = useCompanyRuntimeStore.getState();
       expect(state.activeDecisionTickets).toEqual([]);
+      expect(state.activeCompany?.decisionTickets).toEqual([]);
+    });
+  });
+
+  it("routes decision-ticket resolution through authority", async () => {
+    const ticket = createDecisionTicket();
+    const resolvedTicket = createDecisionTicket({
+      status: "resolved",
+      revision: 2,
+      resolutionOptionId: "confirm",
+      resolution: "确认推进",
+      updatedAt: 4_000,
+    });
+    const resolveSpy = vi
+      .spyOn(authorityControl, "resolveAuthorityDecisionTicket")
+      .mockResolvedValue(createAuthorityDecisionSnapshot(resolvedTicket));
+
+    useCompanyRuntimeStore.setState({
+      activeDecisionTickets: [ticket],
+      activeCompany: {
+        ...createCompany(),
+        decisionTickets: [ticket],
+      },
+    });
+
+    useCompanyRuntimeStore.getState().resolveDecisionTicket({
+      ticketId: ticket.id,
+      optionId: "confirm",
+      resolution: "确认推进",
+      timestamp: 4_000,
+    });
+
+    await vi.waitFor(() => {
+      expect(resolveSpy).toHaveBeenCalledWith({
+        companyId: "company-1",
+        ticketId: ticket.id,
+        optionId: "confirm",
+        resolution: "确认推进",
+        timestamp: 4_000,
+      });
+      const state = useCompanyRuntimeStore.getState();
+      expect(state.activeDecisionTickets).toEqual([resolvedTicket]);
+      expect(state.activeCompany?.decisionTickets).toEqual([]);
+    });
+  });
+
+  it("routes decision-ticket cancellation through authority", async () => {
+    const ticket = createDecisionTicket();
+    const cancelledTicket = createDecisionTicket({
+      status: "cancelled",
+      revision: 2,
+      resolution: "暂缓处理",
+      resolutionOptionId: null,
+      updatedAt: 4_500,
+    });
+    const cancelSpy = vi
+      .spyOn(authorityControl, "cancelAuthorityDecisionTicket")
+      .mockResolvedValue(createAuthorityDecisionSnapshot(cancelledTicket));
+
+    useCompanyRuntimeStore.setState({
+      activeDecisionTickets: [ticket],
+      activeCompany: {
+        ...createCompany(),
+        decisionTickets: [ticket],
+      },
+    });
+
+    useCompanyRuntimeStore.getState().cancelDecisionTicket({
+      ticketId: ticket.id,
+      resolution: "暂缓处理",
+      timestamp: 4_500,
+    });
+
+    await vi.waitFor(() => {
+      expect(cancelSpy).toHaveBeenCalledWith({
+        companyId: "company-1",
+        ticketId: ticket.id,
+        resolution: "暂缓处理",
+        timestamp: 4_500,
+      });
+      const state = useCompanyRuntimeStore.getState();
+      expect(state.activeDecisionTickets).toEqual([cancelledTicket]);
       expect(state.activeCompany?.decisionTickets).toEqual([]);
     });
   });

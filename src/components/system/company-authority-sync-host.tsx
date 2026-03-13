@@ -35,6 +35,10 @@ function buildSnapshot(): AuthorityCompanyRuntimeSnapshot | null {
     activeSupportRequests: state.activeSupportRequests,
     activeEscalations: state.activeEscalations,
     activeDecisionTickets: state.activeDecisionTickets,
+    activeAgentSessions: state.activeAgentSessions,
+    activeAgentRuns: state.activeAgentRuns,
+    activeAgentRuntime: state.activeAgentRuntime,
+    activeAgentStatuses: state.activeAgentStatuses,
     updatedAt: Date.now(),
   };
 }
@@ -144,7 +148,8 @@ export function CompanyAuthoritySyncHost() {
         eventName === "room.updated" ||
         eventName === "dispatch.updated" ||
         eventName === "artifact.updated" ||
-        eventName === "decision.updated"
+        eventName === "decision.updated" ||
+        eventName === "agent.runtime.updated"
       ) {
         refreshRemoteRuntime();
       }

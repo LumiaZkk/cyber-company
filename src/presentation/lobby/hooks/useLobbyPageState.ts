@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { appendOperatorActionAuditEvent } from "../../../application/governance/operator-action-audit";
 import type { HireConfig } from "../../../components/ui/immersive-hire-dialog";
 import { toast } from "../../../components/system/toast-store";
 
@@ -24,6 +25,7 @@ type LobbyCommands = {
 };
 
 export function useLobbyPageState(input: {
+  activeCompanyId: string;
   commands: LobbyCommands;
   ceoAgentId: string | null;
 }) {
@@ -41,8 +43,21 @@ export function useLobbyPageState(input: {
   const handleCopyBlueprint = async () => {
     try {
       await navigator.clipboard.writeText(input.commands.buildBlueprintText());
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "blueprint_copy",
+        surface: "lobby",
+        outcome: "succeeded",
+      });
       toast.success("组织蓝图已复制", "可以在新建公司页选择“从蓝图复制”后直接粘贴。");
     } catch (error) {
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "blueprint_copy",
+        surface: "lobby",
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
       toast.error("复制失败", error instanceof Error ? error.message : String(error));
     }
   };
@@ -50,8 +65,24 @@ export function useLobbyPageState(input: {
   const handleSyncKnowledge = async () => {
     try {
       const count = await input.commands.syncKnowledge();
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "knowledge_sync",
+        surface: "lobby",
+        outcome: "succeeded",
+        details: {
+          knowledgeCount: count,
+        },
+      });
       toast.success("共享知识已同步", `已写入 ${count} 条公司级知识内容。`);
     } catch (error) {
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "knowledge_sync",
+        surface: "lobby",
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
       toast.error("同步失败", error instanceof Error ? error.message : String(error));
     }
   };
@@ -138,10 +169,32 @@ export function useLobbyPageState(input: {
     }
     const route = await input.commands.buildGroupChatRoute({ memberIds: members, topic });
     if (!route) {
+      void appendOperatorActionAuditEvent({
+        companyId: input.activeCompanyId,
+        action: "group_chat_route_open",
+        surface: "lobby",
+        outcome: "failed",
+        error: "没有生成有效的需求团队房间。",
+        details: {
+          memberCount: members.length,
+          topicPreview: topic.slice(0, 48),
+        },
+      });
       toast.error("团队房间创建失败", "没有生成有效的需求团队房间。");
       return;
     }
 
+    void appendOperatorActionAuditEvent({
+      companyId: input.activeCompanyId,
+      action: "group_chat_route_open",
+      surface: "lobby",
+      outcome: "succeeded",
+      details: {
+        memberCount: members.length,
+        topicPreview: topic.slice(0, 48),
+        route,
+      },
+    });
     navigate(route);
     setGroupChatDialogOpen(false);
   };

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildRecommendedWorkspaceApps,
   buildWorkspaceToolRequest,
   categorizeWorkspaceResource,
   getCompanyWorkspaceApps,
+  hasStoredWorkspaceApps,
   isNovelCompany,
+  publishWorkspaceApp,
+  resolveWorkspaceAppSurface,
+  resolveWorkspaceAppTemplate,
   summarizeConsistencyAnchors,
 } from "./workspace-apps";
 import type { Company } from "../../domain/org/types";
@@ -37,6 +42,60 @@ describe("workspace-apps", () => {
       "knowledge-hub",
       "cto-workbench",
     ]);
+    expect(hasStoredWorkspaceApps(company)).toBe(false);
+    expect(buildRecommendedWorkspaceApps(company).every((app) => app.surface === "template")).toBe(true);
+  });
+
+  it("prefers explicitly stored apps and resolves template metadata for custom entries", () => {
+    const company = makeCompany({
+      workspaceApps: [
+        {
+          id: "novelcraft-reader",
+          slug: "novelcraft-reader",
+          title: "NovelCraft 阅读器",
+          description: "显式发布到公司的阅读入口。",
+          icon: "📚",
+          kind: "custom",
+          status: "ready",
+          surface: "template",
+          template: "reader",
+          ownerAgentId: "cto",
+        },
+      ],
+    });
+
+    const apps = getCompanyWorkspaceApps(company);
+    expect(hasStoredWorkspaceApps(company)).toBe(true);
+    expect(apps).toHaveLength(1);
+    expect(apps[0]?.id).toBe("novelcraft-reader");
+    expect(resolveWorkspaceAppTemplate(apps[0]!)).toBe("reader");
+    expect(resolveWorkspaceAppSurface(apps[0]!)).toBe("template");
+  });
+
+  it("publishes a single template app while preserving the rest of the workspace entry set", () => {
+    const seededApps = buildRecommendedWorkspaceApps(makeCompany()).map((app) =>
+      resolveWorkspaceAppTemplate(app) === "reader"
+        ? { ...app, manifestArtifactId: "workspace-app-manifest:company-1:app:reader" }
+        : app,
+    );
+    const company = makeCompany({ workspaceApps: seededApps });
+
+    const nextApps = publishWorkspaceApp(company, {
+      template: "reader",
+      title: "NovelCraft 阅读器",
+      description: "围绕当前公司的章节、设定和审校报告提供阅读入口。",
+      ownerAgentId: "cto",
+    });
+
+    expect(nextApps).toHaveLength(4);
+    expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "reader")?.title).toBe(
+      "NovelCraft 阅读器",
+    );
+    expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "reader")?.ownerAgentId).toBe("cto");
+    expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "reader")?.manifestArtifactId).toBe(
+      "workspace-app-manifest:company-1:app:reader",
+    );
+    expect(nextApps.find((app) => resolveWorkspaceAppTemplate(app) === "consistency")?.title).toBe("一致性中心");
   });
 
   it("categorizes workspace resources into novel-friendly buckets", () => {

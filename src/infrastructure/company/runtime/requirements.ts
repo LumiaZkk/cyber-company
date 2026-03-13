@@ -2,6 +2,7 @@ import { createCompanyEvent } from "../../../domain/delegation/events";
 import { gateway } from "../../../application/gateway";
 import {
   buildRequirementWorkflowEvidence,
+  buildRequirementWorkflowEvidencePayload,
   resolveRequirementWorkflowEventKind,
   type RequirementWorkflowEventKind,
 } from "../../../application/mission/requirement-workflow";
@@ -39,7 +40,12 @@ export function emitRequirementCompanyEvent(input: {
   companyId: string;
   kind: RequirementWorkflowEventKind;
   aggregate: RequirementAggregateRecord;
+  previousAggregate?: RequirementAggregateRecord | null;
   actorId?: string | null;
+  source?: RequirementEvidenceEvent["source"];
+  changes?: Partial<
+    Omit<RequirementAggregateRecord, "id" | "companyId" | "primary" | "revision">
+  > | null;
 }) {
   void gateway.appendCompanyEvent(
     createCompanyEvent({
@@ -51,19 +57,12 @@ export function emitRequirementCompanyEvent(input: {
       fromActorId: input.actorId ?? input.aggregate.ownerActorId ?? "system:requirement-aggregate",
       targetActorId: input.aggregate.ownerActorId ?? undefined,
       sessionKey: input.aggregate.sourceConversationId ?? undefined,
-      payload: {
-        ownerActorId: input.aggregate.ownerActorId,
-        ownerLabel: input.aggregate.ownerLabel,
-        stage: input.aggregate.stage,
-        summary: input.aggregate.summary,
-        nextAction: input.aggregate.nextAction,
-        memberIds: input.aggregate.memberIds,
-        status: input.aggregate.status,
-        stageGateStatus: input.aggregate.stageGateStatus,
-        acceptanceStatus: input.aggregate.acceptanceStatus,
-        acceptanceNote: input.aggregate.acceptanceNote ?? null,
-        revision: input.aggregate.revision,
-      },
+      payload: buildRequirementWorkflowEvidencePayload({
+        previousAggregate: input.previousAggregate ?? null,
+        nextAggregate: input.aggregate,
+        source: input.source,
+        changes: input.changes ?? null,
+      }),
     }),
   ).catch((error) => {
     console.warn("Failed to append requirement company event", error);
@@ -119,6 +118,9 @@ export function buildRequirementLocalEvidence(input: {
   actorId?: string | null;
   timestamp: number;
   source?: RequirementEvidenceEvent["source"];
+  changes?: Partial<
+    Omit<RequirementAggregateRecord, "id" | "companyId" | "primary" | "revision">
+  > | null;
 }): RequirementEvidenceEvent {
   return buildRequirementWorkflowEvidence(input);
 }
@@ -132,6 +134,9 @@ export function appendRequirementLocalEvidence(input: {
   actorId?: string | null;
   timestamp: number;
   source?: RequirementEvidenceEvent["source"];
+  changes?: Partial<
+    Omit<RequirementAggregateRecord, "id" | "companyId" | "primary" | "revision">
+  > | null;
 }) {
   return sanitizeRequirementEvidenceEvents(input.companyId, [
     buildRequirementLocalEvidence({
@@ -142,6 +147,7 @@ export function appendRequirementLocalEvidence(input: {
       actorId: input.actorId,
       timestamp: input.timestamp,
       source: input.source,
+      changes: input.changes,
     }),
     ...input.evidence,
   ]);
@@ -218,6 +224,7 @@ export function buildRequirementActions(
               previousAggregate,
               actorId: promotedAggregate.ownerActorId,
               timestamp: Date.now(),
+              source: "local-command",
             })
           : activeRequirementEvidence;
       set({
@@ -234,6 +241,9 @@ export function buildRequirementActions(
           companyId: activeCompany.id,
           kind: "requirement_promoted",
           aggregate: promotedAggregate,
+          previousAggregate,
+          source: "local-command",
+          actorId: promotedAggregate.ownerActorId,
         });
       }
     },
@@ -329,6 +339,7 @@ export function buildRequirementActions(
               actorId: transition.changes.ownerActorId ?? target.ownerActorId,
               timestamp,
               source: transition.source,
+              changes: transition.changes,
             })
           : activeRequirementEvidence;
 
@@ -345,7 +356,10 @@ export function buildRequirementActions(
           companyId: activeCompany.id,
           kind,
           aggregate: nextAggregate,
+          previousAggregate: target,
           actorId: transition.changes.ownerActorId ?? target.ownerActorId,
+          source: transition.source,
+          changes: transition.changes,
         });
       }
     },

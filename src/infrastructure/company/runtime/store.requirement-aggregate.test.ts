@@ -163,7 +163,7 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
         .getState()
         .activeRequirementEvidence.some(
           (event) =>
-            event.source === "local-command" &&
+            event.source === "backfill" &&
             event.eventType === "requirement_seeded" &&
             event.aggregateId === firstPrimaryRequirementId,
         ),
@@ -300,7 +300,7 @@ describe("useCompanyRuntimeStore requirement aggregate", () => {
         .getState()
         .activeRequirementEvidence.some(
           (event) =>
-            event.source === "local-command" &&
+            event.source === "backfill" &&
             event.eventType === "requirement_promoted" &&
             event.aggregateId === betaAggregate?.id,
         ),

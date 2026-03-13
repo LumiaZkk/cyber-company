@@ -1,4 +1,5 @@
 import {
+  Activity,
   Building2,
   Users,
   LayoutDashboard,
@@ -77,6 +78,11 @@ const EmployeeProfile = lazy(() =>
 const RequirementCenterPage = lazy(() =>
   import("./pages/RequirementCenterPage").then((module) => ({
     default: module.RequirementCenterPage,
+  })),
+);
+const RuntimeInspectorPage = lazy(() =>
+  import("./pages/RuntimeInspectorPage").then((module) => ({
+    default: module.RuntimeInspectorPage,
   })),
 );
 const SettingsPage = lazy(() =>
@@ -367,6 +373,7 @@ export default function App() {
           label: "执行",
           items: [
             { path: "/ops", label: "运营大厅", icon: ShieldAlert },
+            { path: "/runtime", label: "运行态", icon: Activity },
             { path: "/board", label: "工作看板", icon: LayoutDashboard },
             ...(workspaceApps.length > 0
               ? [{ path: "/workspace", label: "工作目录", icon: BookOpen }]
@@ -523,6 +530,7 @@ export default function App() {
                   <Route path="/" element={<CEOHomePage />} />
                   <Route path="/ops" element={<CompanyLobby />} />
                   <Route path="/lobby" element={<Navigate to="/ops" replace />} />
+                  <Route path="/runtime" element={<RuntimeInspectorPage />} />
                   <Route path="/chat/:agentId" element={<ChatPage />} />
                   <Route path="/employees" element={<EmployeeList />} />
                   <Route path="/employees/:id" element={<EmployeeProfile />} />

@@ -1,4 +1,5 @@
 import type { Company } from "../../domain/org/types";
+import type { AgentRuntimeRecord } from "../agent-runtime";
 import { getActiveHandoffs } from "../delegation/active-handoffs";
 import { evaluateSlaAlerts } from "./sla-rules";
 import type { GatewaySessionRow } from "../gateway";
@@ -95,6 +96,7 @@ function resolveReliabilityState(score: number): EmployeeOperationalInsight["rel
 export function buildEmployeeOperationalInsights(params: {
   company: Company;
   sessions: GatewaySessionRow[];
+  activeAgentRuntime?: AgentRuntimeRecord[];
   now?: number;
 }): EmployeeOperationalInsight[] {
   const now = params.now ?? Date.now();
@@ -102,6 +104,9 @@ export function buildEmployeeOperationalInsights(params: {
   const tasks = params.company.tasks ?? [];
   const handoffs = getActiveHandoffs(params.company.handoffs ?? []);
   const sessionsByAgent = new Map<string, GatewaySessionRow[]>();
+  const runtimeByAgentId = new Map(
+    (params.activeAgentRuntime ?? []).map((runtime) => [runtime.agentId, runtime] as const),
+  );
 
   for (const session of params.sessions) {
     const agentId = resolveSessionActorId(session);
@@ -144,10 +149,18 @@ export function buildEmployeeOperationalInsights(params: {
       ).length;
       const overdueAlerts = alerts.filter((alert) => alert.ownerAgentId === employee.agentId).length;
       const employeeSessions = sessionsByAgent.get(employee.agentId) ?? [];
-      const activeSessions = employeeSessions.filter((session) => isSessionActive(session, now)).length;
+      const runtime = runtimeByAgentId.get(employee.agentId) ?? null;
+      const activeSessions = runtime
+        ? runtime.activeSessionKeys.length
+        : employeeSessions.filter((session) => isSessionActive(session, now)).length;
       const latestActivityAt = employeeSessions.reduce(
         (latest, session) => Math.max(latest, resolveSessionUpdatedAt(session)),
         0,
+      );
+      const runtimeActivityAt = Math.max(
+        runtime?.lastSeenAt ?? 0,
+        runtime?.lastBusyAt ?? 0,
+        runtime?.lastIdleAt ?? 0,
       );
 
       const loadScore = clamp(
@@ -193,7 +206,7 @@ export function buildEmployeeOperationalInsights(params: {
         overdueAlerts,
         sessionCount: employeeSessions.length,
         activeSessions,
-        latestActivityAt,
+        latestActivityAt: Math.max(latestActivityAt, runtimeActivityAt),
         focusSummary,
       };
     })

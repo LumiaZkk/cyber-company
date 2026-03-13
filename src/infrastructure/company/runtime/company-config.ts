@@ -66,6 +66,10 @@ export function buildCompanyConfigActions(
   | "upsertRequest"
   | "upsertSupportRequest"
   | "upsertKnowledgeItem"
+  | "upsertSkillDefinition"
+  | "upsertSkillRun"
+  | "upsertCapabilityRequest"
+  | "upsertCapabilityIssue"
 > {
   return {
     loadConfig: async () => {
@@ -321,6 +325,54 @@ export function buildCompanyConfigActions(
         return;
       }
       await get().updateCompany({ knowledgeItems: nextItems });
+    },
+
+    upsertSkillDefinition: async (skill) => {
+      const { activeCompany } = get();
+      if (!activeCompany) {
+        return;
+      }
+      const nextSkills = upsertTimestampedRecord(activeCompany.skillDefinitions ?? [], skill);
+      if (!nextSkills) {
+        return;
+      }
+      await get().updateCompany({ skillDefinitions: nextSkills });
+    },
+
+    upsertSkillRun: async (skillRun) => {
+      const { activeCompany } = get();
+      if (!activeCompany) {
+        return;
+      }
+      const nextSkillRuns = upsertTimestampedRecord(activeCompany.skillRuns ?? [], skillRun);
+      if (!nextSkillRuns) {
+        return;
+      }
+      await get().updateCompany({ skillRuns: nextSkillRuns });
+    },
+
+    upsertCapabilityRequest: async (request) => {
+      const { activeCompany } = get();
+      if (!activeCompany) {
+        return;
+      }
+      const nextRequests = upsertTimestampedRecord(activeCompany.capabilityRequests ?? [], request);
+      if (!nextRequests) {
+        return;
+      }
+      await get().updateCompany({ capabilityRequests: nextRequests });
+    },
+
+    upsertCapabilityIssue: async (issue) => {
+      const { activeCompany } = get();
+      if (!activeCompany) {
+        return;
+      }
+      const nextIssues = upsertTimestampedRecord(activeCompany.capabilityIssues ?? [], issue);
+      if (!nextIssues) {
+        return;
+      }
+      await get().updateCompany({ capabilityIssues: nextIssues });
     },
   };
 }

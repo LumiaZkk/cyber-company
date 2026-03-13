@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { AgentRuntimeRecord, CanonicalAgentStatusRecord } from "../agent-runtime";
 import {
   gateway,
   type AgentListEntry,
@@ -48,10 +49,12 @@ function extractEvidenceText(message: { text?: unknown; content?: unknown }): st
 
 export function useLobbyRuntimeState(params: {
   activeCompany: Company | null;
+  activeAgentRuntime: AgentRuntimeRecord[];
+  activeAgentStatuses: CanonicalAgentStatusRecord[];
   connected: boolean;
   isPageVisible: boolean;
 }) {
-  const { activeCompany, connected, isPageVisible } = params;
+  const { activeCompany, activeAgentRuntime, activeAgentStatuses, connected, isPageVisible } = params;
   const companyId = activeCompany?.id ?? null;
   const runtimeSnapshot = readCompanyRuntimeSnapshot(companyId);
   const [agentsCache, setAgentsCache] = useState<AgentListEntry[]>(() => runtimeSnapshot?.agents ?? []);
@@ -159,6 +162,14 @@ export function useLobbyRuntimeState(params: {
   const companySessionsSignature = companySessions
     .map((session) => `${session.key}:${resolveSessionUpdatedAt(session)}`)
     .join("|");
+  const agentRuntimeByAgentId = useMemo(
+    () => new Map(activeAgentRuntime.map((runtime) => [runtime.agentId, runtime])),
+    [activeAgentRuntime],
+  );
+  const canonicalStatusByAgentId = useMemo(
+    () => new Map(activeAgentStatuses.map((status) => [status.agentId, status])),
+    [activeAgentStatuses],
+  );
 
   useEffect(() => {
     if (!connected || !isPageVisible || companySessions.length === 0) {
@@ -181,6 +192,8 @@ export function useLobbyRuntimeState(params: {
             next.set(
               session.key,
               resolveExecutionState({
+                agentRuntime: agentRuntimeByAgentId.get(session.agentId) ?? null,
+                canonicalStatus: canonicalStatusByAgentId.get(session.agentId) ?? null,
                 session,
                 evidenceTexts,
                 now: Date.now(),
@@ -194,9 +207,17 @@ export function useLobbyRuntimeState(params: {
                 limit: REQUIREMENT_SNAPSHOT_MESSAGE_LIMIT,
                 normalizeText: stripTruthInternalMonologue,
               }),
-            });
-          } catch {
-            next.set(session.key, resolveExecutionState({ session, now: Date.now() }));
+          });
+        } catch {
+            next.set(
+              session.key,
+              resolveExecutionState({
+                agentRuntime: agentRuntimeByAgentId.get(session.agentId) ?? null,
+                canonicalStatus: canonicalStatusByAgentId.get(session.agentId) ?? null,
+                session,
+                now: Date.now(),
+              }),
+            );
           }
         }),
       );
@@ -222,7 +243,14 @@ export function useLobbyRuntimeState(params: {
     return () => {
       cancelled = true;
     };
-  }, [connected, companySessions, companySessionsSignature, isPageVisible]);
+  }, [
+    agentRuntimeByAgentId,
+    canonicalStatusByAgentId,
+    connected,
+    companySessions,
+    companySessionsSignature,
+    isPageVisible,
+  ]);
 
   const sessionExecutions = useMemo(() => {
     const next = new Map<string, ResolvedExecutionState>(sessionExecutionMap);
@@ -231,6 +259,8 @@ export function useLobbyRuntimeState(params: {
         next.set(
           session.key,
           resolveExecutionState({
+            agentRuntime: agentRuntimeByAgentId.get(session.agentId) ?? null,
+            canonicalStatus: canonicalStatusByAgentId.get(session.agentId) ?? null,
             session,
             evidenceTexts: [session.lastMessagePreview, resolveSessionTitle(session)],
             now: currentTime,
@@ -239,7 +269,7 @@ export function useLobbyRuntimeState(params: {
       }
     }
     return next;
-  }, [companySessions, currentTime, sessionExecutionMap]);
+  }, [agentRuntimeByAgentId, canonicalStatusByAgentId, companySessions, currentTime, sessionExecutionMap]);
 
   return {
     agentsCache,

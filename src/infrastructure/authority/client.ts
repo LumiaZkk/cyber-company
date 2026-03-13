@@ -5,6 +5,7 @@ import type {
   AuthorityArtifactDeleteRequest,
   AuthorityArtifactMirrorSyncRequest,
   AuthorityArtifactUpsertRequest,
+  AuthorityDecisionTicketCancelRequest,
   AuthorityBootstrapSnapshot,
   AuthorityBatchHireEmployeesRequest,
   AuthorityBatchHireEmployeesResponse,
@@ -18,6 +19,7 @@ import type {
   AuthorityDispatchDeleteRequest,
   AuthorityDispatchUpsertRequest,
   AuthorityDecisionTicketDeleteRequest,
+  AuthorityDecisionTicketResolveRequest,
   AuthorityDecisionTicketUpsertRequest,
   AuthorityEvent,
   AuthorityExecutorConfig,
@@ -119,6 +121,10 @@ async function requestJson<T>(baseUrl: string, path: string, init?: RequestInit)
   return (await response.json()) as T;
 }
 
+export async function probeAuthorityHealth(baseUrl: string) {
+  return requestJson<AuthorityHealthSnapshot>(baseUrl, "/health");
+}
+
 export class AuthorityClient {
   private baseUrl = normalizeBaseUrl(storage.getItem(AUTHORITY_URL_KEY));
 
@@ -132,7 +138,7 @@ export class AuthorityClient {
   }
 
   async health() {
-    return requestJson<AuthorityHealthSnapshot>(this.baseUrl, "/health");
+    return probeAuthorityHealth(this.baseUrl);
   }
 
   async bootstrap() {
@@ -318,6 +324,20 @@ export class AuthorityClient {
 
   async deleteDecisionTicket(body: AuthorityDecisionTicketDeleteRequest) {
     return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/decision.delete", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async resolveDecisionTicket(body: AuthorityDecisionTicketResolveRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/decision.resolve", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async cancelDecisionTicket(body: AuthorityDecisionTicketCancelRequest) {
+    return requestJson<AuthorityCompanyRuntimeSnapshot>(this.baseUrl, "/commands/decision.cancel", {
       method: "POST",
       body: JSON.stringify(body),
     });

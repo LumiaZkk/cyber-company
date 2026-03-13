@@ -72,6 +72,7 @@ export function LobbyHeroSection(props: {
   canContactCeo: boolean;
   canOpenRequirementCenter?: boolean;
   onOpenBoard: () => void;
+  onOpenRuntimeInspector?: () => void;
   onContactCeo: () => void;
   onOpenRequirementCenter?: () => void;
 }) {
@@ -81,6 +82,7 @@ export function LobbyHeroSection(props: {
     canContactCeo,
     canOpenRequirementCenter = false,
     onOpenBoard,
+    onOpenRuntimeInspector,
     onContactCeo,
     onOpenRequirementCenter,
   } = props;
@@ -101,6 +103,12 @@ export function LobbyHeroSection(props: {
           <CheckCircle2 className="mr-2 h-4 w-4" />
           查看工作看板
         </Button>
+        {onOpenRuntimeInspector ? (
+          <Button variant="outline" onClick={onOpenRuntimeInspector}>
+            <Zap className="mr-2 h-4 w-4" />
+            查看运行态
+          </Button>
+        ) : null}
         {canContactCeo ? (
           <Button variant="outline" onClick={onContactCeo}>
             <MessageSquare className="mr-2 h-4 w-4" />

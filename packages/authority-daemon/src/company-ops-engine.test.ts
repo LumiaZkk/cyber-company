@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runCompanyOpsCycle } from "./company-ops-engine";
+import { buildCompanyOpsAuditEvents, runCompanyOpsCycle } from "./company-ops-engine";
 import type { AuthorityCompanyRuntimeSnapshot } from "../../../src/infrastructure/authority/contract";
 import type { Company, WorkItemRecord } from "../../../src/domain";
 import { buildDefaultOrgSettings } from "../../../src/domain/org/autonomy-policy";
@@ -143,6 +143,33 @@ describe("runCompanyOpsCycle", () => {
     expect(result.runtime.activeWorkItems[0]?.ownerActorId).toBe("writer-lead");
   });
 
+  it("does not escalate waiting_owner work items as blocked until they become explicit blockers", () => {
+    const runtime = createRuntime([
+      createWorkItem({
+        title: "等待确认",
+        goal: "等待主管确认",
+        summary: "等待主管确认",
+        nextAction: "等待主管确认",
+        stageLabel: "等待确认",
+        displayNextAction: "等待主管确认",
+        status: "waiting_owner",
+        updatedAt: 1_000,
+      }),
+    ]);
+
+    const result = runCompanyOpsCycle({
+      company: createCompany(),
+      runtime,
+      now: 72 * 60 * 60 * 1000,
+    });
+
+    expect(
+      result.runtime.activeEscalations.some(
+        (escalation) => escalation.sourceType === "work_item" && escalation.sourceId === "work-1",
+      ),
+    ).toBe(false);
+  });
+
   it("creates a pending human decision ticket when a department stays underloaded", () => {
     const company = createCompany();
     company.orgSettings = buildDefaultOrgSettings({
@@ -248,5 +275,181 @@ describe("runCompanyOpsCycle", () => {
     expect(result.runtime.activeEscalations[0]?.updatedAt).toBe(10_000);
     expect(result.runtime.activeDecisionTickets[0]?.updatedAt).toBe(10_000);
     expect(result.company.orgSettings?.autonomyState?.lastEngineRunAt).toBe(10_000);
+  });
+
+  it("builds audit events for ops-created support, escalation, and decision records", () => {
+    const previousRuntime = createRuntime([]);
+    const nextRuntime = createRuntime([]);
+    nextRuntime.activeSupportRequests = [
+      {
+        id: "support:work-1:dep-cto",
+        workItemId: "work-1",
+        requesterDepartmentId: "dep-writing",
+        targetDepartmentId: "dep-cto",
+        requestedByActorId: "writer-lead",
+        ownerActorId: "co-cto",
+        summary: "小说创作部 需要 技术部 支持：写作部门需要一致性工具支持",
+        status: "open",
+        createdAt: 10_000,
+        updatedAt: 10_000,
+      },
+    ];
+    nextRuntime.activeEscalations = [
+      {
+        id: "escalation:support_request:support:work-1:dep-cto",
+        sourceType: "support_request",
+        sourceId: "support:work-1:dep-cto",
+        companyId: "company-1",
+        workItemId: "work-1",
+        requesterDepartmentId: "dep-writing",
+        targetActorId: "co-ceo",
+        reason: "支持请求超过 SLA，需要 CEO 介入协调：小说创作部 需要 技术部 支持：写作部门需要一致性工具支持",
+        severity: "critical",
+        status: "open",
+        createdAt: 20_000,
+        updatedAt: 20_000,
+      },
+    ];
+    nextRuntime.activeDecisionTickets = [
+      {
+        id: "decision:escalation:support:work-1:headcount",
+        companyId: "company-1",
+        revision: 2,
+        sourceType: "escalation",
+        sourceId: "escalation:support_request:support:work-1:dep-cto",
+        escalationId: "escalation:support_request:support:work-1:dep-cto",
+        decisionOwnerActorId: "co-ceo",
+        decisionType: "headcount",
+        summary: "需要人类确认支持资源",
+        options: [{ id: "approve", label: "批准支持" }],
+        requiresHuman: true,
+        status: "pending_human",
+        resolution: null,
+        resolutionOptionId: null,
+        createdAt: 20_000,
+        updatedAt: 20_000,
+      },
+    ];
+
+    const events = buildCompanyOpsAuditEvents({
+      companyId: "company-1",
+      previousRuntime,
+      nextRuntime,
+      actions: ["自动创建支持请求：小说创作部 -> 技术部"],
+      createdAt: 20_000,
+    });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      "ops_cycle_applied",
+      "support_request_record_upserted",
+      "escalation_record_upserted",
+      "decision_record_upserted",
+    ]);
+    expect(events[0]?.payload).toMatchObject({
+      actionCount: 1,
+      actions: ["自动创建支持请求：小说创作部 -> 技术部"],
+    });
+    expect(events[1]?.payload).toMatchObject({
+      requestId: "support:work-1:dep-cto",
+      status: "open",
+      targetDepartmentId: "dep-cto",
+    });
+    expect(events[2]?.payload).toMatchObject({
+      escalationId: "escalation:support_request:support:work-1:dep-cto",
+      status: "open",
+      severity: "critical",
+    });
+    expect(events[3]?.payload).toMatchObject({
+      ticketId: "decision:escalation:support:work-1:headcount",
+      decisionType: "headcount",
+      status: "pending_human",
+      revision: 2,
+    });
+  });
+
+  it("builds audit events for ops-removed support, escalation, and decision records", () => {
+    const previousRuntime = createRuntime([]);
+    previousRuntime.activeSupportRequests = [
+      {
+        id: "support:work-1:dep-cto",
+        workItemId: "work-1",
+        requesterDepartmentId: "dep-writing",
+        targetDepartmentId: "dep-cto",
+        requestedByActorId: "writer-lead",
+        ownerActorId: "co-cto",
+        summary: "小说创作部 需要 技术部 支持：写作部门需要一致性工具支持",
+        status: "cancelled",
+        createdAt: 10_000,
+        updatedAt: 30_000,
+      },
+    ];
+    previousRuntime.activeEscalations = [
+      {
+        id: "escalation:support_request:support:work-1:dep-cto",
+        sourceType: "support_request",
+        sourceId: "support:work-1:dep-cto",
+        companyId: "company-1",
+        workItemId: "work-1",
+        requesterDepartmentId: "dep-writing",
+        targetActorId: "co-ceo",
+        reason: "支持请求超过 SLA，需要 CEO 介入协调：小说创作部 需要 技术部 支持：写作部门需要一致性工具支持",
+        severity: "critical",
+        status: "resolved",
+        decisionTicketId: "decision:escalation:support:work-1:headcount",
+        createdAt: 20_000,
+        updatedAt: 30_000,
+      },
+    ];
+    previousRuntime.activeDecisionTickets = [
+      {
+        id: "decision:escalation:support:work-1:headcount",
+        companyId: "company-1",
+        revision: 3,
+        sourceType: "escalation",
+        sourceId: "escalation:support_request:support:work-1:dep-cto",
+        escalationId: "escalation:support_request:support:work-1:dep-cto",
+        decisionOwnerActorId: "co-ceo",
+        decisionType: "headcount",
+        summary: "需要人类确认支持资源",
+        options: [{ id: "approve", label: "批准支持" }],
+        requiresHuman: true,
+        status: "cancelled",
+        resolution: "支持请求已关闭，无需追加人力",
+        resolutionOptionId: "approve",
+        createdAt: 20_000,
+        updatedAt: 30_000,
+      },
+    ];
+    const nextRuntime = createRuntime([]);
+
+    const events = buildCompanyOpsAuditEvents({
+      companyId: "company-1",
+      previousRuntime,
+      nextRuntime,
+      actions: ["自动收口支持请求和升级项：小说创作部 -> 技术部"],
+      createdAt: 31_000,
+    });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      "ops_cycle_applied",
+      "support_request_record_deleted",
+      "escalation_record_deleted",
+      "decision_record_deleted",
+    ]);
+    expect(events[1]?.payload).toMatchObject({
+      requestId: "support:work-1:dep-cto",
+      status: "cancelled",
+      targetDepartmentId: "dep-cto",
+    });
+    expect(events[2]?.payload).toMatchObject({
+      escalationId: "escalation:support_request:support:work-1:dep-cto",
+      status: "resolved",
+      decisionTicketId: "decision:escalation:support:work-1:headcount",
+    });
+    expect(events[3]?.payload).toMatchObject({
+      ticketId: "decision:escalation:support:work-1:headcount",
+      status: "cancelled",
+      revision: 3,
+    });
   });
 });

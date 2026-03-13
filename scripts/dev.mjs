@@ -2,6 +2,27 @@ import { spawn } from "node:child_process";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
+async function runPreflight() {
+  await new Promise((resolve, reject) => {
+    const child = spawn(npmCommand, ["run", "authority:preflight"], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`authority preflight exited from signal ${signal}`));
+        return;
+      }
+      if ((code ?? 0) !== 0) {
+        reject(new Error(`authority preflight exited with code ${code ?? 1}`));
+        return;
+      }
+      resolve(null);
+    });
+  });
+}
+
 function startProcess(name, args) {
   const child = spawn(npmCommand, args, {
     stdio: "inherit",
@@ -14,6 +35,8 @@ function startProcess(name, args) {
 
   return child;
 }
+
+await runPreflight();
 
 const processes = [
   startProcess("authority", ["run", "authority:dev"]),

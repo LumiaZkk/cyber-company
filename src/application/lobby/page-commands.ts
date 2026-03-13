@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { buildCompanyBlueprint } from "../company/blueprint";
+import { appendOperatorActionAuditEvent } from "../governance/operator-action-audit";
 import { useLobbyCommunicationSyncState } from "./communication-sync";
 import { buildRequirementRoomRoute } from "../delegation/room-routing";
 import { requestTopicMatchesText } from "../delegation/request-topic";
@@ -62,6 +63,14 @@ export async function assignLobbyQuickTask(agentId: string, text: string) {
   await assignEmployeeTask(agentId, text);
 }
 
+function buildLobbyActionTextPreview(text: string, limit = 48) {
+  const trimmed = text.trim();
+  if (trimmed.length <= limit) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, limit)}...`;
+}
+
 export function buildLobbyGroupChatRoute(input: {
   activeRoomRecords: RequirementRoomRecord[];
   company: Company;
@@ -108,6 +117,7 @@ export function useLobbyPageCommands(input: {
   const [groupChatSubmitting, setGroupChatSubmitting] = useState(false);
   const { recoveringCommunication, recoverCommunication } = useLobbyCommunicationSyncState({
     activeCompany: input.activeCompany,
+    surface: "lobby",
     companySessionSnapshots: input.companySessionSnapshots,
     setCompanySessionSnapshots: input.setCompanySessionSnapshots,
     activeArtifacts: input.activeArtifacts,
@@ -147,7 +157,36 @@ export function useLobbyPageCommands(input: {
 
       setHireSubmitting(true);
       try {
-        return await hireLobbyEmployee(input.activeCompany, config);
+        const agentId = await hireLobbyEmployee(input.activeCompany, config);
+        await appendOperatorActionAuditEvent({
+          companyId: input.activeCompany.id,
+          action: "employee_hire",
+          surface: "lobby",
+          outcome: "succeeded",
+          details: {
+            targetActorId: agentId,
+            role,
+            descriptionPreview: buildLobbyActionTextPreview(description),
+            modelTier: config.modelTier,
+            budget: config.budget,
+          },
+        });
+        return agentId;
+      } catch (error) {
+        await appendOperatorActionAuditEvent({
+          companyId: input.activeCompany.id,
+          action: "employee_hire",
+          surface: "lobby",
+          outcome: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          details: {
+            role,
+            descriptionPreview: buildLobbyActionTextPreview(description),
+            modelTier: config.modelTier,
+            budget: config.budget,
+          },
+        });
+        throw error;
       } finally {
         setHireSubmitting(false);
       }
@@ -165,13 +204,68 @@ export function useLobbyPageCommands(input: {
     setUpdateRoleSubmitting(true);
     try {
       await updateLobbyEmployeeRole(agentId, nextRole, nextDescription);
+      await appendOperatorActionAuditEvent({
+        companyId: input.activeCompany.id,
+        action: "employee_role_update",
+        surface: "lobby",
+        outcome: "succeeded",
+        details: {
+          targetActorId: agentId,
+          role: nextRole,
+          descriptionPreview: buildLobbyActionTextPreview(nextDescription),
+          descriptionLength: nextDescription.length,
+        },
+      });
       return true;
+    } catch (error) {
+      await appendOperatorActionAuditEvent({
+        companyId: input.activeCompany.id,
+        action: "employee_role_update",
+        surface: "lobby",
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        details: {
+          targetActorId: agentId,
+          role: nextRole,
+          descriptionPreview: buildLobbyActionTextPreview(nextDescription),
+          descriptionLength: nextDescription.length,
+        },
+      });
+      throw error;
     } finally {
       setUpdateRoleSubmitting(false);
     }
-  }, []);
+  }, [input.activeCompany.id]);
 
-  const fireEmployee = useCallback((agentId: string) => fireLobbyEmployee(agentId), []);
+  const fireEmployee = useCallback(
+    async (agentId: string) => {
+      try {
+        await fireLobbyEmployee(agentId);
+        await appendOperatorActionAuditEvent({
+          companyId: input.activeCompany.id,
+          action: "employee_fire",
+          surface: "lobby",
+          outcome: "succeeded",
+          details: {
+            targetActorId: agentId,
+          },
+        });
+      } catch (error) {
+        await appendOperatorActionAuditEvent({
+          companyId: input.activeCompany.id,
+          action: "employee_fire",
+          surface: "lobby",
+          outcome: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          details: {
+            targetActorId: agentId,
+          },
+        });
+        throw error;
+      }
+    },
+    [input.activeCompany.id],
+  );
 
   const assignQuickTask = useCallback(async (agentId: string, text: string) => {
     const nextText = text.trim();
@@ -179,14 +273,37 @@ export function useLobbyPageCommands(input: {
       return false;
     }
 
+    const details = {
+      targetActorId: agentId,
+      taskPreview: buildLobbyActionTextPreview(nextText),
+      taskLength: nextText.length,
+    };
+
     setQuickTaskSubmitting(true);
     try {
       await assignLobbyQuickTask(agentId, nextText);
+      await appendOperatorActionAuditEvent({
+        companyId: input.activeCompany.id,
+        action: "quick_task_assign",
+        surface: "lobby",
+        outcome: "succeeded",
+        details,
+      });
       return true;
+    } catch (error) {
+      await appendOperatorActionAuditEvent({
+        companyId: input.activeCompany.id,
+        action: "quick_task_assign",
+        surface: "lobby",
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        details,
+      });
+      throw error;
     } finally {
       setQuickTaskSubmitting(false);
     }
-  }, []);
+  }, [input.activeCompany.id]);
 
   const buildGroupChatRoute = useCallback(
     async (inputValues: { memberIds: string[]; topic: string }) => {

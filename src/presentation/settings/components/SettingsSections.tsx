@@ -17,6 +17,7 @@ import type {
   GatewaySettingsQueryResult,
   GatewayTelegramConfig,
 } from "../../../application/gateway/settings";
+import type { AuthorityHealthSnapshot } from "../../../infrastructure/authority/contract";
 import { buildCollaborationContextSnapshot } from "../../../application/company/collaboration-context";
 import { buildDefaultOrgSettings } from "../../../domain/org/autonomy-policy";
 import type {
@@ -191,8 +192,11 @@ export function SettingsHeader(props: {
 
 export function SettingsDoctorSection(props: {
   doctorBaseline: GatewayDoctorBaseline;
+  authorityHealth: AuthorityHealthSnapshot | null;
 }) {
-  const { doctorBaseline } = props;
+  const { doctorBaseline, authorityHealth } = props;
+  const authorityDoctor = authorityHealth?.authority.doctor ?? null;
+  const authorityPreflight = authorityHealth?.authority.preflight ?? null;
 
   return (
     <Card className="shadow-sm border-slate-200">
@@ -219,7 +223,11 @@ export function SettingsDoctorSection(props: {
           detail={
             doctorBaseline.lastError
               ? `最近同步错误：${doctorBaseline.lastError}`
-              : `运行模式 ${doctorBaseline.mode}，已切到 command 的链路：${doctorBaseline.commandRoutes.join(", ")}`
+              : authorityDoctor
+                ? `运行模式 ${doctorBaseline.mode} · 备份 ${authorityDoctor.backupCount} 份 · 最新备份 ${
+                    authorityDoctor.latestBackupAt ? formatTime(authorityDoctor.latestBackupAt) : "尚无"
+                  }`
+                : `运行模式 ${doctorBaseline.mode}，已切到 command 的链路：${doctorBaseline.commandRoutes.join(", ")}`
           }
           layers={doctorBaseline.layers.map((layer) => ({
             id: layer.id,
@@ -247,7 +255,7 @@ export function SettingsDoctorSection(props: {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <div className="text-sm font-semibold text-slate-900">当前写入边界</div>
             <div className="mt-2 text-xs text-slate-600">
@@ -276,7 +284,83 @@ export function SettingsDoctorSection(props: {
               ))}
             </div>
           </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-sm font-semibold text-slate-900">Authority 运维快照</div>
+            {authorityDoctor ? (
+              <>
+                <div className="mt-2 text-xs text-slate-600">
+                  Schema：v{authorityDoctor.schemaVersion ?? "?"}
+                </div>
+                <div className="mt-2 text-xs text-slate-600">
+                  备份：<strong>{authorityDoctor.backupCount}</strong> 份
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  最近备份：{authorityDoctor.latestBackupAt ? formatTime(authorityDoctor.latestBackupAt) : "尚无"}
+                </div>
+                <div className="mt-1 text-xs text-slate-600 break-all">
+                  备份目录：{authorityDoctor.backupDir}
+                </div>
+                <div className="mt-2 text-xs text-slate-600">
+                  Companies / Runtimes / Events：{authorityDoctor.companyCount} / {authorityDoctor.runtimeCount} / {authorityDoctor.eventCount}
+                </div>
+                {authorityDoctor.issues.length > 0 ? (
+                  <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                    {authorityDoctor.issues[0]}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="mt-2 text-xs text-slate-500">还没拿到 Authority 运维快照。</div>
+            )}
+          </div>
         </div>
+
+        {authorityPreflight ? (
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-slate-900">启动前检查</div>
+              <Badge variant="outline" className={doctorToneClass(authorityPreflight.status)}>
+                {authorityPreflight.status}
+              </Badge>
+            </div>
+            <div className="mt-2 text-xs text-slate-600">
+              SQLite：{authorityPreflight.dbExists ? "已存在，启动会直接复用" : "首次启动会自动初始化"}
+            </div>
+            <div className="mt-1 text-xs text-slate-600">
+              Schema：v{authorityPreflight.schemaVersion ?? "?"}
+            </div>
+            <div className="mt-1 text-xs text-slate-600">
+              标准备份：{authorityPreflight.backupCount} 份
+              {authorityPreflight.latestBackupAt ? ` · 最新 ${formatTime(authorityPreflight.latestBackupAt)}` : ""}
+            </div>
+            <div className="mt-1 text-xs text-slate-600 break-all">
+              Data dir：{authorityPreflight.dataDir}
+            </div>
+            <div className="mt-1 text-xs text-slate-600 break-all">
+              Backup dir：{authorityPreflight.backupDir}
+            </div>
+            {authorityPreflight.notes.length > 0 ? (
+              <div className="mt-2 space-y-1">
+                {authorityPreflight.notes.map((note) => (
+                  <div key={note} className="text-[11px] text-slate-500">
+                    - {note}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {authorityPreflight.warnings.length > 0 ? (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                {authorityPreflight.warnings[0]}
+              </div>
+            ) : null}
+            {authorityPreflight.issues.length > 0 ? (
+              <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-[11px] text-rose-700">
+                {authorityPreflight.issues[0]}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

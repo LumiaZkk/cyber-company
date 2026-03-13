@@ -23,6 +23,10 @@ export function buildAuthorityRuntimeStatePatch(input: {
   | "activeSupportRequests"
   | "activeEscalations"
   | "activeDecisionTickets"
+  | "activeAgentSessions"
+  | "activeAgentRuns"
+  | "activeAgentRuntime"
+  | "activeAgentStatuses"
   | "activeCompany"
 > {
   const runtimePatch = runtimeStateFromAuthorityRuntimeSnapshot(input.snapshot);

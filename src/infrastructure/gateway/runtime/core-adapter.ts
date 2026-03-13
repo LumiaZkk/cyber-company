@@ -55,6 +55,10 @@ type BackendCoreExtras = Partial<
     | "getSkillsStatus"
     | "getHealth"
     | "getStatus"
+    | "getSessionStatus"
+    | "subscribeAgentRuntime"
+    | "listProcesses"
+    | "pollProcess"
     | "getConfigSnapshot"
     | "patchConfig"
     | "alignAgentSkillsToDefaults"
@@ -282,6 +286,18 @@ export function createAgentBackendFromCore(
     getStatus:
       extras.getStatus ??
       (async () => unsupported("getStatus")),
+    getSessionStatus:
+      extras.getSessionStatus ??
+      (async () => unsupported("getSessionStatus")),
+    subscribeAgentRuntime:
+      extras.subscribeAgentRuntime ??
+      (() => {
+        return () => {};
+      }),
+    listProcesses:
+      extras.listProcesses,
+    pollProcess:
+      extras.pollProcess,
     alignAgentSkillsToDefaults:
       extras.alignAgentSkillsToDefaults ??
       (async () => unsupported("alignAgentSkillsToDefaults")),

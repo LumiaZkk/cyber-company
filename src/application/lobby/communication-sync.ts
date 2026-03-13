@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { syncDelegationClosedLoopState } from "../delegation/closed-loop";
 import { gateway } from "../gateway";
+import { appendOperatorActionAuditEvent } from "../governance/operator-action-audit";
 import type { RequirementSessionSnapshot } from "../../domain/mission/requirement-snapshot";
 import type { Company } from "../../domain/org/types";
 import type { ArtifactRecord } from "../../domain/artifact/types";
@@ -27,6 +28,7 @@ function extractChatSyncSessionKey(payload: unknown): string | null {
 
 export function useLobbyCommunicationSyncState(params: {
   activeCompany: Company;
+  surface?: "lobby";
   companySessionSnapshots: RequirementSessionSnapshot[];
   setCompanySessionSnapshots: (snapshots: RequirementSessionSnapshot[]) => void;
   activeArtifacts: ArtifactRecord[];
@@ -89,7 +91,32 @@ export function useLobbyCommunicationSyncState(params: {
         current.setCompanySessionSnapshots(sessionSnapshots);
         current.replaceDispatchRecords(dispatches);
         await current.updateCompany(companyPatch);
+        if (!options?.silent) {
+          void appendOperatorActionAuditEvent({
+            companyId: current.activeCompany.id,
+            action: "communication_recovery",
+            surface: params.surface ?? "lobby",
+            outcome: "succeeded",
+            force: options?.force,
+            requestsAdded: summary.requestsAdded,
+            requestsUpdated: summary.requestsUpdated,
+            tasksRecovered: summary.tasksRecovered,
+            handoffsRecovered: summary.handoffsRecovered,
+          });
+        }
         return summary;
+      } catch (error) {
+        if (!options?.silent) {
+          void appendOperatorActionAuditEvent({
+            companyId: latestParamsRef.current.activeCompany.id,
+            action: "communication_recovery",
+            surface: params.surface ?? "lobby",
+            outcome: "failed",
+            force: options?.force,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        throw error;
       } finally {
         recoveryInFlightRef.current = false;
         setRecoveringCommunication(false);

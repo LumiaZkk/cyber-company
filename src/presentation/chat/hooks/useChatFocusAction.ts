@@ -2,6 +2,7 @@ import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { executeChatFocusAction, type ChatFocusCommand } from "../../../application/delegation/focus-action";
 import { backend, resolveCompanyActorConversation, type ProviderManifest } from "../../../application/gateway";
 import { formatAgentLabel } from "../../../application/governance/focus-summary";
+import { appendOperatorActionAuditEvent } from "../../../application/governance/operator-action-audit";
 import type { FocusProgressEvent } from "../../../application/governance/chat-progress";
 import type { DispatchRecord } from "../../../domain/delegation/types";
 import type { Company } from "../../../domain/org/types";
@@ -82,6 +83,24 @@ export function useChatFocusAction(input: {
             ? formatAgentLabel(input.activeCompany, action.followupTargetAgentId)
             : null);
         const trackingId = result.dispatchId ?? result.actionTrackingId;
+        if (input.activeCompany) {
+          void appendOperatorActionAuditEvent({
+            companyId: input.activeCompany.id,
+            action: "focus_action_dispatch",
+            surface: "chat",
+            outcome: "succeeded",
+            details: {
+              focusActionId: action.id,
+              focusActionKind: action.kind,
+              label: action.label,
+              targetActorId: result.runtimeTargetAgentId ?? action.targetAgentId ?? null,
+              followupTargetActorId: action.followupTargetAgentId ?? null,
+              dispatchId: result.dispatchId ?? null,
+              trackingId,
+              sessionKey: result.resolvedSessionKey,
+            },
+          });
+        }
         input.appendLocalProgressEvent({
           id: trackingId,
           timestamp: actionStartedAt,
@@ -152,6 +171,22 @@ export function useChatFocusAction(input: {
         );
         toast.success("操作已发送", action.description);
       } catch (error) {
+        if (input.activeCompany) {
+          void appendOperatorActionAuditEvent({
+            companyId: input.activeCompany.id,
+            action: "focus_action_dispatch",
+            surface: "chat",
+            outcome: "failed",
+            error: error instanceof Error ? error.message : String(error),
+            details: {
+              focusActionId: action.id,
+              focusActionKind: action.kind,
+              label: action.label,
+              targetActorId: action.targetAgentId ?? null,
+              followupTargetActorId: action.followupTargetAgentId ?? null,
+            },
+          });
+        }
         input.appendLocalProgressEvent({
           id: `focus-failed:${action.id}:${Date.now()}`,
           timestamp: Date.now(),

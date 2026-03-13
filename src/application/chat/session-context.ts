@@ -19,6 +19,7 @@ import { summarizeStepLabel } from "../../application/mission/conversation-work-
 import { resolveExecutionState } from "../../application/mission/execution-state";
 import { buildTaskObjectSnapshot } from "../../application/mission/task-object";
 import { extractTaskTracker } from "../../application/mission/task-tracker";
+import type { AgentRuntimeRecord } from "../agent-runtime";
 import { buildCeoControlSurface } from "../../application/governance/ceo-control-surface";
 import { evaluateSlaAlerts } from "../../application/governance/sla-rules";
 import type {
@@ -121,6 +122,7 @@ type ChatFallbackAlert = {
 export type BuildChatSessionContextInput = {
   activeCompany: Company | null;
   activeConversationState: ConversationStateRecord | null;
+  activeAgentRuntime?: AgentRuntimeRecord[] | null;
   activeRequirementRoom: RequirementRoomRecord | null;
   activeRoomBindings: RoomConversationBindingRecord[];
   activeRoomRecords: RequirementRoomRecord[];
@@ -149,6 +151,11 @@ export type BuildChatSessionContextInput = {
 };
 
 export function buildChatSessionContext(input: BuildChatSessionContextInput) {
+  const activeAgentRuntime = input.activeAgentRuntime ?? [];
+  const targetAgentRuntime =
+    (input.targetAgentId
+      ? activeAgentRuntime.find((runtime) => runtime.agentId === input.targetAgentId) ?? null
+      : null);
   const requirementRoomTargetAgentIds = [
     ...new Set(
       (
@@ -289,6 +296,7 @@ export function buildChatSessionContext(input: BuildChatSessionContextInput) {
   const previewTimestamp = latestMessageTimestamp || 1;
 
   const sessionExecution = resolveExecutionState({
+    agentRuntime: targetAgentRuntime,
     evidenceTexts: [
       ...input.messages
         .slice(-8)

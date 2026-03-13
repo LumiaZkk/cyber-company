@@ -153,6 +153,9 @@ function RequirementCenterContent({
   activeRequirementAggregates,
   activeRequirementEvidence,
   activeDecisionTickets,
+  activeAgentSessions,
+  activeAgentRuntime,
+  activeAgentStatuses,
   primaryRequirementId,
   activeArtifacts,
   replaceDispatchRecords,
@@ -160,6 +163,7 @@ function RequirementCenterContent({
   updateCompany,
   applyRequirementTransition,
   upsertWorkItemRecord,
+  resolveDecisionTicket,
   upsertDecisionTicketRecord,
   ensureRequirementRoomForAggregate,
 }: RequirementCenterContentProps) {
@@ -177,6 +181,9 @@ function RequirementCenterContent({
     fileTasks,
   } = useBoardRuntimeState({
     activeCompany,
+    activeAgentSessions,
+    activeAgentRuntime,
+    activeAgentStatuses,
     activeArtifacts,
     connected,
     isPageVisible,
@@ -284,6 +291,7 @@ function RequirementCenterContent({
 
   const { recoveringCommunication, handleRecoverCommunication } = useBoardCommunicationSync({
     activeCompany,
+    surface: "requirement_center",
     companySessionSnapshots,
     setCompanySessionSnapshots,
     activeArtifacts,
@@ -424,12 +432,11 @@ function RequirementCenterContent({
       return;
     }
     setDecisionSubmittingOptionId(optionId);
-    upsertDecisionTicketRecord({
-      ...openRequirementDecisionTicket,
-      status: "resolved",
-      resolutionOptionId: option.id,
+    resolveDecisionTicket({
+      ticketId: openRequirementDecisionTicket.id,
+      optionId: option.id,
       resolution: option.summary ?? option.label,
-      updatedAt: Date.now(),
+      timestamp: Date.now(),
     });
     setDecisionSubmittingOptionId(null);
     toast.success("已记录你的决策", "当前主线会按这张决策票继续推进。");

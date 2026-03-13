@@ -29,6 +29,30 @@ Phase 2 已经把主链 mutation 收进 authority command。Phase 3 要解决的
 - 哪些对象需要 revision
 - 哪些对象还缺独立 command
 
+## 1.1 当前切片进度
+
+`Phase 3 / Slice A` 目前拆成两刀：
+
+- `Slice A-1`
+  已完成。内容包括：
+  - `RequirementRoom / Dispatch / Artifact / DecisionTicket` 补齐 revision baseline
+  - authority snapshot、runtime normalizer、persistence、authority-backed tests 已同步 revision 语义
+  - `DecisionTicket` 已开始走 `decision.upsert / decision.delete` authority command，而不是只靠本地 store 改状态
+- `Slice A-2`
+  已启动。当前已完成：
+  - `DecisionTicket` 的显式 `resolve / cancel` 命令语义已经落地
+  - Requirement Center / Chat 的决策动作已切到显式命令
+  - `loadRuntime()` 已不再承担“读一下顺手保存”的职责；repair 改成显式 `repairRuntimeIfNeeded()`
+  - `decision.upsert / delete / resolve / cancel` 已开始写入 authority company event log，形成第一批决策 lifecycle audit 记录
+  - `dispatch.create / delete` 已开始写入 `dispatch_record_upserted / dispatch_record_deleted`
+  - `room.append / delete` 已开始写入 `room_record_upserted / room_record_deleted`
+  - `room-bindings.upsert` 已开始写入 `room_bindings_upserted`
+  - `artifact.upsert / delete / sync-mirror` 已开始写入 `artifact_record_upserted / artifact_record_deleted / artifact_mirror_synced`
+  - 显式 `repairRuntimeIfNeeded()` 已开始写入 `runtime_repaired`
+  - `companyOpsEngine` 已开始为自治引擎生成或收走的 `support request / escalation / decision` 写入 `ops_cycle_applied`、对应的 `*_record_upserted` 和 `*_record_deleted`
+  剩余内容：
+  - 把 authority repair / audit 规则写成更清晰的 operator-level 约束
+
 ## 2. 当前代码基线
 
 从当前代码看，authority runtime snapshot 已经把关键对象列成独立 slices：
@@ -59,10 +83,10 @@ Phase 2 已经把主链 mutation 收进 authority command。Phase 3 要解决的
 - `artifact.upsert`
 - `artifact.sync-mirror`
 - `artifact.delete`
-
-当前还没有独立 authority command 的关键对象：
-
-- `DecisionTicket`
+- `decision.upsert`
+- `decision.delete`
+- `decision.resolve`
+- `decision.cancel`
 
 `DecisionTicket` 现在主要由两条 authority 内部路径派生生成：
 
@@ -445,6 +469,37 @@ Phase 3 要求：
 
 - 收紧 read-repair 边界
 - 把日常 repair 从读路径迁到显式入口
+
+### Slice D
+
+- 为关键决策动作补第一批 company event audit
+- 先覆盖：
+  - `decision.upsert`
+  - `decision.delete`
+  - `decision.resolve`
+  - `decision.cancel`
+  - `dispatch.create`
+  - `dispatch.delete`
+  - `room.append`
+  - `room.delete`
+  - `room-bindings.upsert`
+  - `artifact.upsert`
+  - `artifact.delete`
+  - `artifact.sync-mirror`
+  - `runtime repair`
+- `companyOpsEngine` 自动生成或收走的 `support request / escalation / decision`
+- `requirement_*` workflow event payload 要补上：
+  - `source`
+  - `changedFields`
+  - `previousAggregateId`
+  - `previousOwnerActorId / previousOwnerLabel`
+  - `previousRoomId`
+  - `previousRevision`
+- 显式 operator action 先补：
+  - `operator_action_recorded`
+  - 第一批覆盖 `communication_recovery`
+  - surface 至少覆盖 `chat / board / requirement_center / lobby`
+  - 第二批覆盖 chat `focus action` 的显式人工催办/重派/继续推进、chat `takeover pack` 复制、chat `打开需求团队房间`，以及运营大厅 `blueprint copy / knowledge sync / group chat / quick task / hire / role update / fire`
 
 ## 8. 验收标准
 

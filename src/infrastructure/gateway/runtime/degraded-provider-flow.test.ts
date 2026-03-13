@@ -3,6 +3,7 @@ import type { Company } from "../../../domain";
 import { appendRequirementRoomMessages, buildRequirementRoomRecord } from "../../../application/delegation/room-routing";
 import { buildProviderManifest } from "./bootstrap";
 import { sendTurnToCompanyActor } from "./runtime";
+import { buildRoomRecordIdFromWorkItem, normalizeStrategicWorkItemId } from "../../../application/mission/work-item";
 import {
   createBackendCapabilities,
   type ActorRef,
@@ -72,6 +73,8 @@ describe("degraded provider flow", () => {
       providerId: backend.providerId,
       capabilities: createBackendCapabilities(),
     });
+    const workItemId = normalizeStrategicWorkItemId("mission:rewrite-ch02") ?? "mission:rewrite-ch02";
+    const roomId = buildRoomRecordIdFromWorkItem(workItemId);
 
     expect(manifest.actorStrategy).toBe("single-executor");
     expect(manifest.roomStrategy).toBe("product-room");
@@ -80,8 +83,8 @@ describe("degraded provider flow", () => {
 
     const room = buildRequirementRoomRecord({
       companyId: company.id,
-      workItemId: "mission:rewrite-ch02",
-      sessionKey: "room:workitem:mission:rewrite-ch02",
+      workItemId,
+      sessionKey: `room:${roomId}`,
       title: "重新完成第 2 章",
       memberIds: ["co-ceo", "co-emp-1", "co-emp-2"],
       ownerAgentId: "co-ceo",
@@ -139,7 +142,7 @@ describe("degraded provider flow", () => {
       ],
     });
 
-    expect(nextRoom.id).toBe("workitem:mission:rewrite-ch02");
+    expect(nextRoom.id).toBe(roomId);
     expect(nextRoom.transcript).toHaveLength(2);
     expect(nextRoom.transcript[1]?.senderAgentId).toBe("co-emp-1");
     expect(nextRoom.transcript[1]?.text).toContain("已交付新版正文");

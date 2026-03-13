@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildOrgAdvisorSnapshot } from "../../application/assignment/org-fit";
 import {
+  mapAgentRuntimeAvailabilityToLegacyStatus,
+  type AgentSessionRecord,
+  type AgentRuntimeRecord,
+} from "../../application/agent-runtime";
+import {
   gateway,
   type AgentListEntry,
   type GatewaySessionRow,
@@ -44,6 +49,8 @@ const EMPTY_DIRECTORY_SURFACE = {
 };
 
 type BuildEmployeeDirectorySurfaceInput = {
+  activeAgentSessions: AgentSessionRecord[];
+  activeAgentRuntime: AgentRuntimeRecord[];
   agents: AgentListEntry[];
   company: Company;
   currentTime: number;
@@ -51,6 +58,8 @@ type BuildEmployeeDirectorySurfaceInput = {
 };
 
 export function buildEmployeeDirectorySurface({
+  activeAgentSessions,
+  activeAgentRuntime,
   agents,
   company,
   currentTime,
@@ -68,22 +77,39 @@ export function buildEmployeeDirectorySurface({
   const employeeInsights = buildEmployeeOperationalInsights({
     company,
     sessions: parsedSessions,
+    activeAgentRuntime,
     now: currentTime,
   });
+  const runtimeByAgentId = new Map(activeAgentRuntime.map((runtime) => [runtime.agentId, runtime]));
+  const sessionRuntimeByKey = new Map(
+    activeAgentSessions.map((session) => [session.sessionKey, session] as const),
+  );
 
   const employeesData: DirectoryEmployeeRow[] = company.employees.map((employee) => {
     const liveAgent = agents.find((agent) => agent.id === employee.agentId);
     const employeeSessions = parsedSessions.filter((session) => session.agentId === employee.agentId);
+    const agentRuntime = runtimeByAgentId.get(employee.agentId) ?? null;
     const lastActive = employeeSessions.reduce((latest, session) => {
       return Math.max(latest, resolveSessionUpdatedAt(session));
     }, 0);
-    const status = (
-      employeeSessions.some((session) => isSessionActive(session, currentTime))
-        ? "running"
-        : lastActive > 0 || Boolean(liveAgent)
-          ? "idle"
-          : "stopped"
-    ) as DirectoryEmployeeRow["status"];
+    const runtimeLastActive = Math.max(
+      agentRuntime?.lastSeenAt ?? 0,
+      agentRuntime?.lastBusyAt ?? 0,
+      agentRuntime?.lastIdleAt ?? 0,
+    );
+    const status = agentRuntime
+      ? mapAgentRuntimeAvailabilityToLegacyStatus(agentRuntime.availability)
+      : (employeeSessions.some((session) => {
+          const sessionRuntime = sessionRuntimeByKey.get(session.key);
+          if (sessionRuntime) {
+            return sessionRuntime.sessionState === "running" || sessionRuntime.sessionState === "streaming";
+          }
+          return isSessionActive(session, currentTime);
+        })
+          ? "running"
+          : Math.max(lastActive, runtimeLastActive) > 0 || Boolean(liveAgent)
+            ? "idle"
+            : "stopped");
 
     const employeeSkills =
       "skills" in employee && Array.isArray((employee as { skills?: unknown }).skills)
@@ -92,8 +118,8 @@ export function buildEmployeeDirectorySurface({
 
     return {
       ...employee,
-      lastActive,
-      lastActiveAt: lastActive,
+      lastActive: Math.max(lastActive, runtimeLastActive),
+      lastActiveAt: Math.max(lastActive, runtimeLastActive),
       realName: liveAgent?.name || employee.nickname,
       sessionCount: employeeSessions.length,
       skills: liveAgent?.identity?.theme ? [] : employeeSkills,
@@ -123,7 +149,7 @@ export function buildEmployeeDirectorySurface({
 }
 
 export function useOrgDirectoryQuery() {
-  const { activeCompany } = useOrgQuery();
+  const { activeCompany, activeAgentSessions, activeAgentRuntime } = useOrgQuery();
   const supportsAgentFiles = useGatewayStore((state) => state.capabilities.agentFiles);
   const manifest = useGatewayStore((state) => state.manifest);
   const [agents, setAgents] = useState<AgentListEntry[]>([]);
@@ -189,12 +215,14 @@ export function useOrgDirectoryQuery() {
       return EMPTY_DIRECTORY_SURFACE;
     }
     return buildEmployeeDirectorySurface({
+      activeAgentSessions,
+      activeAgentRuntime,
       agents,
       company: activeCompany,
       currentTime,
       sessions,
     });
-  }, [activeCompany, agents, currentTime, sessions]);
+  }, [activeAgentRuntime, activeAgentSessions, activeCompany, agents, currentTime, sessions]);
 
   return {
     activeCompany,

@@ -18,6 +18,11 @@ import {
   waitForExecutorAgentsAbsent,
 } from "./company-delete";
 import {
+  AUTHORITY_SCHEMA_VERSION,
+  readAuthorityDoctorSnapshot,
+  readAuthorityPreflightSnapshot,
+} from "./ops";
+import {
   mergeAuthorityControlledRuntimeSlices,
   reconcileAuthorityRequirementRuntime,
   runtimeRequirementControlChanged,
@@ -28,11 +33,22 @@ import { resolveLocalOpenClawGatewayToken } from "./openclaw-local-auth";
 import { parseCompanyBlueprint } from "../../../src/application/company/blueprint";
 import { buildCollaborationContextSnapshot } from "../../../src/application/company/collaboration-context";
 import {
+  applyProviderSessionStatusToAgentRuntime,
+  applyProviderRuntimeEvent,
+  buildCanonicalAgentStatusProjection,
+  buildAgentRuntimeProjection,
+  buildAgentSessionRecordsFromSessions,
+  normalizeProviderRuntimeEvent,
+  normalizeProviderSessionStatus,
+  type AgentRunRecord,
+} from "../../../src/application/agent-runtime";
+import {
   buildRoomConversationBindingKey,
   mergeRoomConversationBindings,
 } from "../../../src/application/delegation/room-records";
 import {
   buildRequirementWorkflowEvidence,
+  buildRequirementWorkflowEvidencePayload,
   resolveRequirementWorkflowEventKind,
 } from "../../../src/application/mission/requirement-workflow";
 import {
@@ -86,7 +102,9 @@ import type {
   AuthorityArtifactDeleteRequest,
   AuthorityArtifactMirrorSyncRequest,
   AuthorityArtifactUpsertRequest,
+  AuthorityDecisionTicketCancelRequest,
   AuthorityDecisionTicketDeleteRequest,
+  AuthorityDecisionTicketResolveRequest,
   AuthorityDecisionTicketUpsertRequest,
   AuthorityDispatchDeleteRequest,
   AuthorityDispatchUpsertRequest,
@@ -108,6 +126,7 @@ import type {
   AuthoritySwitchCompanyRequest,
 } from "../../../src/infrastructure/authority/contract";
 import type { ChatMessage } from "../../../src/infrastructure/gateway/openclaw/sessions";
+import type { ProviderRuntimeEvent } from "../../../src/infrastructure/gateway/runtime/types";
 import { sanitizeRequirementEvidenceEvents } from "../../../src/infrastructure/company/persistence/requirement-evidence-persistence";
 
 type StoredChatMessage = {
@@ -137,6 +156,7 @@ const AUTHORITY_PORT = Number.parseInt(process.env.CYBER_COMPANY_AUTHORITY_PORT 
 const DATA_DIR = path.join(os.homedir(), ".cyber-company", "authority");
 const DB_PATH = path.join(DATA_DIR, "authority.sqlite");
 const DEFAULT_OPENCLAW_URL = "ws://localhost:18789";
+const EXECUTOR_PROVIDER_ID = "openclaw";
 let syncAuthorityAgentFileMirror:
   | ((file: { agentId: string; name: string; content: string }) => void)
   | null = null;
@@ -157,6 +177,10 @@ const EMPTY_RUNTIME = (companyId: string): AuthorityCompanyRuntimeSnapshot => ({
   activeSupportRequests: [],
   activeEscalations: [],
   activeDecisionTickets: [],
+  activeAgentSessions: [],
+  activeAgentRuns: [],
+  activeAgentRuntime: [],
+  activeAgentStatuses: [],
   updatedAt: Date.now(),
 });
 
@@ -341,7 +365,35 @@ function normalizeRuntimeSnapshot(
       ...ticket,
       revision: normalizeRevision(ticket.revision),
     })),
+    activeAgentSessions: [...(snapshot.activeAgentSessions ?? [])].sort(
+      (left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0),
+    ),
+    activeAgentRuns: [...(snapshot.activeAgentRuns ?? [])].sort(
+      (left, right) => right.lastEventAt - left.lastEventAt,
+    ),
+    activeAgentRuntime: [...(snapshot.activeAgentRuntime ?? [])].sort((left, right) =>
+      left.agentId.localeCompare(right.agentId),
+    ),
+    activeAgentStatuses: [...(snapshot.activeAgentStatuses ?? [])].sort((left, right) =>
+      left.agentId.localeCompare(right.agentId),
+    ),
   };
+}
+
+function normalizeExecutorRunState(value: unknown): AgentRunRecord["state"] | null {
+  switch (value) {
+    case "accepted":
+    case "running":
+    case "streaming":
+    case "completed":
+    case "aborted":
+    case "error":
+      return value;
+    case "started":
+      return "accepted";
+    default:
+      return null;
+  }
 }
 
 function stringifyError(error: unknown): string {
@@ -444,6 +496,10 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function ageMs(timestamp: number | null | undefined, now: number): number {
+  return Math.max(0, now - (timestamp ?? 0));
+}
+
 function toPublicExecutorConfig(config: StoredExecutorConfig): AuthorityExecutorConfig {
   return {
     type: "openclaw",
@@ -490,6 +546,8 @@ class AuthorityRepository {
             ? "Authority 已接入 OpenClaw。"
             : executorConfig.lastError ?? "Authority 尚未接入 OpenClaw。",
       };
+    const doctor = readAuthorityDoctorSnapshot({ dbPath: this.dbPath });
+    const preflight = readAuthorityPreflightSnapshot({ dbPath: this.dbPath });
     return {
       ok: true,
       executor,
@@ -498,6 +556,32 @@ class AuthorityRepository {
         dbPath: this.dbPath,
         connected: true,
         startedAt: this.startedAt,
+        doctor: {
+          status: doctor.status,
+          schemaVersion: doctor.schemaVersion,
+          backupDir: doctor.backupDir,
+          backupCount: doctor.backupCount,
+          latestBackupAt: doctor.latestBackupAt,
+          companyCount: doctor.companyCount,
+          runtimeCount: doctor.runtimeCount,
+          eventCount: doctor.eventCount,
+          latestRuntimeAt: doctor.latestRuntimeAt,
+          latestEventAt: doctor.latestEventAt,
+          activeCompanyId: doctor.activeCompanyId,
+          issues: doctor.issues,
+        },
+        preflight: {
+          status: preflight.status,
+          dataDir: preflight.dataDir,
+          backupDir: preflight.backupDir,
+          dbExists: preflight.dbExists,
+          schemaVersion: preflight.schemaVersion,
+          backupCount: preflight.backupCount,
+          latestBackupAt: preflight.latestBackupAt,
+          notes: preflight.notes,
+          warnings: preflight.warnings,
+          issues: preflight.issues,
+        },
       },
     };
   }
@@ -673,6 +757,7 @@ class AuthorityRepository {
         updated_at INTEGER NOT NULL
       );
     `);
+    this.writeMetadata("schemaVersion", String(AUTHORITY_SCHEMA_VERSION));
 
     const countRow = this.db.prepare("SELECT COUNT(*) as count FROM executor_configs").get() as
       | { count?: number }
@@ -1120,50 +1205,263 @@ class AuthorityRepository {
     this.setActiveCompanyId(companyId);
   }
 
-  loadRuntime(companyId: string): AuthorityCompanyRuntimeSnapshot {
+  private buildRuntimeSnapshotFromTables(
+    companyId: string,
+    company: Company | null,
+  ): AuthorityCompanyRuntimeSnapshot {
+    const aggregates = this.readPayloadTable<RequirementAggregateRecord>("requirement_aggregates", companyId);
+    return this.computeAgentRuntimeSnapshot(
+      companyId,
+      normalizeRuntimeSnapshot(company, {
+        companyId,
+        activeMissionRecords: this.readPayloadTable<ConversationMissionRecord>("missions", companyId),
+        activeConversationStates: this.readPayloadTable<ConversationStateRecord>("conversation_states", companyId),
+        activeWorkItems: this.readPayloadTable<WorkItemRecord>("work_items", companyId),
+        activeRequirementAggregates: aggregates,
+        activeRequirementEvidence: this.readPayloadTable<RequirementEvidenceEvent>("requirement_evidence", companyId),
+        activeRoomRecords: this.readPayloadTable<RequirementRoomRecord>("rooms", companyId),
+        activeRoundRecords: this.readPayloadTable<RoundRecord>("rounds", companyId),
+        activeArtifacts: this.readPayloadTable<ArtifactRecord>("artifacts", companyId),
+        activeDispatches: this.readPayloadTable<DispatchRecord>("dispatches", companyId),
+        activeRoomBindings: this.readPayloadTable<RoomConversationBindingRecord>("room_bindings", companyId),
+        activeSupportRequests: this.readPayloadTable<SupportRequestRecord>("support_requests", companyId),
+        activeEscalations: this.readPayloadTable<EscalationRecord>("escalations", companyId),
+        activeDecisionTickets: this.readPayloadTable<DecisionTicketRecord>("decision_tickets", companyId),
+        activeAgentSessions: [],
+        activeAgentRuns: [],
+        activeAgentRuntime: [],
+        activeAgentStatuses: [],
+        primaryRequirementId: aggregates.find((aggregate) => aggregate.primary)?.id ?? null,
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  findCompanyIdByAgentId(agentId: string): string | null {
+    const row = this.db.prepare("SELECT company_id FROM employees WHERE agent_id = ?").get(agentId) as
+      | { company_id?: string | null }
+      | undefined;
+    return row?.company_id ?? null;
+  }
+
+  private getCompanyAgentIdsForRuntime(companyId: string): string[] {
+    const company = this.loadCompanyById(companyId);
+    return company?.employees.map((employee) => employee.agentId) ?? [];
+  }
+
+  private readActiveExecutorRuns(companyId: string): AgentRunRecord[] {
+    const rows = this.db.prepare(`
+      SELECT id, actor_id, session_key, status, started_at, finished_at, payload_json
+      FROM executor_runs
+      WHERE company_id = ?
+      ORDER BY started_at DESC
+    `).all(companyId) as Array<{
+      id: string;
+      actor_id: string;
+      session_key: string;
+      status: string;
+      started_at: number;
+      finished_at?: number | null;
+      payload_json?: string;
+    }>;
+
+    return rows
+      .map((row) => {
+        const payload = parseJson<Record<string, unknown>>(row.payload_json, {});
+        const state = normalizeExecutorRunState(row.status);
+        if (!state || state === "completed" || state === "aborted" || state === "error") {
+          return null;
+        }
+        return {
+          runId: row.id,
+          agentId: row.actor_id,
+          sessionKey: row.session_key,
+          providerId: EXECUTOR_PROVIDER_ID,
+          state,
+          startedAt: row.started_at,
+          lastEventAt: readNumber(payload.lastEventAt) ?? row.finished_at ?? row.started_at,
+          endedAt: row.finished_at ?? null,
+          streamKindsSeen: ["lifecycle"],
+          error: readString(payload.errorMessage),
+        } satisfies AgentRunRecord;
+      })
+      .filter(isPresent)
+      .sort((left, right) => right.lastEventAt - left.lastEventAt);
+  }
+
+  private computeAgentRuntimeSnapshot(
+    companyId: string,
+    snapshot: AuthorityCompanyRuntimeSnapshot,
+    overrides?: {
+      activeAgentSessions?: AuthorityCompanyRuntimeSnapshot["activeAgentSessions"];
+      activeAgentRuns?: AuthorityCompanyRuntimeSnapshot["activeAgentRuns"];
+    },
+  ): AuthorityCompanyRuntimeSnapshot {
+    const company = this.loadCompanyById(companyId);
+    const normalizedCompany = company ? normalizeCompany(company) : null;
+    const activeAgentSessions = [...(overrides?.activeAgentSessions ?? snapshot.activeAgentSessions ?? [])].sort(
+      (left, right) => (right.lastSeenAt ?? 0) - (left.lastSeenAt ?? 0),
+    );
+    const activeAgentRuns = [...(overrides?.activeAgentRuns ?? this.readActiveExecutorRuns(companyId))]
+      .filter((run) => run.state !== "completed" && run.state !== "aborted" && run.state !== "error")
+      .sort((left, right) => right.lastEventAt - left.lastEventAt);
+    const activeAgentRuntime = buildAgentRuntimeProjection({
+      providerId: EXECUTOR_PROVIDER_ID,
+      agentIds: this.getCompanyAgentIdsForRuntime(companyId),
+      sessions: activeAgentSessions,
+      runs: activeAgentRuns,
+    });
+    return {
+      ...snapshot,
+      companyId,
+      activeAgentSessions,
+      activeAgentRuns,
+      activeAgentRuntime,
+      activeAgentStatuses: normalizedCompany
+        ? buildCanonicalAgentStatusProjection({
+            company: normalizedCompany,
+            activeWorkItems: snapshot.activeWorkItems,
+            activeDispatches: snapshot.activeDispatches,
+            activeSupportRequests: snapshot.activeSupportRequests,
+            activeEscalations: snapshot.activeEscalations,
+            activeAgentRuntime,
+            activeAgentSessions,
+            now: Date.now(),
+          })
+        : [],
+    };
+  }
+
+  updateRuntimeFromSessionList(
+    companyId: string,
+    sessions: Parameters<typeof buildAgentSessionRecordsFromSessions>[0]["sessions"],
+  ) {
+    const runtime = this.loadRuntime(companyId);
+    const nextSessions = buildAgentSessionRecordsFromSessions({
+      existing: runtime.activeAgentSessions ?? [],
+      providerId: EXECUTOR_PROVIDER_ID,
+      sessions,
+    });
+    return this.saveRuntime(
+      this.computeAgentRuntimeSnapshot(companyId, runtime, {
+        activeAgentSessions: nextSessions,
+      }),
+    );
+  }
+
+  applyRuntimeSessionStatus(companyId: string, status: ReturnType<typeof normalizeProviderSessionStatus>) {
+    const runtime = this.loadRuntime(companyId);
+    const next = applyProviderSessionStatusToAgentRuntime({
+      sessions: runtime.activeAgentSessions ?? [],
+      runs: runtime.activeAgentRuns ?? [],
+      status,
+    });
+    return this.saveRuntime(
+      this.computeAgentRuntimeSnapshot(companyId, runtime, {
+        activeAgentSessions: next.sessions,
+        activeAgentRuns: next.runs,
+      }),
+    );
+  }
+
+  applyRuntimeEvent(companyId: string, event: ProviderRuntimeEvent) {
+    const runtime = this.loadRuntime(companyId);
+    const next = applyProviderRuntimeEvent({
+      sessions: runtime.activeAgentSessions ?? [],
+      runs: runtime.activeAgentRuns ?? [],
+      event,
+    });
+    return this.saveRuntime(
+      this.computeAgentRuntimeSnapshot(companyId, runtime, {
+        activeAgentSessions: next.sessions,
+        activeAgentRuns: next.runs,
+      }),
+    );
+  }
+
+  private readStoredRuntime(companyId: string): {
+    company: Company | null;
+    snapshot: AuthorityCompanyRuntimeSnapshot;
+    exists: boolean;
+  } {
     const company = this.loadCompanyById(companyId);
     const row = this.db.prepare("SELECT snapshot_json FROM runtimes WHERE company_id = ?").get(companyId) as
       | { snapshot_json?: string }
       | undefined;
     if (row?.snapshot_json) {
-      const normalized = normalizeRuntimeSnapshot(
+      return {
         company,
-        parseJson<AuthorityCompanyRuntimeSnapshot>(row.snapshot_json, EMPTY_RUNTIME(companyId)),
-      );
-      const reconciled = reconcileAuthorityRequirementRuntime({
-        company,
-        runtime: normalized,
-      });
-      if (runtimeRequirementControlChanged(normalized, reconciled.runtime)) {
-        this.saveRuntime(reconciled.runtime);
-        return reconciled.runtime;
-      }
-      return normalized;
+        snapshot: normalizeRuntimeSnapshot(
+          company,
+          parseJson<AuthorityCompanyRuntimeSnapshot>(row.snapshot_json, EMPTY_RUNTIME(companyId)),
+        ),
+        exists: true,
+      };
     }
 
-    const snapshot = normalizeRuntimeSnapshot(company, {
-      companyId,
-      activeMissionRecords: this.readPayloadTable<ConversationMissionRecord>("missions", companyId),
-      activeConversationStates: this.readPayloadTable<ConversationStateRecord>("conversation_states", companyId),
-      activeWorkItems: this.readPayloadTable<WorkItemRecord>("work_items", companyId),
-      activeRequirementAggregates: this.readPayloadTable<RequirementAggregateRecord>("requirement_aggregates", companyId),
-      activeRequirementEvidence: this.readPayloadTable<RequirementEvidenceEvent>("requirement_evidence", companyId),
-      activeRoomRecords: this.readPayloadTable<RequirementRoomRecord>("rooms", companyId),
-      activeRoundRecords: this.readPayloadTable<RoundRecord>("rounds", companyId),
-      activeArtifacts: this.readPayloadTable<ArtifactRecord>("artifacts", companyId),
-      activeDispatches: this.readPayloadTable<DispatchRecord>("dispatches", companyId),
-      activeRoomBindings: this.readPayloadTable<RoomConversationBindingRecord>("room_bindings", companyId),
-      activeSupportRequests: this.readPayloadTable<SupportRequestRecord>("support_requests", companyId),
-      activeEscalations: this.readPayloadTable<EscalationRecord>("escalations", companyId),
-      activeDecisionTickets: this.readPayloadTable<DecisionTicketRecord>("decision_tickets", companyId),
-      primaryRequirementId:
-        this.readPayloadTable<RequirementAggregateRecord>("requirement_aggregates", companyId).find(
-          (aggregate) => aggregate.primary,
-        )?.id ?? null,
-      updatedAt: Date.now(),
+    return {
+      company,
+      snapshot: this.buildRuntimeSnapshotFromTables(companyId, company),
+      exists: false,
+    };
+  }
+
+  private reconcileRuntimeForRead(input: {
+    company: Company | null;
+    snapshot: AuthorityCompanyRuntimeSnapshot;
+  }): {
+    runtime: AuthorityCompanyRuntimeSnapshot;
+    changed: boolean;
+  } {
+    const normalized = normalizeRuntimeSnapshot(input.company, input.snapshot);
+    const reconciled = reconcileAuthorityRequirementRuntime({
+      company: input.company,
+      runtime: normalized,
     });
-    this.saveRuntime(snapshot);
-    return snapshot;
+    const requirementRuntimeChanged = runtimeRequirementControlChanged(normalized, reconciled.runtime);
+    const runtimeAfterRequirementControl = requirementRuntimeChanged ? reconciled.runtime : normalized;
+    const runtimeWithAgentProjection = this.computeAgentRuntimeSnapshot(
+      input.snapshot.companyId,
+      runtimeAfterRequirementControl,
+    );
+    const changed =
+      requirementRuntimeChanged ||
+      !shallowJsonEqual(runtimeAfterRequirementControl.activeAgentSessions, runtimeWithAgentProjection.activeAgentSessions) ||
+      !shallowJsonEqual(runtimeAfterRequirementControl.activeAgentRuns, runtimeWithAgentProjection.activeAgentRuns) ||
+      !shallowJsonEqual(runtimeAfterRequirementControl.activeAgentRuntime, runtimeWithAgentProjection.activeAgentRuntime) ||
+      !shallowJsonEqual(runtimeAfterRequirementControl.activeAgentStatuses, runtimeWithAgentProjection.activeAgentStatuses);
+    return {
+      runtime: runtimeWithAgentProjection,
+      changed,
+    };
+  }
+
+  loadRuntime(companyId: string): AuthorityCompanyRuntimeSnapshot {
+    const stored = this.readStoredRuntime(companyId);
+    return this.reconcileRuntimeForRead({
+      company: stored.company,
+      snapshot: stored.snapshot,
+    }).runtime;
+  }
+
+  repairRuntimeIfNeeded(companyId: string): AuthorityCompanyRuntimeSnapshot {
+    const stored = this.readStoredRuntime(companyId);
+    const reconciled = this.reconcileRuntimeForRead({
+      company: stored.company,
+      snapshot: stored.snapshot,
+    });
+    if (!stored.exists || reconciled.changed) {
+      const nextRuntime = this.saveRuntime(reconciled.runtime);
+      this.appendRuntimeRepairEvent({
+        companyId,
+        timestamp: Date.now(),
+        storedRuntimeExisted: stored.exists,
+        reconciledChanged: reconciled.changed,
+        runtime: nextRuntime,
+      });
+      return nextRuntime;
+    }
+    return reconciled.runtime;
   }
 
   private readPayloadTable<T>(table: RuntimeSliceTables, companyId: string): T[] {
@@ -1198,17 +1496,28 @@ class AuthorityRepository {
 
   saveRuntime(snapshot: AuthorityCompanyRuntimeSnapshot) {
     const company = this.loadCompanyById(snapshot.companyId);
+    const runtimeWithAgentProjection = this.computeAgentRuntimeSnapshot(snapshot.companyId, snapshot, {
+      activeAgentSessions: snapshot.activeAgentSessions,
+      activeAgentRuns: snapshot.activeAgentRuns,
+    });
     const reconciled = reconcileAuthorityRequirementRuntime({
       company,
       runtime: normalizeRuntimeSnapshot(company, {
-        ...snapshot,
+        ...runtimeWithAgentProjection,
         updatedAt: Date.now(),
       }),
     });
-    const normalized = normalizeRuntimeSnapshot(company, {
-      ...reconciled.runtime,
-      updatedAt: Date.now(),
-    });
+    const normalized = this.computeAgentRuntimeSnapshot(
+      snapshot.companyId,
+      normalizeRuntimeSnapshot(company, {
+        ...reconciled.runtime,
+        updatedAt: Date.now(),
+      }),
+      {
+        activeAgentSessions: reconciled.runtime.activeAgentSessions,
+        activeAgentRuns: reconciled.runtime.activeAgentRuns,
+      },
+    );
     this.replacePayloadTable("missions", snapshot.companyId, normalized.activeMissionRecords);
     this.replacePayloadTable("conversation_states", snapshot.companyId, normalized.activeConversationStates);
     this.replacePayloadTable("work_items", snapshot.companyId, normalized.activeWorkItems);
@@ -1527,30 +1836,36 @@ class AuthorityRepository {
       input.companyId,
       input.actorId,
       input.sessionKey,
-      "started",
+      "accepted",
       input.startedAt ?? Date.now(),
       null,
-      JSON.stringify(input.payload ?? {}),
+      JSON.stringify({
+        ...(input.payload ?? {}),
+        lastEventAt: input.startedAt ?? Date.now(),
+      }),
     );
   }
 
   updateExecutorRun(
     runId: string,
-    status: "completed" | "error" | "aborted",
+    status: AgentRunRecord["state"],
     payload?: Record<string, unknown>,
   ) {
     const existing = this.db.prepare("SELECT payload_json FROM executor_runs WHERE id = ?").get(runId) as
       | { payload_json?: string }
       | undefined;
+    const terminal = status === "completed" || status === "error" || status === "aborted";
+    const timestamp = Date.now();
     const nextPayload = {
       ...parseJson<Record<string, unknown>>(existing?.payload_json, {}),
       ...(payload ?? {}),
+      lastEventAt: timestamp,
     };
     this.db.prepare(`
       UPDATE executor_runs
       SET status = ?, finished_at = ?, payload_json = ?
       WHERE id = ?
-    `).run(status, Date.now(), JSON.stringify(nextPayload), runId);
+    `).run(status, terminal ? timestamp : null, JSON.stringify(nextPayload), runId);
   }
 
   appendAssistantMessage(sessionKey: string, message: StoredChatMessage) {
@@ -1598,6 +1913,238 @@ class AuthorityRepository {
       VALUES (?, ?, ?, ?, ?)
     `).run(event.eventId, event.companyId, event.kind, event.createdAt, JSON.stringify(event));
     return { ok: true as const, event };
+  }
+
+  appendDecisionTicketEvent(input: {
+    companyId: string;
+    kind:
+      | "decision_record_upserted"
+      | "decision_record_deleted"
+      | "decision_resolved"
+      | "decision_cancelled";
+    ticket: DecisionTicketRecord;
+    timestamp: number;
+  }) {
+    const actorId = input.ticket.decisionOwnerActorId?.trim() || "system:decision-ticket";
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: input.kind,
+        workItemId: input.ticket.workItemId ?? undefined,
+        roomId: input.ticket.roomId ?? undefined,
+        fromActorId: actorId,
+        targetActorId: actorId,
+        sessionKey: input.ticket.sourceConversationId ?? undefined,
+        createdAt: input.timestamp,
+        payload: {
+          ticketId: input.ticket.id,
+          sourceType: input.ticket.sourceType,
+          sourceId: input.ticket.sourceId,
+          escalationId: input.ticket.escalationId ?? null,
+          aggregateId: input.ticket.aggregateId ?? null,
+          decisionType: input.ticket.decisionType,
+          summary: input.ticket.summary,
+          requiresHuman: input.ticket.requiresHuman,
+          status: input.ticket.status,
+          resolution: input.ticket.resolution ?? null,
+          resolutionOptionId: input.ticket.resolutionOptionId ?? null,
+          revision: normalizeDecisionTicketRevision(input.ticket.revision),
+        },
+      }),
+    );
+  }
+
+  appendDispatchAuditEvent(input: {
+    companyId: string;
+    kind: "dispatch_record_upserted" | "dispatch_record_deleted";
+    dispatch: DispatchRecord;
+    timestamp: number;
+  }) {
+    const actorId = input.dispatch.fromActorId?.trim() || "system:dispatch-record";
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: input.kind,
+        dispatchId: input.dispatch.id,
+        workItemId: input.dispatch.workItemId,
+        topicKey: input.dispatch.topicKey ?? undefined,
+        roomId: input.dispatch.roomId ?? undefined,
+        fromActorId: actorId,
+        targetActorId: input.dispatch.targetActorIds[0] ?? undefined,
+        sessionKey: input.dispatch.consumerSessionKey ?? undefined,
+        providerRunId: input.dispatch.providerRunId ?? undefined,
+        createdAt: input.timestamp,
+        payload: {
+          title: input.dispatch.title,
+          summary: input.dispatch.summary,
+          status: input.dispatch.status,
+          deliveryState: input.dispatch.deliveryState ?? null,
+          fromActorId: input.dispatch.fromActorId ?? null,
+          targetActorIds: input.dispatch.targetActorIds,
+          sourceMessageId: input.dispatch.sourceMessageId ?? null,
+          responseMessageId: input.dispatch.responseMessageId ?? null,
+          latestEventId: input.dispatch.latestEventId ?? null,
+          revision:
+            Number.isFinite(input.dispatch.revision) && Number(input.dispatch.revision) > 0
+              ? Math.floor(Number(input.dispatch.revision))
+              : 1,
+        },
+      }),
+    );
+  }
+
+  appendRoomAuditEvent(input: {
+    companyId: string;
+    kind: "room_record_upserted" | "room_record_deleted";
+    room: RequirementRoomRecord;
+    timestamp: number;
+  }) {
+    const actorId =
+      input.room.ownerActorId?.trim() || input.room.ownerAgentId?.trim() || "system:room-record";
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: input.kind,
+        workItemId: input.room.workItemId ?? undefined,
+        topicKey: input.room.topicKey ?? undefined,
+        roomId: input.room.id,
+        fromActorId: actorId,
+        targetActorId: input.room.batonActorId ?? undefined,
+        sessionKey: input.room.sessionKey,
+        createdAt: input.timestamp,
+        payload: {
+          title: input.room.title,
+          headline: input.room.headline ?? null,
+          status: input.room.status,
+          progress: input.room.progress ?? null,
+          scope: input.room.scope ?? null,
+          memberIds: input.room.memberIds,
+          memberActorIds: input.room.memberActorIds,
+          transcriptCount: input.room.transcript.length,
+          lastMessageAt:
+            input.room.transcript.length > 0
+              ? Math.max(...input.room.transcript.map((message) => message.timestamp))
+              : null,
+          revision:
+            Number.isFinite(input.room.revision) && Number(input.room.revision) > 0
+              ? Math.floor(Number(input.room.revision))
+              : 1,
+        },
+      }),
+    );
+  }
+
+  appendRoomBindingsAuditEvent(input: {
+    companyId: string;
+    bindings: RoomConversationBindingRecord[];
+    timestamp: number;
+  }) {
+    const bindings = input.bindings;
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: "room_bindings_upserted",
+        roomId: bindings.length === 1 ? bindings[0]?.roomId : undefined,
+        fromActorId: "system:room-bindings",
+        createdAt: input.timestamp,
+        payload: {
+          bindingCount: bindings.length,
+          roomIds: [...new Set(bindings.map((binding) => binding.roomId).filter(Boolean))],
+          providerIds: [...new Set(bindings.map((binding) => binding.providerId).filter(Boolean))],
+          conversationIds: bindings.map((binding) => binding.conversationId),
+          actorIds: bindings
+            .map((binding) => binding.actorId)
+            .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+        },
+      }),
+    );
+  }
+
+  appendArtifactAuditEvent(input: {
+    companyId: string;
+    kind: "artifact_record_upserted" | "artifact_record_deleted";
+    artifact: ArtifactRecord;
+    timestamp: number;
+  }) {
+    const actorId =
+      input.artifact.ownerActorId?.trim() ||
+      input.artifact.sourceActorId?.trim() ||
+      "system:artifact-record";
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: input.kind,
+        workItemId: input.artifact.workItemId ?? undefined,
+        fromActorId: actorId,
+        createdAt: input.timestamp,
+        payload: {
+          artifactId: input.artifact.id,
+          title: input.artifact.title,
+          kindLabel: input.artifact.kind,
+          status: input.artifact.status,
+          ownerActorId: input.artifact.ownerActorId ?? null,
+          providerId: input.artifact.providerId ?? null,
+          sourceActorId: input.artifact.sourceActorId ?? null,
+          sourceName: input.artifact.sourceName ?? null,
+          sourcePath: input.artifact.sourcePath ?? null,
+          sourceUrl: input.artifact.sourceUrl ?? null,
+          summary: input.artifact.summary ?? null,
+          revision:
+            Number.isFinite(input.artifact.revision) && Number(input.artifact.revision) > 0
+              ? Math.floor(Number(input.artifact.revision))
+              : 1,
+        },
+      }),
+    );
+  }
+
+  appendArtifactMirrorSyncEvent(input: {
+    companyId: string;
+    mirrorPrefix: string;
+    artifacts: ArtifactRecord[];
+    timestamp: number;
+  }) {
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: "artifact_mirror_synced",
+        fromActorId: "system:artifact-mirror",
+        createdAt: input.timestamp,
+        payload: {
+          mirrorPrefix: input.mirrorPrefix,
+          artifactCount: input.artifacts.length,
+          artifactIds: input.artifacts.map((artifact) => artifact.id),
+          workItemIds: [...new Set(input.artifacts.map((artifact) => artifact.workItemId).filter(Boolean))],
+        },
+      }),
+    );
+  }
+
+  appendRuntimeRepairEvent(input: {
+    companyId: string;
+    timestamp: number;
+    storedRuntimeExisted: boolean;
+    reconciledChanged: boolean;
+    runtime: AuthorityCompanyRuntimeSnapshot;
+  }) {
+    return this.appendCompanyEvent(
+      createCompanyEvent({
+        companyId: input.companyId,
+        kind: "runtime_repaired",
+        fromActorId: "system:authority-repair",
+        createdAt: input.timestamp,
+        payload: {
+          storedRuntimeExisted: input.storedRuntimeExisted,
+          reconciledChanged: input.reconciledChanged,
+          primaryRequirementId: input.runtime.primaryRequirementId,
+          requirementCount: input.runtime.activeRequirementAggregates.length,
+          roomCount: input.runtime.activeRoomRecords.length,
+          dispatchCount: input.runtime.activeDispatches.length,
+          artifactCount: input.runtime.activeArtifacts.length,
+          decisionTicketCount: input.runtime.activeDecisionTickets.length,
+        },
+      }),
+    );
   }
 
   listCompanyEvents(companyId: string, cursor?: string | null, since?: number): AuthorityCompanyEventsResponse {
@@ -1680,6 +2227,7 @@ class AuthorityRepository {
               actorId: input.changes.ownerActorId ?? previousAggregate.ownerActorId,
               timestamp,
               source: input.source,
+              changes: input.changes,
             }),
             ...runtime.activeRequirementEvidence,
           ])
@@ -1709,19 +2257,12 @@ class AuthorityRepository {
             "system:requirement-aggregate",
           targetActorId: nextAggregate.ownerActorId ?? undefined,
           sessionKey: nextAggregate.sourceConversationId ?? undefined,
-          payload: {
-            ownerActorId: nextAggregate.ownerActorId,
-            ownerLabel: nextAggregate.ownerLabel,
-            stage: nextAggregate.stage,
-            summary: nextAggregate.summary,
-            nextAction: nextAggregate.nextAction,
-            memberIds: nextAggregate.memberIds,
-            status: nextAggregate.status,
-            stageGateStatus: nextAggregate.stageGateStatus,
-            acceptanceStatus: nextAggregate.acceptanceStatus,
-            acceptanceNote: nextAggregate.acceptanceNote ?? null,
-            revision: nextAggregate.revision,
-          },
+          payload: buildRequirementWorkflowEvidencePayload({
+            previousAggregate,
+            nextAggregate,
+            source: input.source,
+            changes: input.changes,
+          }),
         }),
       );
     }
@@ -1790,19 +2331,11 @@ class AuthorityRepository {
             "system:requirement-aggregate",
           targetActorId: nextAggregate.ownerActorId ?? undefined,
           sessionKey: nextAggregate.sourceConversationId ?? undefined,
-          payload: {
-            ownerActorId: nextAggregate.ownerActorId,
-            ownerLabel: nextAggregate.ownerLabel,
-            stage: nextAggregate.stage,
-            summary: nextAggregate.summary,
-            nextAction: nextAggregate.nextAction,
-            memberIds: nextAggregate.memberIds,
-            status: nextAggregate.status,
-            stageGateStatus: nextAggregate.stageGateStatus,
-            acceptanceStatus: nextAggregate.acceptanceStatus,
-            acceptanceNote: nextAggregate.acceptanceNote ?? null,
-            revision: nextAggregate.revision,
-          },
+          payload: buildRequirementWorkflowEvidencePayload({
+            previousAggregate,
+            nextAggregate,
+            source: input.source,
+          }),
         }),
       );
     }
@@ -1815,7 +2348,17 @@ class AuthorityRepository {
       input.room,
       ...runtime.activeRoomRecords.filter((room) => room.id !== input.room.id),
     ];
-    return this.saveRuntime({ ...runtime, activeRoomRecords: nextRooms });
+    const nextRuntime = this.saveRuntime({ ...runtime, activeRoomRecords: nextRooms });
+    const nextRoom = nextRuntime.activeRoomRecords.find((room) => room.id === input.room.id) ?? null;
+    if (nextRoom) {
+      this.appendRoomAuditEvent({
+        companyId: input.companyId,
+        kind: "room_record_upserted",
+        room: nextRoom,
+        timestamp: nextRoom.updatedAt,
+      });
+    }
+    return nextRuntime;
   }
 
   deleteRoom(input: AuthorityRoomDeleteRequest) {
@@ -1843,7 +2386,7 @@ class AuthorityRepository {
       activeRoomRecords: nextRooms,
       activeRequirementEvidence: runtime.activeRequirementEvidence,
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeRoomRecords: nextRooms,
       activeRoomBindings: nextBindings,
@@ -1851,6 +2394,15 @@ class AuthorityRepository {
       activeRequirementAggregates: reconciledRequirements.activeRequirementAggregates,
       primaryRequirementId: reconciledRequirements.primaryRequirementId,
     });
+    if (deletedRoom) {
+      this.appendRoomAuditEvent({
+        companyId: input.companyId,
+        kind: "room_record_deleted",
+        room: deletedRoom,
+        timestamp: Date.now(),
+      });
+    }
+    return nextRuntime;
   }
 
   upsertRoomBindings(input: AuthorityRoomBindingsUpsertRequest) {
@@ -1859,10 +2411,18 @@ class AuthorityRepository {
       existing: runtime.activeRoomBindings,
       incoming: input.bindings,
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeRoomBindings: nextBindings,
     });
+    if (input.bindings.length > 0) {
+      this.appendRoomBindingsAuditEvent({
+        companyId: input.companyId,
+        bindings: input.bindings,
+        timestamp: Date.now(),
+      });
+    }
+    return nextRuntime;
   }
 
   upsertDispatch(input: AuthorityDispatchUpsertRequest) {
@@ -1882,11 +2442,21 @@ class AuthorityRepository {
       targetRoomIds: [input.dispatch.roomId],
       targetTopicKeys: [input.dispatch.topicKey],
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeWorkItems: nextWorkItems,
       activeDispatches: nextDispatches,
     });
+    const nextDispatch = nextRuntime.activeDispatches.find((dispatch) => dispatch.id === input.dispatch.id) ?? null;
+    if (nextDispatch) {
+      this.appendDispatchAuditEvent({
+        companyId: input.companyId,
+        kind: "dispatch_record_upserted",
+        dispatch: nextDispatch,
+        timestamp: nextDispatch.updatedAt,
+      });
+    }
+    return nextRuntime;
   }
 
   deleteDispatch(input: AuthorityDispatchDeleteRequest) {
@@ -1904,11 +2474,20 @@ class AuthorityRepository {
       targetRoomIds: [deletedDispatch?.roomId],
       targetTopicKeys: [deletedDispatch?.topicKey],
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeWorkItems: nextWorkItems,
       activeDispatches: nextDispatches,
     });
+    if (deletedDispatch) {
+      this.appendDispatchAuditEvent({
+        companyId: input.companyId,
+        kind: "dispatch_record_deleted",
+        dispatch: deletedDispatch,
+        timestamp: Date.now(),
+      });
+    }
+    return nextRuntime;
   }
 
   upsertArtifact(input: AuthorityArtifactUpsertRequest) {
@@ -1931,11 +2510,21 @@ class AuthorityRepository {
       dispatches: runtime.activeDispatches,
       targetWorkItemIds: [normalizedArtifact.workItemId],
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeArtifacts: nextArtifacts,
       activeWorkItems: nextWorkItems,
     });
+    const nextArtifact = nextRuntime.activeArtifacts.find((artifact) => artifact.id === normalizedArtifact.id) ?? null;
+    if (nextArtifact) {
+      this.appendArtifactAuditEvent({
+        companyId: input.companyId,
+        kind: "artifact_record_upserted",
+        artifact: nextArtifact,
+        timestamp: nextArtifact.updatedAt,
+      });
+    }
+    return nextRuntime;
   }
 
   syncArtifactMirrors(input: AuthorityArtifactMirrorSyncRequest) {
@@ -1974,11 +2563,20 @@ class AuthorityRepository {
       dispatches: runtime.activeDispatches,
       targetWorkItemIds: normalizedIncoming.map((artifact) => artifact.workItemId),
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeArtifacts: nextArtifacts,
       activeWorkItems: nextWorkItems,
     });
+    if (normalizedIncoming.length > 0) {
+      this.appendArtifactMirrorSyncEvent({
+        companyId: input.companyId,
+        mirrorPrefix,
+        artifacts: normalizedIncoming,
+        timestamp: Date.now(),
+      });
+    }
+    return nextRuntime;
   }
 
   deleteArtifact(input: AuthorityArtifactDeleteRequest) {
@@ -1994,11 +2592,20 @@ class AuthorityRepository {
       dispatches: runtime.activeDispatches,
       targetWorkItemIds: [deletedArtifact?.workItemId],
     });
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeArtifacts: nextArtifacts,
       activeWorkItems: nextWorkItems,
     });
+    if (deletedArtifact) {
+      this.appendArtifactAuditEvent({
+        companyId: input.companyId,
+        kind: "artifact_record_deleted",
+        artifact: deletedArtifact,
+        timestamp: Date.now(),
+      });
+    }
+    return nextRuntime;
   }
 
   upsertDecisionTicket(input: AuthorityDecisionTicketUpsertRequest) {
@@ -2030,21 +2637,136 @@ class AuthorityRepository {
             };
           })()
         : normalizedTicket;
-    return this.saveRuntime({
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeDecisionTickets: [
         nextTicket,
         ...runtime.activeDecisionTickets.filter((ticket) => ticket.id !== nextTicket.id),
       ].sort((left, right) => right.updatedAt - left.updatedAt),
     });
+    if (!existing || nextTicket !== existing) {
+      this.appendDecisionTicketEvent({
+        companyId: input.companyId,
+        kind: "decision_record_upserted",
+        ticket: nextTicket,
+        timestamp: nextTicket.updatedAt,
+      });
+    }
+    return nextRuntime;
+  }
+
+  resolveDecisionTicket(input: AuthorityDecisionTicketResolveRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const existing = runtime.activeDecisionTickets.find((ticket) => ticket.id === input.ticketId) ?? null;
+    if (!existing) {
+      throw new Error(`Unknown decision ticket: ${input.ticketId}`);
+    }
+    const option =
+      input.optionId != null
+        ? existing.options.find((candidate) => candidate.id === input.optionId) ?? null
+        : null;
+    const updatedAt = Math.max(existing.updatedAt, input.timestamp ?? Date.now());
+    const resolution = input.resolution ?? option?.summary ?? option?.label ?? existing.resolution ?? null;
+    const resolutionOptionId = option?.id ?? input.optionId ?? null;
+    if (
+      existing.status === "resolved" &&
+      (existing.resolution ?? null) === resolution &&
+      (existing.resolutionOptionId ?? null) === resolutionOptionId &&
+      updatedAt <= existing.updatedAt
+    ) {
+      return runtime;
+    }
+    const nextTickets = runtime.activeDecisionTickets
+      .map((ticket) =>
+        ticket.id === input.ticketId
+          ? {
+              ...ticket,
+              status: "resolved" as const,
+              resolution,
+              resolutionOptionId,
+              revision: normalizeDecisionTicketRevision(ticket.revision) + 1,
+              updatedAt,
+            }
+          : ticket,
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    const nextRuntime = this.saveRuntime({
+      ...runtime,
+      activeDecisionTickets: nextTickets,
+    });
+    const nextTicket = nextTickets.find((ticket) => ticket.id === input.ticketId) ?? null;
+    if (nextTicket) {
+      this.appendDecisionTicketEvent({
+        companyId: input.companyId,
+        kind: "decision_resolved",
+        ticket: nextTicket,
+        timestamp: updatedAt,
+      });
+    }
+    return nextRuntime;
+  }
+
+  cancelDecisionTicket(input: AuthorityDecisionTicketCancelRequest) {
+    const runtime = this.loadRuntime(input.companyId);
+    const existing = runtime.activeDecisionTickets.find((ticket) => ticket.id === input.ticketId) ?? null;
+    if (!existing) {
+      throw new Error(`Unknown decision ticket: ${input.ticketId}`);
+    }
+    const updatedAt = Math.max(existing.updatedAt, input.timestamp ?? Date.now());
+    const resolution = input.resolution ?? existing.resolution ?? null;
+    if (
+      existing.status === "cancelled" &&
+      (existing.resolution ?? null) === resolution &&
+      updatedAt <= existing.updatedAt
+    ) {
+      return runtime;
+    }
+    const nextTickets = runtime.activeDecisionTickets
+      .map((ticket) =>
+        ticket.id === input.ticketId
+          ? {
+              ...ticket,
+              status: "cancelled" as const,
+              resolution,
+              resolutionOptionId: null,
+              revision: normalizeDecisionTicketRevision(ticket.revision) + 1,
+              updatedAt,
+            }
+          : ticket,
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    const nextRuntime = this.saveRuntime({
+      ...runtime,
+      activeDecisionTickets: nextTickets,
+    });
+    const nextTicket = nextTickets.find((ticket) => ticket.id === input.ticketId) ?? null;
+    if (nextTicket) {
+      this.appendDecisionTicketEvent({
+        companyId: input.companyId,
+        kind: "decision_cancelled",
+        ticket: nextTicket,
+        timestamp: updatedAt,
+      });
+    }
+    return nextRuntime;
   }
 
   deleteDecisionTicket(input: AuthorityDecisionTicketDeleteRequest) {
     const runtime = this.loadRuntime(input.companyId);
-    return this.saveRuntime({
+    const deletedTicket = runtime.activeDecisionTickets.find((ticket) => ticket.id === input.ticketId) ?? null;
+    const nextRuntime = this.saveRuntime({
       ...runtime,
       activeDecisionTickets: runtime.activeDecisionTickets.filter((ticket) => ticket.id !== input.ticketId),
     });
+    if (deletedTicket) {
+      this.appendDecisionTicketEvent({
+        companyId: input.companyId,
+        kind: "decision_record_deleted",
+        ticket: deletedTicket,
+        timestamp: Date.now(),
+      });
+    }
+    return nextRuntime;
   }
 
 }
@@ -2317,12 +3039,20 @@ function buildDefaultMainCompanyDefinition(): {
 
 const repository = new AuthorityRepository(DB_PATH);
 repository.ensureManagedExecutorAgentInventory();
+for (const company of repository.loadConfig()?.companies ?? []) {
+  try {
+    repository.repairRuntimeIfNeeded(company.id);
+  } catch (error) {
+    console.warn(`Authority startup runtime repair failed for ${company.id}.`, error);
+  }
+}
 const companyOpsEngine = new CompanyOpsEngine(
   {
     loadConfig: () => repository.loadConfig(),
     saveConfig: (config) => repository.saveConfig(config),
     loadRuntime: (companyId) => repository.loadRuntime(companyId),
     saveRuntime: (runtime) => repository.saveRuntime(runtime),
+    appendCompanyEvent: (event) => repository.appendCompanyEvent(event),
   },
   {
     onCompanyChanged: (companyId) => {
@@ -2421,6 +3151,41 @@ function normalizeChatPayload(payload: unknown): Extract<AuthorityEvent, { type:
     message: payload.message as Extract<AuthorityEvent, { type: "chat" }>["payload"]["message"],
     errorMessage: readString(payload.errorMessage) ?? undefined,
   };
+}
+
+function buildRuntimeEventFromChatPayload(input: {
+  payload: Extract<AuthorityEvent, { type: "chat" }>["payload"];
+  agentId?: string | null;
+}): ProviderRuntimeEvent {
+  return {
+    providerId: EXECUTOR_PROVIDER_ID,
+    agentId: input.agentId ?? null,
+    sessionKey: input.payload.sessionKey,
+    runId: input.payload.runId,
+    streamKind: input.payload.state === "delta" ? "assistant" : "lifecycle",
+    runState:
+      input.payload.state === "delta"
+        ? "streaming"
+        : input.payload.state === "final"
+          ? "completed"
+          : input.payload.state === "error"
+            ? "error"
+            : "aborted",
+    timestamp: input.payload.message?.timestamp ?? Date.now(),
+    errorMessage: input.payload.errorMessage ?? null,
+    raw: input.payload,
+  };
+}
+
+function broadcastAgentRuntimeEvent(companyId: string | null, event: ProviderRuntimeEvent) {
+  broadcast({
+    type: "agent.runtime.updated",
+    companyId,
+    timestamp: event.timestamp,
+    payload: {
+      event,
+    },
+  });
 }
 
 async function syncAgentFileToExecutor(input: { agentId: string; name: string; content: string }) {
@@ -2752,11 +3517,53 @@ async function proxyGatewayRequest<T>(method: string, params?: unknown): Promise
           : null);
       return actorId ? allowedAgentIds.has(actorId) : false;
     });
+    const sessionsByCompanyId = new Map<
+      string,
+      Parameters<typeof buildAgentSessionRecordsFromSessions>[0]["sessions"]
+    >();
+    sessions.forEach((session) => {
+      const actorId =
+        readString(session.actorId)
+        ?? (typeof session.key === "string" && session.key.startsWith("agent:")
+          ? session.key.split(":")[1] ?? null
+          : null);
+      const companyId =
+        (typeof session.key === "string"
+          ? repository.getConversationContext(session.key)?.companyId
+          : null)
+        ?? (actorId ? repository.findCompanyIdByAgentId(actorId) : null);
+      if (!companyId) {
+        return;
+      }
+      const existing = sessionsByCompanyId.get(companyId) ?? [];
+      existing.push(session);
+      sessionsByCompanyId.set(companyId, existing);
+    });
+    sessionsByCompanyId.forEach((companySessions, companyId) => {
+      repository.updateRuntimeFromSessionList(companyId, companySessions);
+    });
     return {
       ...result,
       count: sessions.length,
       sessions,
     } as T;
+  }
+
+  if (method === "session_status") {
+    const result = await executorBridge.request<T>(method, params ?? {});
+    const sessionKey = isRecord(params)
+      ? readString(params.sessionKey) ?? readString(params.key)
+      : null;
+    if (sessionKey) {
+      const normalized = normalizeProviderSessionStatus(EXECUTOR_PROVIDER_ID, sessionKey, result);
+      const companyId =
+        repository.getConversationContext(sessionKey)?.companyId
+        ?? (normalized.agentId ? repository.findCompanyIdByAgentId(normalized.agentId) : null);
+      if (companyId) {
+        repository.applyRuntimeSessionStatus(companyId, normalized);
+      }
+    }
+    return result;
   }
 
   if (method === "sessions.resolve") {
@@ -2820,6 +3627,28 @@ executorBridge.onStateChange(() => {
 });
 
 executorBridge.onEvent((event) => {
+  if (event.event === "agent") {
+    const runtimeEvent = normalizeProviderRuntimeEvent(EXECUTOR_PROVIDER_ID, event.payload);
+    if (!runtimeEvent) {
+      return;
+    }
+    const companyId =
+      (runtimeEvent.sessionKey
+        ? repository.getConversationContext(runtimeEvent.sessionKey)?.companyId
+        : null)
+      ?? (runtimeEvent.agentId ? repository.findCompanyIdByAgentId(runtimeEvent.agentId) : null);
+    if (runtimeEvent.runId && runtimeEvent.runState) {
+      repository.updateExecutorRun(runtimeEvent.runId, runtimeEvent.runState, {
+        errorMessage: runtimeEvent.errorMessage ?? undefined,
+      });
+    }
+    if (companyId) {
+      repository.applyRuntimeEvent(companyId, runtimeEvent);
+    }
+    broadcastAgentRuntimeEvent(companyId, runtimeEvent);
+    return;
+  }
+
   if (event.event !== "chat") {
     return;
   }
@@ -2851,7 +3680,17 @@ executorBridge.onEvent((event) => {
     });
   } else if (payload.state === "aborted") {
     repository.updateExecutorRun(payload.runId, "aborted");
+  } else if (payload.state === "delta") {
+    repository.updateExecutorRun(payload.runId, "streaming");
   }
+  const runtimeEvent = buildRuntimeEventFromChatPayload({
+    payload,
+    agentId: context?.actorId ?? (payload.sessionKey.split(":")[1] ?? null),
+  });
+  if (context?.companyId) {
+    repository.applyRuntimeEvent(context.companyId, runtimeEvent);
+  }
+  broadcastAgentRuntimeEvent(context?.companyId ?? null, runtimeEvent);
   broadcast({
     type: "chat",
     companyId: context?.companyId ?? null,
@@ -2866,6 +3705,115 @@ executorBridge.onEvent((event) => {
     });
   }
 });
+
+async function performRuntimeSessionStatusRepair() {
+  if (executorBridge.status().state !== "ready") {
+    return;
+  }
+
+  const config = repository.loadConfig();
+  if (!config?.companies?.length) {
+    return;
+  }
+
+  const touchedCompanyIds = new Set<string>();
+
+  for (const company of config.companies) {
+    const runtime = repository.loadRuntime(company.id);
+    const latestSessionByAgentId = new Map<
+      string,
+      NonNullable<typeof runtime.activeAgentSessions>[number]
+    >();
+    for (const session of runtime.activeAgentSessions ?? []) {
+      if (session.agentId && !latestSessionByAgentId.has(session.agentId)) {
+        latestSessionByAgentId.set(session.agentId, session);
+      }
+    }
+
+    const candidateSessionKeys = new Set<string>();
+    const busySessionKeys = new Set(
+      (runtime.activeAgentRuntime ?? []).flatMap((entry) => entry.activeSessionKeys),
+    );
+    for (const session of runtime.activeAgentSessions ?? []) {
+      if (
+        busySessionKeys.has(session.sessionKey) &&
+        ageMs(session.lastStatusSyncAt, Date.now()) >= 10_000
+      ) {
+        candidateSessionKeys.add(session.sessionKey);
+      }
+    }
+
+    const openWorkAgentIds = new Set<string>();
+    for (const workItem of runtime.activeWorkItems ?? []) {
+      if (workItem.status === "completed" || workItem.status === "archived") {
+        continue;
+      }
+      if (workItem.ownerActorId) {
+        openWorkAgentIds.add(workItem.ownerActorId);
+      }
+      if (workItem.batonActorId) {
+        openWorkAgentIds.add(workItem.batonActorId);
+      }
+      workItem.steps
+        .filter((step) => step.status === "active")
+        .forEach((step) => {
+          if (step.assigneeActorId) {
+            openWorkAgentIds.add(step.assigneeActorId);
+          }
+        });
+    }
+    for (const dispatch of runtime.activeDispatches ?? []) {
+      if (dispatch.status === "answered" || dispatch.status === "blocked" || dispatch.status === "superseded") {
+        continue;
+      }
+      dispatch.targetActorIds.forEach((agentId) => openWorkAgentIds.add(agentId));
+    }
+    for (const request of runtime.activeSupportRequests ?? []) {
+      if (
+        request.ownerActorId &&
+        (request.status === "open" || request.status === "acknowledged" || request.status === "in_progress")
+      ) {
+        openWorkAgentIds.add(request.ownerActorId);
+      }
+    }
+
+    for (const agentId of openWorkAgentIds) {
+      const session = latestSessionByAgentId.get(agentId);
+      if (!session) {
+        continue;
+      }
+      if (busySessionKeys.has(session.sessionKey)) {
+        continue;
+      }
+      if (ageMs(session.lastStatusSyncAt, Date.now()) >= 30_000) {
+        candidateSessionKeys.add(session.sessionKey);
+      }
+    }
+
+    for (const sessionKey of [...candidateSessionKeys].slice(0, 24)) {
+      try {
+        const result = await executorBridge.request("session_status", { sessionKey });
+        const normalized = normalizeProviderSessionStatus(EXECUTOR_PROVIDER_ID, sessionKey, result);
+        repository.applyRuntimeSessionStatus(company.id, normalized);
+        touchedCompanyIds.add(company.id);
+      } catch (error) {
+        console.warn(`Failed runtime read-repair for ${sessionKey}.`, error);
+      }
+    }
+  }
+
+  touchedCompanyIds.forEach((companyId) => {
+    broadcast({
+      type: "company.updated",
+      companyId,
+      timestamp: Date.now(),
+    });
+  });
+}
+
+setInterval(() => {
+  void performRuntimeSessionStatusRepair();
+}, 10_000);
 
 void executorBridge.reconnect().catch((error) => {
   console.warn("Authority executor bridge failed to connect on startup:", error);
@@ -3248,7 +4196,19 @@ const server = createServer(async (request, response) => {
           attachments: body.attachments ?? [],
         },
       });
+      const runtimeEvent: ProviderRuntimeEvent = {
+        providerId: EXECUTOR_PROVIDER_ID,
+        agentId: body.actorId,
+        sessionKey: dispatch.sessionKey,
+        runId: result.runId,
+        streamKind: "lifecycle",
+        runState: "accepted",
+        timestamp: dispatch.now,
+        raw: result,
+      };
+      repository.applyRuntimeEvent(body.companyId, runtimeEvent);
       sendJson(response, 200, result);
+      broadcastAgentRuntimeEvent(body.companyId, runtimeEvent);
       broadcast({ type: "conversation.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }
@@ -3337,6 +4297,22 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody<AuthorityDecisionTicketUpsertRequest>(request);
       sendJson(response, 200, repository.upsertDecisionTicket(body));
       companyOpsEngine.schedule("decision.upsert", body.companyId);
+      broadcast({ type: "decision.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/decision.resolve") {
+      const body = await readJsonBody<AuthorityDecisionTicketResolveRequest>(request);
+      sendJson(response, 200, repository.resolveDecisionTicket(body));
+      companyOpsEngine.schedule("decision.resolve", body.companyId);
+      broadcast({ type: "decision.updated", companyId: body.companyId, timestamp: Date.now() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/commands/decision.cancel") {
+      const body = await readJsonBody<AuthorityDecisionTicketCancelRequest>(request);
+      sendJson(response, 200, repository.cancelDecisionTicket(body));
+      companyOpsEngine.schedule("decision.cancel", body.companyId);
       broadcast({ type: "decision.updated", companyId: body.companyId, timestamp: Date.now() });
       return;
     }

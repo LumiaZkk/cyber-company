@@ -236,16 +236,17 @@ export function buildWorkItemActions(
       const nextEvidence =
         nextPrimaryAggregate &&
         reconciledRequirements.primaryRequirementId !== primaryRequirementId
-          ? appendRequirementLocalEvidence({
-              companyId: activeCompany.id,
-              evidence: activeRequirementEvidence,
-              eventType: primaryRequirementId ? "requirement_promoted" : "requirement_seeded",
-              aggregate: nextPrimaryAggregate,
-              previousAggregate: previousPrimaryAggregate,
-              actorId: nextPrimaryAggregate.ownerActorId,
-              timestamp: normalizedWorkItem.updatedAt,
-            })
-          : activeRequirementEvidence;
+        ? appendRequirementLocalEvidence({
+            companyId: activeCompany.id,
+            evidence: activeRequirementEvidence,
+            eventType: primaryRequirementId ? "requirement_promoted" : "requirement_seeded",
+            aggregate: nextPrimaryAggregate,
+            previousAggregate: previousPrimaryAggregate,
+            actorId: nextPrimaryAggregate.ownerActorId,
+            timestamp: normalizedWorkItem.updatedAt,
+            source: "backfill",
+          })
+        : activeRequirementEvidence;
       set({
         activeWorkItems: sorted,
         activeRoomRecords: nextRooms,
@@ -268,6 +269,8 @@ export function buildWorkItemActions(
           kind: primaryRequirementId ? "requirement_promoted" : "requirement_seeded",
           aggregate: nextPrimaryAggregate,
           actorId: nextPrimaryAggregate.ownerActorId,
+          previousAggregate: previousPrimaryAggregate,
+          source: "backfill",
         });
       }
     },

@@ -8,6 +8,7 @@ import { buildCurrentRequirementState } from "../mission/current-requirement-sta
 import { buildLobbyRequirementSurface } from "../mission/lobby-requirement-surface";
 import type { ResolvedExecutionState } from "../mission/execution-state";
 import { useLobbyRuntimeState } from "./runtime-state";
+import type { AgentRuntimeRecord, AgentSessionRecord } from "../agent-runtime";
 import type { RequirementSessionSnapshot } from "../../domain/mission/requirement-snapshot";
 import type { ArtifactRecord } from "../../domain/artifact/types";
 import type {
@@ -37,6 +38,9 @@ type BuildLobbyPageSurfaceInput = {
   currentTime: number;
   agentsCache: AgentListEntry[];
   cronCache: CronJob[];
+  activeAgentSessions: AgentSessionRecord[];
+  activeAgentRuntime: AgentRuntimeRecord[];
+  activeAgentStatuses: ReturnType<typeof useCompanyLobbyViewModel>["activeAgentStatuses"];
   sessionsByAgent: Map<string, CompanyGatewaySession[]>;
   sessionExecutions: Map<string, ResolvedExecutionState>;
   activeArtifacts: ArtifactRecord[];
@@ -81,6 +85,9 @@ export function buildLobbyPageSurface(input: BuildLobbyPageSurfaceInput) {
 
   const operationsSurface = buildLobbyOperationsSurface({
     activeCompany: input.activeCompany,
+    activeAgentSessions: input.activeAgentSessions,
+    activeAgentRuntime: input.activeAgentRuntime,
+    activeAgentStatuses: input.activeAgentStatuses,
     agentsCache: input.agentsCache,
     cronCache: input.cronCache,
     currentTime: input.currentTime,
@@ -118,6 +125,8 @@ export function useLobbyPageViewModel(input: { isPageVisible: boolean }) {
   const connected = useGatewayStore((state) => state.connected);
   const runtimeState = useLobbyRuntimeState({
     activeCompany: lobbyViewModel.activeCompany,
+    activeAgentRuntime: lobbyViewModel.activeAgentRuntime,
+    activeAgentStatuses: lobbyViewModel.activeAgentStatuses,
     connected,
     isPageVisible: input.isPageVisible,
   });
@@ -135,9 +144,12 @@ export function useLobbyPageViewModel(input: { isPageVisible: boolean }) {
       activeSupportRequests: lobbyViewModel.activeSupportRequests,
       activeEscalations: lobbyViewModel.activeEscalations,
       activeDecisionTickets: lobbyViewModel.activeDecisionTickets,
+      activeAgentSessions: lobbyViewModel.activeAgentSessions,
       activeWorkItems: lobbyViewModel.activeWorkItems,
       activeRequirementAggregates: lobbyViewModel.activeRequirementAggregates,
       primaryRequirementId: lobbyViewModel.primaryRequirementId,
+      activeAgentRuntime: lobbyViewModel.activeAgentRuntime,
+      activeAgentStatuses: lobbyViewModel.activeAgentStatuses,
       agentsCache: runtimeState.agentsCache,
       companySessions: runtimeState.companySessions,
       companySessionSnapshots: runtimeState.companySessionSnapshots,
@@ -155,9 +167,12 @@ export function useLobbyPageViewModel(input: { isPageVisible: boolean }) {
     lobbyViewModel.activeSupportRequests,
     lobbyViewModel.activeEscalations,
     lobbyViewModel.activeDecisionTickets,
+    lobbyViewModel.activeAgentSessions,
     lobbyViewModel.activeWorkItems,
     lobbyViewModel.activeRequirementAggregates,
     lobbyViewModel.primaryRequirementId,
+    lobbyViewModel.activeAgentRuntime,
+    lobbyViewModel.activeAgentStatuses,
     runtimeState.agentsCache,
     runtimeState.companySessionSnapshots,
     runtimeState.companySessions,

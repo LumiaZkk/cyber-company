@@ -37,6 +37,12 @@ export type BackendCapability =
   | "sessionHistory"
   | "sessionArchives"
   | "sessionArchiveRestore"
+  | "sessionStatus"
+  | "agentLifecycle"
+  | "toolLifecycle"
+  | "processRuntime"
+  | "presence"
+  | "runtimeObservability"
   | "cron"
   | "config"
   | "channelStatus"
@@ -52,6 +58,12 @@ const DEFAULT_BACKEND_CAPABILITIES: BackendCapabilities = {
   sessionHistory: false,
   sessionArchives: false,
   sessionArchiveRestore: false,
+  sessionStatus: false,
+  agentLifecycle: false,
+  toolLifecycle: false,
+  processRuntime: false,
+  presence: false,
+  runtimeObservability: false,
   cron: false,
   config: false,
   channelStatus: false,
@@ -111,6 +123,49 @@ export type RunRef = {
   conversationId?: string | null;
 };
 
+export type ProviderSessionState =
+  | "unknown"
+  | "idle"
+  | "running"
+  | "streaming"
+  | "error"
+  | "offline";
+
+export type ProviderRunState =
+  | "accepted"
+  | "running"
+  | "streaming"
+  | "completed"
+  | "aborted"
+  | "error";
+
+export type ProviderRuntimeStreamKind = "lifecycle" | "assistant" | "tool";
+
+export type ProviderSessionStatus = {
+  providerId: string;
+  sessionKey: string;
+  agentId?: string | null;
+  state: ProviderSessionState;
+  updatedAt?: number | null;
+  lastMessageAt?: number | null;
+  runId?: string | null;
+  errorMessage?: string | null;
+  raw?: unknown;
+};
+
+export type ProviderRuntimeEvent = {
+  providerId: string;
+  agentId?: string | null;
+  sessionKey?: string | null;
+  runId?: string | null;
+  streamKind: ProviderRuntimeStreamKind;
+  runState?: ProviderRunState | null;
+  timestamp: number;
+  errorMessage?: string | null;
+  toolName?: string | null;
+  raw?: unknown;
+};
+
 export type ArchiveRef = {
   providerId: string;
   archiveId: string;
@@ -168,6 +223,8 @@ export interface BackendCore {
     handler: (event: BackendEventFrame) => void,
   ): () => void;
   abortRun?(run: RunRef): Promise<{ ok: boolean; aborted: number; runIds: string[] }>;
+  getSessionStatus?(sessionKey: string): Promise<ProviderSessionStatus>;
+  subscribeAgentRuntime?(handler: (event: ProviderRuntimeEvent) => void): () => void;
 }
 
 export interface AgentBackend extends BackendCore {
@@ -295,6 +352,10 @@ export interface AgentBackend extends BackendCore {
   getSkillsStatus(agentId?: string): Promise<Record<string, unknown>>;
   getHealth(): Promise<Record<string, unknown>>;
   getStatus(): Promise<Record<string, unknown>>;
+  getSessionStatus(sessionKey: string): Promise<ProviderSessionStatus>;
+  subscribeAgentRuntime(handler: (event: ProviderRuntimeEvent) => void): () => void;
+  listProcesses?(sessionKey?: string): Promise<unknown>;
+  pollProcess?(id: string): Promise<unknown>;
   getConfigSnapshot(): Promise<{
     path: string;
     exists: boolean;

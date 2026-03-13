@@ -1,5 +1,6 @@
 import { parseAgentIdFromSessionKey } from "../../../lib/sessions";
 import {
+  buildStableStrategicTopicKey,
   buildRoomRecordIdFromWorkItem,
   normalizeProductWorkItemIdentity,
 } from "../../../application/mission/work-item";
@@ -135,16 +136,26 @@ export function sanitizeRoundRecords(rounds: RoundRecord[]): RoundRecord[] {
       workItemId: round.workItemId,
       title: round.title,
     });
+    const stableStrategicTopicKey =
+      (normalizedIdentity.topicKey ?? "").startsWith("mission:")
+        ? buildStableStrategicTopicKey({
+            topicKey: normalizedIdentity.topicKey,
+            title: round.title,
+          })
+        : null;
+    const normalizedWorkItemId = stableStrategicTopicKey
+      ? `topic:${stableStrategicTopicKey}`
+      : normalizedIdentity.workItemId ?? round.workItemId ?? null;
     const normalizedRound: RoundRecord = {
       ...round,
       sourceActorId,
       sourceActorLabel: round.sourceActorLabel ?? sourceActorId ?? null,
       sourceConversationId: round.sourceConversationId ?? round.sourceSessionKey ?? null,
-      workItemId: normalizedIdentity.workItemId ?? round.workItemId ?? null,
+      workItemId: normalizedWorkItemId,
       roomId:
-        (normalizedIdentity.workItemId
+        (normalizedWorkItemId
           ? buildRoomRecordIdFromWorkItem(
-              normalizedIdentity.workItemId,
+              normalizedWorkItemId,
             )
           : round.roomId) ?? null,
       messages: sanitizeRoundMessageSnapshots(round.messages),
