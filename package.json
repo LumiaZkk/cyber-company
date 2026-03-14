@@ -1,7 +1,7 @@
 {
   "name": "cyber-company",
   "private": true,
-  "description": "CEO-first multi-agent operations console built on top of OpenClaw",
+  "description": "Claw Company: the first playable company sim inside Claw Sims, built on OpenClaw",
   "license": "Apache-2.0",
   "version": "0.0.0",
   "type": "module",
@@ -53,6 +53,7 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
