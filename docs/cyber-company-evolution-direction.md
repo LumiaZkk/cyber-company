@@ -1,4 +1,4 @@
-# Cyber Company 演进方向建议
+# Claw Company / Claw Sims 演进方向建议
 
 Status: Draft  
 Last updated: 2026-03-13  
@@ -8,27 +8,39 @@ Depends on:
 - `docs/paperclip-borrowing-tracker.md`
 - `docs/v1-stability-roadmap.md`
 
+## 0. 命名约定
+
+- `Claw Sims`
+  总模拟世界品牌和长期产品方向。
+- `Claw Company`
+  当前仓库里已经落地的第一个可玩子集，重点是公司运营、CEO 调度、需求推进和治理闭环。
+- `OpenClaw`
+  底层 runtime / Gateway / executor 能力来源。
+- `cyber-company`
+  当前仓库名和一批历史文档里的旧称；本文件后文出现它时，默认指向当前 `Claw Company` 这条实现线。
+
 ## 1. 目的
 
 这份文档不是重复 `paperclip` 对比报告，而是在对比基础上回答 4 个更具体的问题：
 
-1. `cyber-company` 应该借鉴 `paperclip` 的哪些能力
-2. `cyber-company` 不应该复制 `paperclip` 的哪些做法
+1. 当前 `Claw Company` 应该借鉴 `paperclip` 的哪些能力
+2. 当前 `Claw Company` 不应该复制 `paperclip` 的哪些做法
 3. 当前项目最有防御力的演进方向是什么
-4. 接下来两个版本应该如何落地
+4. 接下来怎样让它更自然地长成 `Claw Sims` 的第一个稳定子世界
 
 ## 2. 先说结论
 
 推荐方向：
 
-- 把 `cyber-company` 继续做成 **OpenClaw-native 的需求控制平面**
+- 把 `Claw Company` 继续做成 **OpenClaw-native 的需求控制平面**
+- 把它明确成 `Claw Sims` 里第一个可玩、可持续迭代的子集
 - 保持 `RequirementAggregate` 作为前台主线真相
 - 把 `paperclip` 里成熟的“平台底座能力”逐步吸收进 `authority`
 - 不要把产品重心改造成通用 issue/project 平台
 
 一句话定义：
 
-`cyber-company` 最应该成为“一个操作者驱动一支 AI 团队完成需求闭环的控制面”，而不是“另一个通用 agent company OS”。
+`Claw Company` 最应该成为“一个操作者驱动一支 AI 团队完成需求闭环的控制面”，并作为 `Claw Sims` 的第一个可玩场景持续长大，而不是“另一个通用 agent company OS”。
 
 ## 2.1 如何阅读这份文档
 

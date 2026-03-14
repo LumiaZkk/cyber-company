@@ -1,6 +1,6 @@
-# Contributing to Cyber Company
+# Contributing to Claw Company
 
-Cyber Company 是一个建立在 OpenClaw 之上的运营控制台。改动代码前，先确认你改的是哪一层，而不是先找“以前放哪”。
+`Claw Company` 是 `Claw Sims` 当前已经落地的第一个可玩子集：一个建立在 OpenClaw 之上的公司模拟与运营控制面。仓库名目前仍是历史名称 `cyber-company`，但贡献代码时请默认按 `Claw Sims -> Claw Company -> OpenClaw` 这套层级来理解它。
 
 ## Local Setup
 
@@ -43,6 +43,15 @@ npm test
   通用 UI 与 system host。
 - `src/lib`
   小型工具，不放新的主业务流。
+
+## 品牌上下文
+
+- `Claw Sims`
+  总世界观和总产品方向。
+- `Claw Company`
+  当前仓库内的主产品面，也是当前默认开发目标。
+- `OpenClaw`
+  Gateway、执行器和底层 agent runtime。
 
 ## 改动应该放哪
 
