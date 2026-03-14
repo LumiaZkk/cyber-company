@@ -15,7 +15,7 @@ It is not just another chat wrapper. The product turns org structure, requests, 
 - `OpenClaw`
   The runtime, Gateway, and underlying agent capabilities.
 
-> Note: the repository name and some historical docs still use `cyber-company`, but the outward-facing product story is now converging on `Claw Sims -> Claw Company -> OpenClaw`.
+> Note: the GitHub repository now follows the Claw Sims naming system as `claw-sims-company`. For compatibility, some internal keys, blueprint kinds, and local data directories still keep the `cyber-company` prefix for now.
 
 ## What This Repository Currently Supports
 
@@ -88,7 +88,7 @@ If this is your first time in the codebase, use this order:
 - Do not add new `src/features/*` modules. That legacy layer is retired.
 - For page behavior, follow `pages -> presentation -> application -> domain/infrastructure`.
 - Before adding a rule, decide whether it belongs to pure business semantics or page/external integration.
-- When in doubt, check the "where changes belong" section in `docs/engineering-onboarding.md`.
+- When in doubt, check `CONTRIBUTING.md` for the current structure and change-boundary rules.
 
 ## Development
 

@@ -15,7 +15,7 @@
 - `OpenClaw`
   运行时、Gateway 和底层 Agent 能力来源。
 
-> 说明：仓库名和部分历史文档仍沿用 `cyber-company`，但对外产品叙事会逐步收敛到 `Claw Sims -> Claw Company -> OpenClaw` 这套结构。
+> 说明：GitHub 仓库现在已按 `Claw Sims` 体系命名为 `claw-sims-company`。出于兼容性，部分内部 key、蓝图 kind 和本地数据目录仍暂时沿用 `cyber-company` 前缀。
 
 ## 当前仓库能玩什么
 
@@ -88,7 +88,7 @@ npm run dev
 - 不要再新增 `src/features/*`。这个历史层已经退役。
 - 页面功能优先沿着 `pages -> presentation -> application -> domain/infrastructure` 去找。
 - 想加新规则，先判断它是“纯业务语义”还是“页面装配/外部适配”。
-- 想放不准的代码，先看 `docs/engineering-onboarding.md` 里的“改动落点”说明。
+- 想放不准的代码，先参考 `CONTRIBUTING.md` 里的边界和改动落点说明。
 
 ## Development
 

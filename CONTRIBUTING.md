@@ -1,6 +1,6 @@
 # Contributing to Claw Company
 
-`Claw Company` 是 `Claw Sims` 当前已经落地的第一个可玩子集：一个建立在 OpenClaw 之上的公司模拟与运营控制面。仓库名目前仍是历史名称 `cyber-company`，但贡献代码时请默认按 `Claw Sims -> Claw Company -> OpenClaw` 这套层级来理解它。
+`Claw Company` 是 `Claw Sims` 当前已经落地的第一个可玩子集：一个建立在 OpenClaw 之上的公司模拟与运营控制面。GitHub 仓库现已按家族命名收敛为 `claw-sims-company`；出于兼容性，部分内部 key 和本地数据目录仍保留 `cyber-company` 前缀。
 
 ## Local Setup
 
